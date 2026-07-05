@@ -32,3 +32,19 @@ Story 4: "apps/backend" — complete
   Produces: NestJS app（AppConfigService/AppConfigModule; DRIZZLE token + DB 类型 + PersistenceModule; HealthModule GET /health）；db:generate/db:migrate 脚本；app_meta 表
   Verified: jest 2/2 · nest build 0 · db:migrate 应用成功 · curl /health 200 {"status":"ok","db":"up"} · eslint 0
   Concerns: 未装 nestjs-zod/supertest（M0 无消费，留 M1）；jest 用 @swc/jest 而非 ts-jest（TS6 兼容）；tsconfig 补 rootDir（TS6 TS5011）
+
+Story 5: "apps/frontend" — complete
+  Commits: 1322172
+  Files: apps/frontend/{package.json,vite.config.ts,tsconfig.json,index.html, src/main.tsx, src/app/{App.tsx,App.test.tsx}, src/pages/{HomePage,LoginPage}.tsx, src/api/client.ts, src/test/setup.ts}
+  Produces: React app shell（antd Layout/Menu，路由 / 与 /login 占位）；getHealth() 类型化 client；Vite /health 代理；antd 主题 colorPrimary #1677ff
+  Verified: vitest 1/1 · eslint 0 · tsc --noEmit + vite build 0（antd6/react19/1559 模块）
+  Concerns: 实装 antd 6 / Vite 8 / react-router 7（均新大版本，编译运行 OK）；bundle 903kB 仅警告
+
+Story 6: "验收 8 条 + 回归" — complete
+  Commits: (packageManager 修复见下条)
+  Verified（8/8 验收）:
+    1 pnpm install ✓  2 compose postgres healthy ✓  3 db:migrate ✓  4 curl /health 200 {"status":"ok","db":"up"} ✓
+    5 eslint 0 且边界越界实报错（frontend import backend → no-restricted-imports error）✓
+    6 pnpm test（turbo）4/4：contracts 2 + backend 2 + frontend 1 ✓  7 前端 shell：vite build + smoke 通过 ✓
+    8 env fail-fast：缺 DATABASE_URL → ZodError 退出 ✓
+  Concerns: turbo 2.10 需根 packageManager 字段（已补 pnpm@9.13.2）

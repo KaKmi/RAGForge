@@ -1,6 +1,7 @@
 {
   "name": "@codecrush/root",
   "private": true,
+  "packageManager": "pnpm@9.13.2",
   "engines": {
     "node": ">=22"
   },
