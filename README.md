@@ -7,7 +7,8 @@
 ## 状态
 
 - ✅ **M0 工程地基**已完成（monorepo、后端/前端骨架、契约包、docker-compose、迁移、CI 约定）。
-- ⏭ 下一步 **M0.5 可观测最小闭环**（OTel SDK→Collector→ClickHouse→traces API）。
+- ✅ **M0.5 可观测最小闭环**已完成（OTel SDK→Collector→ClickHouse→防腐 VIEW→traces API，见下方验证）。
+- ⏭ 下一步 **M1 用户与鉴权**（见路线图波次 B）。
 - 完整路线图见 [`docs/design/002-implementation-roadmap.md`](docs/design/002-implementation-roadmap.md)（M0–M12）。
 
 ## 技术栈
@@ -26,13 +27,16 @@
 
 ```
 apps/
-  backend/            NestJS 后端（platform/{config,persistence} + modules/health）
+  backend/            NestJS 后端（platform/{config,persistence,clickhouse} + modules/{health,traces}）
   frontend/           React + Vite + antd 控制台骨架
 packages/
-  contracts/          Zod DTO + OTLP 属性常量（前后端共用，仅依赖 zod）
+  contracts/          Zod API DTO（前后端唯一契约源，仅依赖 zod）
+  otel-conventions/   OTLP/GenAI/rag 属性常量（前后端共用，零运行时依赖）
+  otel/               通用 Node 遥测 SDK（NodeSDK 接线 / withSpan，仅后端）
 infra/
   docker-compose.yml  postgres+pgvector / clickhouse / otel-collector（infra profile）
-docs/design/          001 架构 · 002 路线图 · 003 代码组织（权威设计）
+  clickhouse/views/   codecrush_trace_spans 防腐 VIEW SQL（otel_traces 由 exporter 建）
+docs/design/          001 架构 · 002 路线图 · 003 代码组织 · 004 trace 可观测（权威设计）
 .ship/                Ship 工作流产物（spec/plan/ledger）
 ```
 
@@ -58,6 +62,21 @@ pnpm --filter @codecrush/frontend dev       # http://localhost:5173
 
 打开 http://localhost:5173 ，首页会显示「后端健康：ok · db:up」。
 
+## M0.5 可观测验证
+
+```bash
+docker compose -f infra/docker-compose.yml --profile infra up -d --wait
+cp apps/backend/.env.example apps/backend/.env
+pnpm build
+pnpm --filter @codecrush/backend start    # node -r ./dist/tracing.js dist/main.js（OTel 预加载）
+pnpm observability:verify                 # 另开终端
+```
+
+期望输出形如 `{"status":"ok","traceId":"<32位hex>","attempts":N}`。该验证走完整链路：
+`manual.hello` span → OTel Collector → ClickHouse `otel_traces`（exporter 建表）→
+`codecrush_trace_spans` 防腐 VIEW → `GET /traces/:traceId`；不能由内存或 Postgres 伪造。
+Collector/ClickHouse 不可用时后端与 `/health` 不受影响（埋点只降级、不阻塞）。
+
 ## 常用命令
 
 | 命令 | 作用 |
@@ -66,6 +85,7 @@ pnpm --filter @codecrush/frontend dev       # http://localhost:5173
 | `pnpm test` | 全量测试（contracts/backend/frontend）|
 | `pnpm lint` | ESLint（含依赖边界规则）|
 | `pnpm db:generate` / `pnpm db:migrate` | 生成 / 应用 Drizzle 迁移 |
+| `pnpm observability:verify` | M0.5 可观测闭环冒烟（需 infra + 后端已启动）|
 | `docker compose -f infra/docker-compose.yml down` | 停依赖服务（保留卷）|
 
 ## 文档

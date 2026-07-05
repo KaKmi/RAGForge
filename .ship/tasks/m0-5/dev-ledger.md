@@ -44,3 +44,32 @@ Story 3: "ClickHouse platform + traces API" — complete
   Review: PASS（peer 亦核验了两处 dev 修正与 @clickhouse/client 泛型；[UNVERIFIABLE] 埋点不阻塞启动
     由 Story 2 已确证：node-sdk.startNodeTelemetry try/catch 不抛）
   Concerns: none
+
+Story 4: "Collector ClickHouse export + defensive VIEW + verify script" — complete
+  Commits: 07a5fca（主体）, a3816ae（review concern 修复：CH 端口只绑 127.0.0.1 + users.d 注释修正）
+  Files: infra/collector/config.yaml, infra/docker-compose.yml,
+         infra/clickhouse/views/001-trace-views.sql, infra/clickhouse/users.d/codecrush-default-network.xml,
+         apps/backend/scripts/verify-observability.mjs, apps/backend/package.json, package.json,
+         .ship/tasks/m0-5/{dev-ledger.md,concerns.md}
+  Produces:
+    - Collector pipeline: otlp(4317/4318) → batch → clickhouse exporter（create_schema, otel_traces）+ debug
+    - 镜像 pin：clickhouse-server:25.6 / collector-contrib:0.130.1；CH healthcheck；collector 等 healthy
+    - codecrush_trace_spans VIEW（N2：列名对照 0.130.1 实建 otel_traces DESCRIBE 核实）
+    - `pnpm observability:verify`（root/backend）
+  Dev 修正：CH 25.6 镜像 default 用户仅本机限制 → users.d 放开 + 端口只绑 127.0.0.1（防局域网暴露）
+  Review: PASS_WITH_CONCERNS（LAN 暴露 concern 已以 a3816ae 修复关闭；两项 [UNVERIFIABLE] 由 host
+    的实跑证据覆盖：verify 脚本真实闭环 2 次通过）
+  Concerns: sending_queue 在 CH 长时间宕机下的 retry/drop 行为未压测（dev 可接受，M9 前复核）
+
+Story 5: "E2E 冒烟 + README" — complete
+  Commits: 6af7824（flush 修复，冒烟发现的真 bug）, <README commit 见 git log>
+  Files: README.md, packages/otel/src/{trace.ts,trace.test.ts}
+  运行时证据：
+    - observability:verify 两次通过（attempts 2/3，trace c01c95c6…、cc93ea23…）
+    - VIEW 直查：manual.hello status=Ok + 同 trace 的 POST 自动埋点 span；GET /health 自动 span count=4
+    - ServiceName=codecrush-backend（resource attrs 生效）
+    - 降级 A：endpoint 空 → "[otel] tracing disabled" + /health OK
+    - 降级 B：endpoint 指向死端口 → 启动 OK、/health OK、hello 200（flush 修复后）
+  Produces: README「M0.5 可观测验证」章节 + observability:verify 常用命令行
+  Review: 回归 = pnpm lint 0 / test 8 任务全过 / build 5 任务全过
+  Concerns: none

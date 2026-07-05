@@ -1,5 +1,10 @@
 # Concerns — M0.5
 
+## Story 4 — 已关闭
+
+- ~~users.d ::/0 + 0.0.0.0 端口发布把无密码 default 暴露到局域网~~ → 已修（a3816ae：8123/9000 只绑 127.0.0.1）。
+- 残留：collector sending_queue 在 ClickHouse 长时间宕机下的 retry/drop 行为未压测；dev 阶段可接受，M9 交付 trace UI 前复核。
+
 ## Story 2 (@codecrush/otel) — PASS_WITH_CONCERNS 级 latent 项（reviewer 标注，无当前触发，未修）
 
 1. `packages/otel/src/trace.ts` `resetTelemetryForTests()` 只清 `forceFlushHook`，不重置
