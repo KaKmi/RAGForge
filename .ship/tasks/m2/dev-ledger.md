@@ -200,7 +200,7 @@ Story 6: "前端 API client + SSE 骨架" — complete (no individual review —
     - ChatPage 流式渲染每 token setState（10 次/mock 流），M8 真实编排 token 多时考虑批量或 requestAnimationFrame（非 M2 范围）。
 
 Story 7: "Vite proxy + 集成验证" — complete (no individual review — non-security; covered by final review)
-  Commits: b85d8c4
+  Commits: 0f1c6ff
   Files (MODIFIED):
     - apps/frontend/vite.config.ts (proxy 追加 /api → :3000；resolve.alias 将 @codecrush/contracts 指向 packages/contracts/src/index.ts——修 dev 下 CJS barrel 命名导出失败：Vite dev 直接服务 dist/index.js 的 __exportStar CJS，浏览器原生 ESM 报 "does not provide an export named 'LoginResponseSchema/ChatRequestSchema'"，导致 LoginPage/ChatPage 白屏。alias 到源码后 Vite 逐文件编译 ESM TS，命名导出可见；backend 仍消费 dist)
     - apps/frontend/src/pages/login/LoginPage.tsx (initialValues demo@codecrush.bot/demo12345 → demo@codecrush.local/CodeCrushDemo123!——对齐 backend seed.ts，原默认凭据登录 401)
