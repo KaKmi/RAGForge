@@ -13,6 +13,7 @@
     "format": "prettier --write .",
     "db:generate": "pnpm --filter @codecrush/backend db:generate",
     "db:migrate": "pnpm --filter @codecrush/backend db:migrate",
+    "db:seed": "pnpm --filter @codecrush/backend db:seed",
     "observability:verify": "pnpm --filter @codecrush/backend observability:verify"
   },
   "devDependencies": {
