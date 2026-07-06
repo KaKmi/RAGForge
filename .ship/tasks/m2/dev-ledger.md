@@ -162,3 +162,13 @@ Story 5: "前端 13 个页面 + mock 数据" — complete (no individual review 
   Concerns:
     - antd 6 deprecation 警告：Drawer `width`（建议 size）与 List 组件（下个大版本移除）。非阻塞，M3+ 视觉打磨时替换 List 为自定义列表、Drawer 改 size。
     - TraceDetailPage 的 detail 直接用 MOCK_TRACE_DETAIL（按 traceId 取真实读模型留 M9）；当前所有 traceId 都映射到同一条 mock 详情。
+
+Story 5 Review follow-up — complete
+  Scope: `git diff 46fffa4..HEAD`（Story 5 impl ee761e1 + docs SHA）
+  Peer review report: .ship/tasks/m2/review.md
+  Findings: 0 P1 / 0 P2 / 1 P3 (Story 5 范围内) + 1 P3 (测试运行暴露的 Story 4 遗留)
+  Fixes:
+    - P3-1 登录测试未断言导航落点（App.test.tsx:88-119）：补 findByText("CodeCrushBot")，commit f15e895
+    - P3-2 StartPage 链接列表重复 key（StartPage.tsx:24，步骤 2/3 同 to）：改 key={s.title}，commit 349a2b4
+  Tests: frontend 7/7 green（修复后），重复 key 警告消失；剩余 stderr 均为 antd 6 弃用警告（非本任务范围）
+  Open Questions（M9 收口，非阻塞）：TraceDetailPage 瀑布图分母用 max(durationMs) 而非 maxEnd-rootStart；buildDepth 无环保护；spans[0] 假定为最早。M9 接真实读模型前修。
