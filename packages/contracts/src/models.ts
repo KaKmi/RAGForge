@@ -17,3 +17,6 @@ export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 
 export const ModelProviderListResponseSchema = z.array(ModelProviderSchema);
 export type ModelProviderListResponse = z.infer<typeof ModelProviderListResponseSchema>;
+
+export const CreateModelRequestSchema = ModelProviderSchema.omit({ id: true });
+export type CreateModelRequest = z.infer<typeof CreateModelRequestSchema>;

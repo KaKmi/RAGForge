@@ -20,3 +20,22 @@ export const DocumentSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 export type Document = z.infer<typeof DocumentSchema>;
+
+export const CreateDocumentRequestSchema = DocumentSchema.omit({
+  id: true,
+  chunksCount: true,
+  status: true,
+  stage: true,
+  error: true,
+  updatedAt: true,
+});
+export type CreateDocumentRequest = z.infer<typeof CreateDocumentRequestSchema>;
+
+export const IngestionStatusSchema = z.object({
+  documentId: z.string().min(1),
+  status: z.enum(["idle", "processing", "done", "failed"]),
+  progress: z.number().min(0).max(100),
+  stage: z.string(),
+  error: z.string().nullable().optional(),
+});
+export type IngestionStatus = z.infer<typeof IngestionStatusSchema>;

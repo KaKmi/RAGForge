@@ -18,3 +18,12 @@ export type KnowledgeBase = z.infer<typeof KnowledgeBaseSchema>;
 
 export const KnowledgeBaseListResponseSchema = z.array(KnowledgeBaseSchema);
 export type KnowledgeBaseListResponse = z.infer<typeof KnowledgeBaseListResponseSchema>;
+
+export const CreateKnowledgeBaseRequestSchema = KnowledgeBaseSchema.omit({
+  id: true,
+  docsCount: true,
+  chunksCount: true,
+  status: true,
+  updatedAt: true,
+});
+export type CreateKnowledgeBaseRequest = z.infer<typeof CreateKnowledgeBaseRequestSchema>;

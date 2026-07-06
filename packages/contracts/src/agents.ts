@@ -27,3 +27,9 @@ export type Agent = z.infer<typeof AgentSchema>;
 
 export const AgentListResponseSchema = z.array(AgentSchema);
 export type AgentListResponse = z.infer<typeof AgentListResponseSchema>;
+
+export const CreateAgentRequestSchema = AgentSchema.omit({ id: true });
+export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
+
+export const UpdateAgentRequestSchema = CreateAgentRequestSchema.partial();
+export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;

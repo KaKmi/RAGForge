@@ -11,3 +11,8 @@ export const ChunkSchema = z.object({
   enabled: z.boolean(),
 });
 export type Chunk = z.infer<typeof ChunkSchema>;
+
+export const UpdateChunkEnabledRequestSchema = z.object({
+  enabled: z.boolean(),
+});
+export type UpdateChunkEnabledRequest = z.infer<typeof UpdateChunkEnabledRequestSchema>;

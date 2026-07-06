@@ -5,9 +5,15 @@ import {
   ChatStreamEventSchema,
   ChunkSchema,
   ConversationSchema,
+  CreateAgentRequestSchema,
+  CreateDocumentRequestSchema,
+  CreateKnowledgeBaseRequestSchema,
+  CreateModelRequestSchema,
+  CreatePromptVersionRequestSchema,
   DocumentSchema,
   EvalRunSchema,
   EvalSetSchema,
+  IngestionStatusSchema,
   KnowledgeBaseSchema,
   MessageSchema,
   ModelProviderSchema,
@@ -16,6 +22,8 @@ import {
   PromptVersionSchema,
   RetrievalTestRequestSchema,
   RetrievalTestResponseSchema,
+  UpdateAgentRequestSchema,
+  UpdateChunkEnabledRequestSchema,
 } from "./index";
 
 const valid = {
@@ -238,5 +246,72 @@ describe("PaginatedResponseSchema (generic factory)", () => {
   it("rejects page=0", () => {
     const Schema = PaginatedResponseSchema(AgentSchema);
     expect(() => Schema.parse({ items: [], total: 0, page: 0, pageSize: 20 })).toThrow();
+  });
+});
+
+describe("M2 request schemas (skeleton DTOs)", () => {
+  it("CreateModelRequestSchema omits id, keeps enabled", () => {
+    const { id: _id, ...rest } = valid.model;
+    void _id;
+    expect(CreateModelRequestSchema.parse(rest).enabled).toBe(true);
+    expect(() => CreateModelRequestSchema.parse({ ...rest, type: "vision" })).toThrow();
+  });
+  it("CreateKnowledgeBaseRequestSchema omits id/counts/status/updatedAt", () => {
+    const { id: _a, docsCount: _b, chunksCount: _c, status: _d, updatedAt: _e, ...rest } = valid.kb;
+    void _a;
+    void _b;
+    void _c;
+    void _d;
+    void _e;
+    expect(CreateKnowledgeBaseRequestSchema.parse(rest).name).toBe(valid.kb.name);
+  });
+  it("CreateDocumentRequestSchema omits id/counts/status/updatedAt", () => {
+    const { id: _a, chunksCount: _b, status: _c, updatedAt: _d, ...rest } = valid.doc;
+    void _a;
+    void _b;
+    void _c;
+    void _d;
+    expect(CreateDocumentRequestSchema.parse(rest).name).toBe(valid.doc.name);
+  });
+  it("IngestionStatusSchema accepts a valid status", () => {
+    expect(
+      IngestionStatusSchema.parse({
+        documentId: "d1",
+        status: "processing",
+        progress: 42,
+        stage: "切片",
+      }).progress,
+    ).toBe(42);
+    expect(() =>
+      IngestionStatusSchema.parse({ documentId: "d1", status: "queued", progress: 0, stage: "" }),
+    ).toThrow();
+  });
+  it("UpdateChunkEnabledRequestSchema accepts { enabled }", () => {
+    expect(UpdateChunkEnabledRequestSchema.parse({ enabled: false }).enabled).toBe(false);
+    expect(() => UpdateChunkEnabledRequestSchema.parse({ enabled: "yes" })).toThrow();
+  });
+  it("CreateAgentRequestSchema omits id", () => {
+    const { id: _id, ...rest } = valid.agent;
+    void _id;
+    expect(CreateAgentRequestSchema.parse(rest).name).toBe(valid.agent.name);
+    expect(() => CreateAgentRequestSchema.parse({ ...rest, topK: -1 })).toThrow();
+  });
+  it("UpdateAgentRequestSchema is partial (allows single field)", () => {
+    expect(UpdateAgentRequestSchema.parse({ name: "新名字" }).name).toBe("新名字");
+    expect(UpdateAgentRequestSchema.parse({}).name).toBeUndefined();
+  });
+  it("CreatePromptVersionRequestSchema omits id/promptId/version/status (后端分配)", () => {
+    const { id: _a, promptId: _b, version: _c, status: _d, ...rest } = valid.promptVersion;
+    void _a;
+    void _b;
+    void _c;
+    void _d;
+    const parsed = CreatePromptVersionRequestSchema.parse(rest);
+    expect(parsed.body).toBe(valid.promptVersion.body);
+    expect(parsed.variables).toEqual(["query"]);
+    // 拒绝客户端塞 status/version（后端分配）—— 多余 key 被 zod 默认 strip，但若客户端传非法值在 strict 下应拒
+    // 这里验证 status/version 不在 parse 结果里
+    expect((parsed as Record<string, unknown>).status).toBeUndefined();
+    expect((parsed as Record<string, unknown>).version).toBeUndefined();
   });
 });

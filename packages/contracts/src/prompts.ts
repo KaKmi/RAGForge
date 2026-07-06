@@ -25,3 +25,17 @@ export const PromptVersionSchema = z.object({
   status: PromptVersionStatusSchema,
 });
 export type PromptVersion = z.infer<typeof PromptVersionSchema>;
+
+export const PromptVersionListResponseSchema = z.array(PromptVersionSchema);
+export type PromptVersionListResponse = z.infer<typeof PromptVersionListResponseSchema>;
+
+export const CreatePromptVersionRequestSchema = PromptVersionSchema.omit({
+  id: true,
+  promptId: true,
+  version: true,
+  status: true,
+});
+export type CreatePromptVersionRequest = z.infer<typeof CreatePromptVersionRequestSchema>;
+
+export const PromptListResponseSchema = z.array(PromptSchema);
+export type PromptListResponse = z.infer<typeof PromptListResponseSchema>;
