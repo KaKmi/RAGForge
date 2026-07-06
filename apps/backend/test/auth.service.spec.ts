@@ -27,6 +27,7 @@ describe("expiresInSeconds", () => {
   it("解析 s/m/h/d，拒绝垃圾", () => {
     expect(expiresInSeconds("12h")).toBe(43200);
     expect(expiresInSeconds("30m")).toBe(1800);
+    expect(() => expiresInSeconds("0h")).toThrow();
     expect(() => expiresInSeconds("whenever")).toThrow();
   });
 });

@@ -35,6 +35,9 @@ export class JwtAuthGuard implements CanActivate {
       const payload = await this.jwtService.verifyAsync<JwtPayload>(
         header.slice("Bearer ".length).trim(),
       );
+      if (typeof payload.sub !== "string" || typeof payload.email !== "string") {
+        throw new UnauthorizedException("invalid token principal");
+      }
       request.user = { id: payload.sub, email: payload.email };
       return true;
     } catch {

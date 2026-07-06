@@ -10,7 +10,9 @@ const UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
 export function expiresInSeconds(expr: string): number {
   const m = EXPIRES_RE.exec(expr.trim());
   if (!m) throw new Error(`invalid JWT_EXPIRES_IN: ${expr}`);
-  return Number(m[1]) * UNIT_SECONDS[m[2]];
+  const seconds = Number(m[1]) * UNIT_SECONDS[m[2]];
+  if (seconds <= 0) throw new Error(`invalid JWT_EXPIRES_IN: ${expr}`);
+  return seconds;
 }
 
 @Injectable()

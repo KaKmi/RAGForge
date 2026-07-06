@@ -57,4 +57,12 @@ describe("JwtAuthGuard", () => {
       email: "demo@codecrush.local",
     });
   });
+
+  it("签名正确但缺少业务主体 claims → 401", async () => {
+    const { guard, jwtService } = makeGuard();
+    const token = await jwtService.signAsync({});
+    await expect(guard.canActivate(makeContext(`Bearer ${token}`).context)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
 });
