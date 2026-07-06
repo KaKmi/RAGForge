@@ -39,11 +39,13 @@
     "@swc/core": "^1.15.43",
     "@swc/jest": "^0.2.39",
     "@types/jest": "^30.0.0",
+    "@types/supertest": "^6.0.2",
     "@types/node": "^26.1.0",
     "@types/pg": "^8.20.0",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "jest": "^30.4.2",
+    "supertest": "^7.1.0",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3"
   }

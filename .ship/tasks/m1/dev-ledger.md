@@ -42,7 +42,7 @@ Story 2: "users 数据层 + 迁移 + seed（M1a）" — complete
   Concerns: pnpm v11 returned ERR_PNPM_IGNORED_BUILDS after installing native/dev tool packages, but backend can require argon2 and backend Jest/build/ESLint passed.
 
 Story 3: "登录 + 全局 guard + 用户端点（M1b）" — complete
-  Commits: pending
+  Commits: 824b908, 91735fa
   Files:
     apps/backend/.env.example
     apps/backend/package.json
@@ -73,4 +73,18 @@ Story 3: "登录 + 全局 guard + 用户端点（M1b）" — complete
     Public() decorator and AuthenticatedUser type
     env JWT_SECRET/JWT_EXPIRES_IN
     expiresInSeconds(expr: string): number
+  Concerns: none
+
+Story 4: "supertest 矩阵 + 消费者适配 + 运行时验收（M1b 收尾）" — complete
+  Commits: pending
+  Files:
+    README.md
+    apps/backend/package.json
+    apps/backend/scripts/verify-observability.mjs
+    apps/backend/test/auth.e2e.spec.ts
+    pnpm-lock.yaml
+  Produces:
+    global guard HTTP matrix via supertest
+    observability verify script authenticates with AUTH_TOKEN or demo login
+    README documents db:seed and M1 trace auth behavior
   Concerns: none

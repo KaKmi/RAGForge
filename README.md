@@ -8,7 +8,8 @@
 
 - ✅ **M0 工程地基**已完成（monorepo、后端/前端骨架、契约包、docker-compose、迁移、CI 约定）。
 - ✅ **M0.5 可观测最小闭环**已完成（OTel SDK→Collector→ClickHouse→防腐 VIEW→traces API，见下方验证）。
-- ⏭ 下一步 **M1 用户与鉴权**（见路线图波次 B）。
+- ✅ **M1 用户/认证**已完成（users 实体 + demo seed + JWT 登录 + 全局 guard，`/traces/*` 收保护）。
+- ⏭ 下一步 **M2 前后端页面骨架**（见路线图波次 B）。
 - 完整路线图见 [`docs/design/002-implementation-roadmap.md`](docs/design/002-implementation-roadmap.md)（M0–M12）。
 
 ## 技术栈
@@ -67,6 +68,7 @@ pnpm --filter @codecrush/frontend dev       # http://localhost:5173
 ```bash
 docker compose -f infra/docker-compose.yml --profile infra up -d --wait
 cp apps/backend/.env.example apps/backend/.env
+pnpm db:migrate && pnpm db:seed
 pnpm build
 pnpm --filter @codecrush/backend start    # node -r ./dist/tracing.js dist/main.js（OTel 预加载）
 pnpm observability:verify                 # 另开终端
@@ -76,6 +78,8 @@ pnpm observability:verify                 # 另开终端
 `manual.hello` span → OTel Collector → ClickHouse `otel_traces`（exporter 建表）→
 `codecrush_trace_spans` 防腐 VIEW → `GET /traces/:traceId`；不能由内存或 Postgres 伪造。
 Collector/ClickHouse 不可用时后端与 `/health` 不受影响（埋点只降级、不阻塞）。
+
+> M1 起 `/traces/*` 需要登录：verify 脚本会自动用 demo 账号（`demo@codecrush.local` / `DEMO_USER_PASSWORD`，默认 `CodeCrushDemo123!`）换取 token；`GET /health` 保持公开。
 
 ## 常用命令
 
