@@ -76,7 +76,7 @@ Story 3: "登录 + 全局 guard + 用户端点（M1b）" — complete
   Concerns: none
 
 Story 4: "supertest 矩阵 + 消费者适配 + 运行时验收（M1b 收尾）" — complete
-  Commits: pending
+  Commits: ba53da7
   Files:
     README.md
     apps/backend/package.json
