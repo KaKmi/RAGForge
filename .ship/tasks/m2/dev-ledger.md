@@ -172,3 +172,29 @@ Story 5 Review follow-up — complete
     - P3-2 StartPage 链接列表重复 key（StartPage.tsx:24，步骤 2/3 同 to）：改 key={s.title}，commit 349a2b4
   Tests: frontend 7/7 green（修复后），重复 key 警告消失；剩余 stderr 均为 antd 6 弃用警告（非本任务范围）
   Open Questions（M9 收口，非阻塞）：TraceDetailPage 瀑布图分母用 max(durationMs) 而非 maxEnd-rootStart；buildDepth 无环保护；spans[0] 假定为最早。M9 接真实读模型前修。
+
+Story 6: "前端 API client + SSE 骨架" — complete (no individual review — non-security; covered by final review)
+  Commits: <TBD>
+  Files (NEW):
+    - apps/frontend/src/api/sse.ts (openChatStream: fetch + ReadableStream async generator，按 \n\n 切帧，仅解析 data: 行；非 EventSource 因需带 Authorization)
+    - apps/frontend/src/api/sse.test.ts (7 tests: 跨 chunk 拼接 / token 序列 / Authorization 头 / 无 token / 非 2xx 抛错 / 跳过注释与 event 字段 / AbortSignal 透传 / 非法 payload Zod 拒绝)
+    - apps/frontend/src/pages/chat/ChatPage.test.tsx (2 tests: 流式渲染 token+citation+输入框清空 / 流失败显示 error)
+  Files (MODIFIED):
+    - apps/frontend/src/api/client.ts (apiFetch: Bearer token 自动注入 + 401 清 token 跳 /login；getJson/postJson + Zod 校验；9 域 13 个 typed client 函数：agents/models/knowledge-bases/documents/ingestion/chunks/conversations/prompts/retrieval；getHealth 保留 /health 不带鉴权)
+    - apps/frontend/src/pages/chat/ChatPage.tsx (接 openChatStream：发送 → token 累积渲染 + citation 流式入右栏 + done 写 traceId/confidence；Enter 发送 / Shift+Enter 换行；卸载 abort)
+  Contracts additions (单一来源，前端不直接 import zod):
+    - packages/contracts/src/documents.ts (+DocumentListResponseSchema)
+    - packages/contracts/src/chunks.ts (+ChunkListResponseSchema)
+    - packages/contracts/src/conversations.ts (+MessageListResponseSchema)
+    - packages/contracts/src/m2-schemas.test.ts (+3 list schema 正反例测试)
+  Produces: 通用 apiFetch 封装（鉴权 + 401 重定向）+ 9 域 typed client（M3+ 调用，M2 页面仍用 mock）+ openChatStream async generator（消费后端 mock SSE 流，ChatPage 发送消息即流式渲染 token/citation/done）
+  Tests: frontend 16/16 green（+9 新增：7 sse + 2 ChatPage）；contracts 52/52 green（+3）；全量 8/8 tasks green；lint 0；build ok
+  Design notes:
+    - 前端不直接 import zod（AGENTS.md 边界：前端只 import contracts + otel-conventions）。client.ts 用本地 ZodSchema<T> 接口（结构兼容 zod schema 的 .parse），避免引入 zod 依赖。documents/chunks/messages 之前无 ListResponseSchema——在 contracts 补齐（与其它域一致），前端直接用现成 schema 而非 z.array()。
+    - sse.ts 按 SSE 规范解析：帧以 \n\n 分隔，一帧内多行 data: 用 \n 拼接为 payload；忽略注释行（: keep-alive）与 event:/retry: 等字段。后端 mock 流末尾可能无 \n\n，flush 残留 buf。
+    - ChatPage 卸载时 abort 进行中的流（useEffect cleanup + AbortController ref），避免 setState on unmounted。
+    - typed client 不含 evalsets/evals（后端无 skeleton，M11 才有）；不含 chat（SSE 在 sse.ts 单独处理）。
+    - antd 6 Button 给中文加字间距（"发 送"），ChatPage.test 用 /发\s*送/ regex 兼容。
+  Concerns:
+    - typed client 函数 M2 未被任何页面调用（页面用 mock），仅 sse 被 ChatPage 调用。M3+ 接真实后端时首次验证路径与 schema 形状。
+    - ChatPage 流式渲染每 token setState（10 次/mock 流），M8 真实编排 token 多时考虑批量或 requestAnimationFrame（非 M2 范围）。

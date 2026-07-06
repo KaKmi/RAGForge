@@ -21,6 +21,9 @@ export const DocumentSchema = z.object({
 });
 export type Document = z.infer<typeof DocumentSchema>;
 
+export const DocumentListResponseSchema = z.array(DocumentSchema);
+export type DocumentListResponse = z.infer<typeof DocumentListResponseSchema>;
+
 export const CreateDocumentRequestSchema = DocumentSchema.omit({
   id: true,
   chunksCount: true,

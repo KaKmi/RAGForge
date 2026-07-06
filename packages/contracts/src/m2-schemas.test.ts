@@ -3,6 +3,7 @@ import {
   AgentSchema,
   ChatRequestSchema,
   ChatStreamEventSchema,
+  ChunkListResponseSchema,
   ChunkSchema,
   ConversationSchema,
   CreateAgentRequestSchema,
@@ -10,11 +11,13 @@ import {
   CreateKnowledgeBaseRequestSchema,
   CreateModelRequestSchema,
   CreatePromptVersionRequestSchema,
+  DocumentListResponseSchema,
   DocumentSchema,
   EvalRunSchema,
   EvalSetSchema,
   IngestionStatusSchema,
   KnowledgeBaseSchema,
+  MessageListResponseSchema,
   MessageSchema,
   ModelProviderSchema,
   PaginatedResponseSchema,
@@ -167,6 +170,18 @@ describe("M2 contracts — positive cases", () => {
   });
   it("MessageSchema accepts a valid message", () => {
     expect(MessageSchema.parse(valid.msg)).toEqual(valid.msg);
+  });
+  it("DocumentListResponseSchema wraps documents", () => {
+    expect(DocumentListResponseSchema.parse([valid.doc]).length).toBe(1);
+    expect(() => DocumentListResponseSchema.parse([{ ...valid.doc, type: "xlsx" }])).toThrow();
+  });
+  it("ChunkListResponseSchema wraps chunks", () => {
+    expect(ChunkListResponseSchema.parse([valid.chunk]).length).toBe(1);
+    expect(() => ChunkListResponseSchema.parse([{ ...valid.chunk, seq: -1 }])).toThrow();
+  });
+  it("MessageListResponseSchema wraps messages", () => {
+    expect(MessageListResponseSchema.parse([valid.msg]).length).toBe(1);
+    expect(() => MessageListResponseSchema.parse([{ ...valid.msg, role: "system" }])).toThrow();
   });
   it("EvalSetSchema accepts a valid eval set", () => {
     expect(EvalSetSchema.parse(valid.evalSet)).toEqual(valid.evalSet);

@@ -25,3 +25,6 @@ export const MessageSchema = z.object({
   citations: z.array(z.string().min(1)).optional(),
 });
 export type Message = z.infer<typeof MessageSchema>;
+
+export const MessageListResponseSchema = z.array(MessageSchema);
+export type MessageListResponse = z.infer<typeof MessageListResponseSchema>;
