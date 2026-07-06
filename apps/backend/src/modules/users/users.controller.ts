@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Patch, Req } from "@nestjs/common";
+import { Body, Controller, Get, Patch, Req } from "@nestjs/common";
+import { createZodDto } from "nestjs-zod";
 import {
   ChangeOwnPasswordRequestSchema,
   type ChangeOwnPasswordResponse,
@@ -6,6 +7,8 @@ import {
 } from "@codecrush/contracts";
 import type { AuthenticatedUser } from "../../platform/security/authenticated-user";
 import { UsersService } from "./users.service";
+
+class ChangeOwnPasswordRequestDto extends createZodDto(ChangeOwnPasswordRequestSchema) {}
 
 type AuthedRequest = { user: AuthenticatedUser };
 
@@ -21,15 +24,9 @@ export class UsersController {
   @Patch("me/password")
   async changePassword(
     @Req() req: AuthedRequest,
-    @Body() body: unknown,
+    @Body() body: ChangeOwnPasswordRequestDto,
   ): Promise<ChangeOwnPasswordResponse> {
-    const parsed = ChangeOwnPasswordRequestSchema.safeParse(body);
-    if (!parsed.success) throw new BadRequestException(parsed.error.issues);
-    await this.usersService.changeOwnPassword(
-      req.user.id,
-      parsed.data.currentPassword,
-      parsed.data.newPassword,
-    );
+    await this.usersService.changeOwnPassword(req.user.id, body.currentPassword, body.newPassword);
     return { status: "ok" };
   }
 }
