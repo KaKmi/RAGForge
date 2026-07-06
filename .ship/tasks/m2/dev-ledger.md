@@ -112,7 +112,7 @@ Story 4: "前端 app shell（布局 + 路由 + AuthGuard）" — complete (no in
   Concerns: none
 
 Story 5: "前端 13 个页面 + mock 数据" — complete (no individual review — non-security; covered by final review)
-  Commits: 3a24370
+  Commits: ee761e1
   Files (NEW mocks, 9 个, z.infer 类型标注):
     - apps/frontend/src/mocks/agents.ts (MOCK_AGENTS 3 条)
     - apps/frontend/src/mocks/knowledge-bases.ts (MOCK_KNOWLEDGE_BASES 3 + MOCK_DOCUMENTS 3 + MOCK_CHUNKS 3)
