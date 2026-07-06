@@ -16,8 +16,8 @@ export default function StartPage() {
     <Card title="快速开始">
       <Steps
         current={0}
-        direction="vertical"
-        items={STEPS.map((s) => ({ title: s.title, description: s.desc }))}
+        orientation="vertical"
+        items={STEPS.map((s) => ({ title: s.title, content: s.desc }))}
       />
       <div style={{ marginTop: 16 }}>
         {STEPS.map((s) => (

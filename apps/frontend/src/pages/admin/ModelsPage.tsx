@@ -49,7 +49,7 @@ export default function ModelsPage() {
         {testMsg && <span style={{ color: "#52c41a" }}>{testMsg}</span>}
       </Space>
       <Table dataSource={MOCK_MODELS} columns={columns} rowKey="id" pagination={false} />
-      <Drawer title="新接入模型" open={open} onClose={() => setOpen(false)} width={420}>
+      <Drawer title="新接入模型" open={open} onClose={() => setOpen(false)} size={420}>
         <Form layout="vertical">
           <Form.Item label="类型" name="type">
             <Select

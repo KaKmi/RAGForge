@@ -45,7 +45,8 @@ async function setToken(page) {
   await page.evaluate(() => localStorage.setItem("token", "qa-stub-token"));
 }
 
-const browser = await chromium.launch();
+// 用系统 Chrome（channel:'chrome'）避免从 CDN 下载 chromium（上海网络拉不动 playwright CDN）。
+const browser = await chromium.launch({ channel: "chrome" });
 
 try {
   // ---------- AC 3: 未登录访问 /admin → 重定向 /login ----------

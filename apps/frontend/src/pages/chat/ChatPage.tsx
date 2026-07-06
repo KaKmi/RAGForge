@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Input, List } from "antd";
+import { Button, Input } from "antd";
 import type { ChatCitation, Message } from "@codecrush/contracts";
 import { ChatLayout } from "../../app/ChatLayout";
 import { openChatStream } from "../../api/sse";
@@ -93,11 +93,16 @@ export default function ChatPage() {
   return (
     <ChatLayout
       conversations={
-        <List
-          size="small"
-          dataSource={MOCK_CONVERSATIONS}
-          renderItem={(c) => <List.Item>{c.title}</List.Item>}
-        />
+        <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+          {MOCK_CONVERSATIONS.map((c) => (
+            <li
+              key={c.id}
+              style={{ padding: "8px 12px", borderBottom: "1px solid #f0f0f0" }}
+            >
+              {c.title}
+            </li>
+          ))}
+        </ul>
       }
       messages={
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -144,15 +149,16 @@ export default function ChatPage() {
         </div>
       }
       citations={
-        <List
-          size="small"
-          dataSource={citations}
-          renderItem={(c) => (
-            <List.Item>
+        <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+          {citations.map((c, i) => (
+            <li
+              key={i}
+              style={{ padding: "8px 12px", borderBottom: "1px solid #f0f0f0" }}
+            >
               [{c.n}] {c.doc} · {c.section}（{c.score}）
-            </List.Item>
-          )}
-        />
+            </li>
+          ))}
+        </ul>
       }
     />
   );

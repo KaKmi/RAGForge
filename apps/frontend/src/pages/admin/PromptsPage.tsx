@@ -68,9 +68,9 @@ export default function PromptsPage() {
         title={current?.name ?? "版本管理"}
         open={open}
         onClose={() => setOpen(false)}
-        width={640}
+        size={640}
       >
-        <Space direction="vertical" style={{ width: "100%" }}>
+        <Space orientation="vertical" style={{ width: "100%" }}>
           <Table
             dataSource={versions}
             columns={versionColumns}

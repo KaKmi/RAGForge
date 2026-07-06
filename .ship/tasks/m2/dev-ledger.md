@@ -198,3 +198,40 @@ Story 6: "前端 API client + SSE 骨架" — complete (no individual review —
   Concerns:
     - typed client 函数 M2 未被任何页面调用（页面用 mock），仅 sse 被 ChatPage 调用。M3+ 接真实后端时首次验证路径与 schema 形状。
     - ChatPage 流式渲染每 token setState（10 次/mock 流），M8 真实编排 token 多时考虑批量或 requestAnimationFrame（非 M2 范围）。
+
+Story 7: "Vite proxy + 集成验证" — complete (no individual review — non-security; covered by final review)
+  Commits: b85d8c4
+  Files (MODIFIED):
+    - apps/frontend/vite.config.ts (proxy 追加 /api → :3000；resolve.alias 将 @codecrush/contracts 指向 packages/contracts/src/index.ts——修 dev 下 CJS barrel 命名导出失败：Vite dev 直接服务 dist/index.js 的 __exportStar CJS，浏览器原生 ESM 报 "does not provide an export named 'LoginResponseSchema/ChatRequestSchema'"，导致 LoginPage/ChatPage 白屏。alias 到源码后 Vite 逐文件编译 ESM TS，命名导出可见；backend 仍消费 dist)
+    - apps/frontend/src/pages/login/LoginPage.tsx (initialValues demo@codecrush.bot/demo12345 → demo@codecrush.local/CodeCrushDemo123!——对齐 backend seed.ts，原默认凭据登录 401)
+    - apps/frontend/src/pages/admin/AgentsPage.tsx (Drawer width→size；Space direction→orientation)
+    - apps/frontend/src/pages/admin/DocumentsPage.tsx (Space direction→orientation)
+    - apps/frontend/src/pages/admin/ModelsPage.tsx (Drawer width→size)
+    - apps/frontend/src/pages/admin/PromptsPage.tsx (Drawer width→size；Space direction→orientation)
+    - apps/frontend/src/pages/admin/StartPage.tsx (Steps direction→orientation；items.description→content)
+    - apps/frontend/src/pages/chat/ChatPage.tsx (antd List 弃用→原生 ul/li 渲染会话列表与引用列表)
+    - .ship/tasks/m2/qa/qa-script.mjs (chromium.launch({channel:"chrome"}) 避免上海网络拉 playwright CDN)
+  Files (NEW):
+    - .ship/tasks/m2/qa/login-check.mjs (AC2 端到端 login 浏览器验证：未登录重定向 + 表单渲染 + 提交凭据 → 存 token → 跳 /admin)
+    - .ship/tasks/m2/handoff-story7.md (Story 7 上下文交接文档)
+  Produces: Vite proxy /api 转发后端（SSE 直通无缓冲）；contracts CJS interop 修复（dev 下 LoginPage/ChatPage 可用）；antd 6 弃用 API 全部迁移（QA 0 console error）；LoginPage 默认凭据对齐后端 seed
+  Tests: 全量 8/8 tasks green (frontend 16 / backend 60 / contracts 52)；lint 0；build ok
+  Manual acceptance (10 AC 全验证):
+    - AC1 15 屏渲染：QA 18/18 passed（Playwright 逐屏点开 + console 错误检查，0 issue）
+    - AC2 login → token → /admin：login-check.mjs 浏览器端到端通过（redirectUrl=/login, emailInputRendered=1, afterLoginUrl=/admin, tokenStored=JWT, brandRendered=1）
+    - AC3 未登录重定向：QA + login-check 双重验证
+    - AC4 OpenAPI：curl :5173/api/docs-json（经 proxy）返回 27 paths，含全部新域端点（agents/models/knowledge-bases/documents/chunks/retrieval/prompts/chat/conversations）
+    - AC5 lint 0 boundary 违规
+    - AC6 test 全绿
+    - AC7 Sider 7 项导航：QA 点击「模型接入」→ /admin/models
+    - AC8 Chat 三栏：QA 验证会话列表/聊天/引用三栏渲染
+    - AC9 SSE 端到端：curl :5173/api/chat（经 proxy，Bearer JWT）返回 token×10 → citation → done 事件流，无缓冲
+    - AC10 Zod 管道 400：backend e2e zod-pipe.e2e.spec.ts + skeleton.e2e.spec.ts（Story 3 已覆盖）
+  Design notes:
+    - contracts CJS interop 选 resolve.alias（指向源码）而非 optimizeDeps.include：前者 dev/build/test 一致消费 ESM 源码，HMR 对 contracts 改动即时生效；后者仅 dev 预打包转换，build 仍走 rollup CJS 互操作（虽能工作但两套路径）。backend 不受影响（NestJS CJS 互作正常）。
+    - antd 6 Drawer size prop 接受 number|string|sizeType（Drawer.d.ts:17），width→size={480} 合法保留自定义宽度。Steps/Space orientation 为 'horizontal'|'vertical' 枚举。List 弃用改原生 ul/li（M3+ 视觉打磨可换 Table/自定义列表）。
+    - LoginPage 默认凭据对齐 seed.ts 默认值（demo@codecrush.local / CodeCrushDemo123!，见 .env.example DEMO_USER_PASSWORD）。
+  Concerns:
+    - /favicon.ico 返回 404（项目无 favicon，浏览器自动请求，非 AC、非阻塞）。M3+ 视觉打磨可补。
+    - typed client（getAgents 等）M2 仍无页面调用（M3+ 接真后端首次验证）。
+    - 工作树中部分修复（antd 弃用迁移、vite alias、qa-script chrome channel）为本会话期间并行出现并经我核验一致后纳入 Story 7 提交（test/lint/build/QA 全绿）。

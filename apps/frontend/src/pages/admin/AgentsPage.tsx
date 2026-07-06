@@ -45,10 +45,10 @@ export default function AgentsPage() {
         title={current?.name ?? "编辑 Agent"}
         open={open}
         onClose={() => setOpen(false)}
-        width={480}
+        size={480}
       >
         {current && (
-          <Space direction="vertical" style={{ width: "100%" }}>
+          <Space orientation="vertical" style={{ width: "100%" }}>
             <div>状态：{current.status}</div>
             <div>生成模型：{current.genModelId}</div>
             <div>轻量模型：{current.lightModelId ?? "—"}</div>

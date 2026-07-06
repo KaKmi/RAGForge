@@ -32,7 +32,7 @@ export default function DocumentsPage() {
       key: "status",
       width: 160,
       render: (_, r) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <StatusTag status={r.status} label={r.status === "ingest" ? r.stage : undefined} />
           {r.status === "failed" && r.error && (
             <span style={{ color: "#ff4d4f", fontSize: 12 }}>{r.error}</span>

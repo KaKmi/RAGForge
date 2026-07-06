@@ -53,7 +53,7 @@ export default function LoginPage() {
         <Form<LoginForm>
           layout="vertical"
           onFinish={onFinish}
-          initialValues={{ email: "demo@codecrush.bot", password: "demo12345" }}
+          initialValues={{ email: "demo@codecrush.local", password: "CodeCrushDemo123!" }}
         >
           <Form.Item
             label="邮箱"
