@@ -9,11 +9,24 @@ export default tseslint.config(
       "**/.turbo/**",
       "apps/backend/drizzle/**",
       "**/*.config.*",
+      // 前端 UI 原型参考目录（非源码，仅供页面还原参考，见 AGENTS.md「原型参考」）
+      "RAG知识库问答系统设计/**",
     ],
   },
   // 让 ESLint flat config 处理 .ts/.tsx（默认只处理 .js/.mjs/.cjs）
   { files: ["**/*.{ts,tsx}"] },
   ...tseslint.configs.recommended,
+  // 允许 `_` 前缀显式标注「已知未用」（stub/占位签名常见，如 M2 skeleton service 忽略入参）
+  // 放在 recommended 之后以覆盖其默认无 pattern 的配置；边界规则（no-restricted-imports）不受影响
+  {
+    files: ["**/*.{ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
+      ],
+    },
+  },
   // Boundary ①：frontend 只能 import @codecrush/contracts 与 @codecrush/otel-conventions（纯常量）
   {
     files: ["apps/frontend/**/*.{ts,tsx}"],

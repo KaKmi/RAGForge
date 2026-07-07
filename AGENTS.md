@@ -57,6 +57,12 @@ infra/                   docker-compose（postgres+pgvector / clickhouse / otel-
 - **Conventional Commits**，按 story/小步提交。
 - 提交或推送仅在被要求时进行；默认分支上先开分支。
 
+## 原型参考（CodeCrushBot.dc.html）
+
+- 仓库根的 `CodeCrushBot.dc.html` 是前端 UI 原型（单文件 HTML，~256KB），仅供页面视觉/交互 1:1 还原参考。M2 已据此还原 15 屏，后续 M7/M10 等页面继续参考。
+- **不进仓库**（已在 `.gitignore`）：体积大、非源码、易变；开发者本地持有即可。
+- **不进打包/构建**：纯参考文件，`apps/frontend` 代码不得 import 或引用它。
+
 ## 已知工程细节（M0 实装）
 
 - 版本较新：Zod 4 / TS 6 / NestJS 11 / antd 6 / Vite 8 / ESLint 10 / drizzle 0.45。

@@ -140,7 +140,7 @@ rag-service/
 
 ### 契约
 
-REST DTO 全部是 `packages/contracts` 的 Zod schema。后端控制器用 `ZodValidationPipe`(nestjs-zod),前端 `z.infer` 拿类型,OpenAPI 由 `zod-to-openapi` 生成。**一份 schema 同时喂"校验 + 类型 + 文档"**。OTLP 属性名(`gen_ai.*`/`rag.*`)放在 `packages/otel-conventions`，前端 Trace UI、后端埋点与 ClickHouse VIEW 共享同一词典防拼错。
+REST DTO 全部是 `packages/contracts` 的 Zod schema。后端控制器用 `ZodValidationPipe`(nestjs-zod),前端 `z.infer` 拿类型,OpenAPI 由 `nestjs-zod` 自带的 `@nestjs/swagger` 集成生成（`cleanupOpenApiDoc`，不再单独引入 `zod-to-openapi`）。**一份 schema 同时喂"校验 + 类型 + 文档"**。OTLP 属性名(`gen_ai.*`/`rag.*`)放在 `packages/otel-conventions`，前端 Trace UI、后端埋点与 ClickHouse VIEW 共享同一词典防拼错。
 
 ### 持久化
 

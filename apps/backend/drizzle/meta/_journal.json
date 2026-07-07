@@ -15,6 +15,13 @@
       "when": 1783327811140,
       "tag": "0001_spooky_ultimatum",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783393516384,
+      "tag": "0002_vengeful_chronomancer",
+      "breakpoints": true
     }
   ]
 }

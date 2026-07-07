@@ -25,8 +25,8 @@ draft——随 M1 实现落地并对照校验后升 current。选型已经 /ship
 
 **In-scope（M1）**
 - users 实体（Drizzle 0001 迁移）+ demo seed（显式命令）
-- `POST /auth/login`、`GET /users/me`、`PATCH /users/me/password`
-- 全局 `JwtAuthGuard` + `@Public()`（`platform/security`）；`/health`、`/auth/login` 公开，`/traces/*` 收保护
+- `POST /api/auth/login`、`GET /api/users/me`、`PATCH /api/users/me/password`
+- 全局 `JwtAuthGuard` + `@Public()`（`platform/security`）；`/health`、`/api/auth/login` 公开，`/api/traces/*` 收保护
 
 **Out-of-scope（有意排除）**
 - RBAC/多租户（M12）、注册/邀请/找回密码、refresh token、登出/token 吊销、限流、前端登录页（M2）
@@ -36,7 +36,7 @@ draft——随 M1 实现落地并对照校验后升 current。选型已经 /ship
 2. `JWT_SECRET` 必填 min32、无默认值——缺失即启动失败，宁可不起不裸奔。
 3. seed 永不随应用启动执行；幂等 = 已存在则零变更（不覆盖密码）。
 4. 新增路由默认在保护圈内（default-deny）；公开必须显式 `@Public()`。
-5. `/traces/*` 不得为保脚本绿而标 @Public——消费者（verify 脚本）改为真登录。
+5. `/api/traces/*` 不得为保脚本绿而标 @Public——消费者（verify 脚本）改为真登录。
 
 ## 关键数字（back-of-envelope）
 
@@ -52,7 +52,7 @@ draft——随 M1 实现落地并对照校验后升 current。选型已经 /ship
         不可信                    信任边界①                可信（进程内）              信任边界②
 ┌──────────────┐   HTTPS+JWT   ┌─────────────────────────────────────────┐   内网/本地   ┌──────────┐
 │   浏览器/CLI  │ ────────────► │  NestJS: JwtAuthGuard(全局 default-deny) │ ───────────► │ Postgres │
-│(含 verify 脚本)│              │  @Public 豁免: /health, /auth/login       │              │  users 表 │
+│(含 verify 脚本)│              │  @Public 豁免: /health, /api/auth/login       │              │  users 表 │
 └──────────────┘               │  request.user = {id,email} ← JWT 验签     │              └──────────┘
                                └─────────────────────────────────────────┘
   秘密所在: JWT_SECRET(env, fail-fast) · password_hash(仅存 DB, service 层出口即消毒)
@@ -65,7 +65,7 @@ draft——随 M1 实现落地并对照校验后升 current。选型已经 /ship
 ### 流 1 — 登录签发 token
 
 ```
-浏览器 ──POST /auth/login {email,password}──► AuthController(@Public)
+浏览器 ──POST /api/auth/login {email,password}──► AuthController(@Public)
   │  LoginRequestSchema.parse ──畸形──► 400
   ▼
 AuthService.login ──► UsersService.validateCredentials
@@ -97,7 +97,7 @@ JwtService.signAsync({sub,email}, HS256, JWT_SECRET, 12h)
 ### 流 3 — 改自己密码
 
 ```
-PATCH /users/me/password ──guard──► UsersController
+PATCH /api/users/me/password ──guard──► UsersController
   │ ChangeOwnPasswordRequestSchema.parse ──畸形──► 400
   ▼
 UsersService.changeOwnPassword(req.user.id, current, new)
@@ -131,7 +131,7 @@ pnpm db:seed ──► tsx src/db/seed.ts
 
 ## Rollout & operations
 
-上线 = `pnpm db:migrate`（0001 纯增量建表）+ `pnpm db:seed` + .env 补 `JWT_SECRET`。回滚 = 回退代码（表留存无害）。"在工作"信号：demo 登录 200 + 无 token 打 `/traces/hello` 得 401；M0.5 的 `observability:verify`（已改带登录）即持续冒烟。
+上线 = `pnpm db:migrate`（0001 纯增量建表）+ `pnpm db:seed` + .env 补 `JWT_SECRET`。回滚 = 回退代码（表留存无害）。"在工作"信号：demo 登录 200 + 无 token 打 `/api/traces/hello` 得 401；M0.5 的 `observability:verify`（已改带登录）即持续冒烟。
 
 ## Alternatives considered
 

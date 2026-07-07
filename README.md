@@ -76,10 +76,10 @@ pnpm observability:verify                 # 另开终端
 
 期望输出形如 `{"status":"ok","traceId":"<32位hex>","attempts":N}`。该验证走完整链路：
 `manual.hello` span → OTel Collector → ClickHouse `otel_traces`（exporter 建表）→
-`codecrush_trace_spans` 防腐 VIEW → `GET /traces/:traceId`；不能由内存或 Postgres 伪造。
+`codecrush_trace_spans` 防腐 VIEW → `GET /api/traces/:traceId`；不能由内存或 Postgres 伪造。
 Collector/ClickHouse 不可用时后端与 `/health` 不受影响（埋点只降级、不阻塞）。
 
-> M1 起 `/traces/*` 需要登录：verify 脚本会自动用 demo 账号（`demo@codecrush.local` / `DEMO_USER_PASSWORD`，默认 `CodeCrushDemo123!`）换取 token；`GET /health` 保持公开。
+> M1 起 `/api/traces/*` 需要登录：verify 脚本会自动用 demo 账号（`demo@codecrush.local` / `DEMO_USER_PASSWORD`，默认 `CodeCrushDemo123!`）换取 token；`GET /health` 保持公开。
 
 ## 常用命令
 

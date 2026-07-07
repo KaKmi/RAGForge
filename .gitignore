@@ -7,3 +7,7 @@ dist/
 !.env.example
 coverage/
 .DS_Store
+
+# 前端 UI 原型参考（单文件 HTML，仅供页面还原参考，不进仓库/打包）
+CodeCrushBot.dc.html
+RAG知识库问答系统设计

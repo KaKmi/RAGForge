@@ -1,8 +1,10 @@
 import { type INestApplication } from "@nestjs/common";
-import { APP_GUARD } from "@nestjs/core";
+import { APP_GUARD, APP_PIPE } from "@nestjs/core";
 import { JwtModule } from "@nestjs/jwt";
+import { ZodValidationPipe } from "nestjs-zod";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
+import { applyGlobalConfig } from "../src/app/app-bootstrap";
 import { AuthController } from "../src/modules/auth/auth.controller";
 import { AuthService } from "../src/modules/auth/auth.service";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
@@ -34,6 +36,7 @@ describe("global guard HTTP matrix", () => {
       providers: [
         AuthService,
         { provide: APP_GUARD, useClass: JwtAuthGuard },
+        { provide: APP_PIPE, useClass: ZodValidationPipe },
         {
           provide: UsersService,
           useValue: {
@@ -53,6 +56,7 @@ describe("global guard HTTP matrix", () => {
       ],
     }).compile();
     app = ref.createNestApplication();
+    applyGlobalConfig(app); // 与 main.ts 一致：/api 前缀（/health 除外）
     await app.init();
   });
 
@@ -65,28 +69,28 @@ describe("global guard HTTP matrix", () => {
   });
 
   it("无 token：/users/me、/traces/hello、/traces/:id → 401", async () => {
-    await request(app.getHttpServer()).get("/users/me").expect(401);
-    await request(app.getHttpServer()).post("/traces/hello").expect(401);
+    await request(app.getHttpServer()).get("/api/users/me").expect(401);
+    await request(app.getHttpServer()).post("/api/traces/hello").expect(401);
     await request(app.getHttpServer())
-      .get("/traces/391dae938234560b16bb63f51501cb6f")
+      .get("/api/traces/391dae938234560b16bb63f51501cb6f")
       .expect(401);
   });
 
   it("坏 token → 401", async () => {
     await request(app.getHttpServer())
-      .get("/users/me")
+      .get("/api/users/me")
       .set("Authorization", "Bearer garbage")
       .expect(401);
   });
 
   it("登录矩阵：畸形 400 / 错凭据 401 / 正确 200", async () => {
-    await request(app.getHttpServer()).post("/auth/login").send({ email: "nope" }).expect(400);
+    await request(app.getHttpServer()).post("/api/auth/login").send({ email: "nope" }).expect(400);
     await request(app.getHttpServer())
-      .post("/auth/login")
+      .post("/api/auth/login")
       .send({ email: "demo@codecrush.local", password: "wrong" })
       .expect(401);
     const res = await request(app.getHttpServer())
-      .post("/auth/login")
+      .post("/api/auth/login")
       .send({ email: "demo@codecrush.local", password: "CodeCrushDemo123!" })
       .expect(200);
     expect(res.body.tokenType).toBe("Bearer");
@@ -94,7 +98,7 @@ describe("global guard HTTP matrix", () => {
     expect(JSON.stringify(res.body)).not.toContain("passwordHash");
 
     await request(app.getHttpServer())
-      .get("/users/me")
+      .get("/api/users/me")
       .set("Authorization", `Bearer ${res.body.accessToken}`)
       .expect(200);
   });
