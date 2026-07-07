@@ -29,8 +29,8 @@ describe("PROBE_BUILDERS 表完整性", () => {
         expect(PROBE_BUILDERS[`${type}:${protocol}`]).toBeDefined();
       }
     }
-    // 表里也没有多余项（12 = 3+5+4）
-    expect(Object.keys(PROBE_BUILDERS)).toHaveLength(12);
+    // 表里也没有多余项（13 = 3+5+5）
+    expect(Object.keys(PROBE_BUILDERS)).toHaveLength(13);
   });
 });
 
@@ -118,6 +118,22 @@ describe("ProtocolDispatchAdapter.testConnection", () => {
     const { url, body } = lastCall(fetchMock);
     expect(url).toBe("http://infra.internal:8080/rerank");
     expect(body).toMatchObject({ query: "ping", texts: ["ping", "pong"] });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rerank+openai_compat → /reranks 扁平体（阿里云 compatible-api 形态）", async () => {
+    fetchMock.mockResolvedValue(okJson({ results: [] }));
+    const r = await adapter.testConnection(
+      cfg({
+        type: "rerank",
+        protocol: "openai_compat",
+        baseUrl: "https://ws-123.cn-beijing.maas.aliyuncs.com/compatible-api/v1",
+        name: "qwen3-rerank",
+      }),
+    );
+    const { url, body } = lastCall(fetchMock);
+    expect(url).toBe("https://ws-123.cn-beijing.maas.aliyuncs.com/compatible-api/v1/reranks");
+    expect(body).toMatchObject({ model: "qwen3-rerank", query: "ping", documents: ["ping", "pong"], top_n: 1 });
     expect(r.ok).toBe(true);
   });
 

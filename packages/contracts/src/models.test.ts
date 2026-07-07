@@ -48,10 +48,10 @@ describe("M3 model contracts (协议化)", () => {
         .protocol,
     ).toBe("dashscope");
   });
-  it("PROTOCOLS_BY_TYPE 覆盖三类且组合数为 3+5+4", () => {
+  it("PROTOCOLS_BY_TYPE 覆盖三类且组合数为 3+5+5", () => {
     expect(PROTOCOLS_BY_TYPE.llm).toHaveLength(3);
     expect(PROTOCOLS_BY_TYPE.embedding).toHaveLength(5);
-    expect(PROTOCOLS_BY_TYPE.rerank).toHaveLength(4);
+    expect(PROTOCOLS_BY_TYPE.rerank).toHaveLength(5); // 含 openai_compat（/v1/reranks 扁平体）
   });
   it("ModelProviderSchema 要求 apiKeyMasked/params、无 apiKey 字段", () => {
     const read = {

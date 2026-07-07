@@ -6,7 +6,11 @@ import type {
   TestModelResult,
 } from "../ports/model-provider.port";
 import type { ProbeBuilder } from "./protocols/types";
-import { openaiCompatChatProbe, openaiCompatEmbeddingProbe } from "./protocols/openai-compat";
+import {
+  openaiCompatChatProbe,
+  openaiCompatEmbeddingProbe,
+  openaiCompatRerankProbe,
+} from "./protocols/openai-compat";
 import { anthropicChatProbe } from "./protocols/anthropic";
 import { geminiChatProbe, geminiEmbeddingProbe } from "./protocols/gemini";
 import { cohereEmbeddingProbe, cohereRerankProbe } from "./protocols/cohere";
@@ -28,6 +32,7 @@ export const PROBE_BUILDERS: Record<`${ModelType}:${ModelProtocol}` & string, Pr
   "embedding:cohere": cohereEmbeddingProbe,
   "embedding:jina": jinaEmbeddingProbe,
   "rerank:self_hosted": selfHostedRerankProbe,
+  "rerank:openai_compat": openaiCompatRerankProbe,
   "rerank:cohere": cohereRerankProbe,
   "rerank:jina": jinaRerankProbe,
   "rerank:dashscope": dashscopeRerankProbe,

@@ -20,7 +20,9 @@ export type ModelProtocol = z.infer<typeof ModelProtocolSchema>;
 export const PROTOCOLS_BY_TYPE: Record<ModelType, readonly ModelProtocol[]> = {
   llm: ["openai_compat", "anthropic", "gemini"],
   embedding: ["self_hosted", "openai_compat", "gemini", "cohere", "jina"],
-  rerank: ["self_hosted", "cohere", "jina", "dashscope"],
+  // rerank 的 openai_compat = /v1/reranks 扁平体（阿里云百炼 compatible-api、其他兼容网关）；
+  // dashscope = 原生 text-rerank 形态（input/parameters 包裹，响应 output.results）
+  rerank: ["self_hosted", "openai_compat", "cohere", "jina", "dashscope"],
 } as const;
 
 /** 组合合法性判定：后端 service 在 PATCH 单改 type/protocol 时结合存量行复用 */
