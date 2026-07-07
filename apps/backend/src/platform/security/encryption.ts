@@ -25,8 +25,10 @@ export class EncryptionService {
   }
 
   decrypt(envelope: string): string {
-    const [version, ivB64, tagB64, ctB64] = envelope.split(":");
-    if (version !== "v1" || !ivB64 || !tagB64 || !ctB64) {
+    const parts = envelope.split(":");
+    const [version, ivB64, tagB64, ctB64] = parts;
+    // ctB64 允许为空串（AES-GCM 支持零长明文，encrypt("") 产出 `v1:<iv>:<tag>:`）
+    if (parts.length !== 4 || version !== "v1" || !ivB64 || !tagB64 || ctB64 === undefined) {
       throw new Error("unsupported ciphertext envelope");
     }
     const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(ivB64, "base64"));

@@ -17,6 +17,10 @@ describe("EncryptionService (AES-256-GCM)", () => {
     expect(enc.encrypt("same")).not.toBe(enc.encrypt("same"));
   });
 
+  it("空明文往返一致（AES-GCM 零长明文合法）", () => {
+    expect(enc.decrypt(enc.encrypt(""))).toBe("");
+  });
+
   it("错误 key 解密抛错（GCM auth 失败）", () => {
     const blob = enc.encrypt("secret");
     expect(() => new EncryptionService(OTHER_KEY).decrypt(blob)).toThrow();
