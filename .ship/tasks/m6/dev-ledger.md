@@ -25,7 +25,7 @@
 - 注：tsc 此时红（M2 prompts.service mock 数据不满足 Story 1 新契约），属契约演进级联，Story 3 修。
 
 ### Story 3 — PromptsRepository + PromptsService 重写 + service spec
-- Commit: `1c24004` `feat(backend): rewrite PromptsService with extractVars/actorEmail/promote + repository`
+- Commit: `48c4cf8` `feat(backend): rewrite PromptsService with extractVars/actorEmail/promote + repository`
 - 改动：
   - `apps/backend/src/modules/prompts/prompts.repository.ts`（NEW）：`@Inject(DRIZZLE) db: DB` + findPrompts/findPromptById/insertPrompt/findVersions/findVersionById/insertVersion/findProdVersion（保留供 M7/M8）/`publishVersion` 单事务（archive 旧 prod → set 新 prod → 更新 prompt.currentVersionId/updatedBy/updatedAt）。
   - `apps/backend/src/modules/prompts/prompts.service.ts`（重写）：注入 repo（不注入 db，createPrompt 无 tx 走两步 repo 调用，对齐 users.service 范式）；`extractVars(req.body)` 抽变量、`actorEmail` 填 author/updatedBy；`createVersion` max+1 + unique 撞号 retry 一次（D8）；`promote` 委托 repo.publishVersion，已 prod → 409（D15），版本不存在/不属于 → 404。`toPrompt/toVersion` Date → ISO。
@@ -37,6 +37,19 @@
   - service 不注入 db（dev-context 决策：createPrompt 无 tx 走 repo，promote 事务在 repo 内）。
 - 验证：`pnpm --filter @codecrush/backend exec jest prompts.service` → 12 passed。
 - 注：tsc 仍红（M2 controller 调 2-arg createVersion，签名变了），e2e prompts 块红（inMemoryRepo 未 override + 依赖 mock p1），属级联，Story 4 修。
+
+### Story 4 — Controller 扩展 + e2e 重写
+- Commit: （本提交）
+- 改动：
+  - `apps/backend/src/modules/prompts/prompts.controller.ts`（重写）：加 `POST /`（createPrompt）、`POST /:id/versions/:versionId/publish`、`POST /:id/versions/:versionId/rollback` 三端点（D2 双端点委托同一 promote）；`@Req() req: AuthedRequest`（`{ user: AuthenticatedUser }`）取 `req.user.email` 传 service（D6）；所有方法改 async/Promise。
+  - `apps/backend/test/skeleton.e2e.spec.ts`：overrideProvider(PromptsRepository).useValue(inMemoryPromptsRepo)（DB-free）；inMemoryPromptsRepo 维护两数组 + 8 方法（含 publishVersion 单事务语义：archive 旧 prod → set 新 prod → 刷 prompt.currentVersionId/updatedBy/updatedAt）；prompts 块重写为 7 测试（建 prompt → v1 draft → publish v1 → 已 prod 409 → v2 publish + v1 archived + updatedBy 推进 → rollback v1 → D6 拒绝伪造 author）；OpenAPI 块加 `POST /api/prompts`、`publish`、`rollback` 三 path 断言。
+  - `apps/backend/src/modules/prompts/prompts.module.ts`：无改（Story 3 已加 PromptsRepository providers）。
+- 决策：
+  - inMemoryRepo insertPrompt/insertVersion 显式构造 row（不 spread），避免 plan 的 `...row` 覆盖 id/createdAt 风险。
+  - D6 测试：body 带 `author:"forged@evil.com"`，ZodValidationPipe strip 未知字段，service 用 JWT email → res.body.author === PRINCIPAL.email。
+  - AuthedRequest = `{ user: AuthenticatedUser }`（最小结构类型，guard 保证 user 已挂）。
+- 验证：tsc 0 errors；jest 14 suites / 76 passed（含 prompts 块 7 + service spec 12 + OpenAPI 断言）；lint 0。
+- 级联红全修复：Story 3 的 tsc/e2e 红在 Story 4 清零。
 
 ### 数据丢失与恢复（事故记录）
 - 另一 M3 开发窗口暂停时跑了一次 `git reset`（reflog `HEAD@{0}: reset: moving to HEAD`），把 Story 1 全部未提交工作（prompts.ts/index.ts/m2-schemas.test.ts 改动 + 新建 prompt-template.ts/test）连同 M3 WIP 一起冲掉，且未建 stash。

@@ -28,6 +28,8 @@ import { IngestionModule } from "../src/modules/ingestion/ingestion.module";
 import { KnowledgeBasesModule } from "../src/modules/knowledge-bases/knowledge-bases.module";
 import { ModelsModule } from "../src/modules/models/models.module";
 import { PromptsModule } from "../src/modules/prompts/prompts.module";
+import { PromptsRepository } from "../src/modules/prompts/prompts.repository";
+import type { NewPrompt, NewPromptVersion, PromptRow, PromptVersionRow } from "../src/modules/prompts/schema";
 import { RetrievalModule } from "../src/modules/retrieval/retrieval.module";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 
@@ -49,6 +51,67 @@ const validCreateAgent = {
   threshold: 0.25,
   multi: false,
   fallbackHuman: false,
+};
+
+// M6 PromptsRepository 内存实现（DB-free，对齐 skeleton.e2e 现状）
+const inMemoryPrompts: PromptRow[] = [];
+const inMemoryVersions: PromptVersionRow[] = [];
+const inMemoryPromptsRepo = {
+  findPrompts: async (): Promise<PromptRow[]> => inMemoryPrompts,
+  findPromptById: async (id: string): Promise<PromptRow | undefined> =>
+    inMemoryPrompts.find((p) => p.id === id),
+  insertPrompt: async (row: NewPrompt): Promise<PromptRow> => {
+    const r: PromptRow = {
+      id: `p${inMemoryPrompts.length + 1}`,
+      name: row.name,
+      node: row.node,
+      currentVersionId: row.currentVersionId ?? null,
+      updatedBy: row.updatedBy,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    inMemoryPrompts.push(r);
+    return r;
+  },
+  findVersions: async (promptId: string): Promise<PromptVersionRow[]> =>
+    inMemoryVersions.filter((v) => v.promptId === promptId),
+  findVersionById: async (id: string): Promise<PromptVersionRow | undefined> =>
+    inMemoryVersions.find((v) => v.id === id),
+  insertVersion: async (row: NewPromptVersion): Promise<PromptVersionRow> => {
+    const r: PromptVersionRow = {
+      id: `pv${inMemoryVersions.length + 1}`,
+      promptId: row.promptId,
+      version: row.version,
+      body: row.body,
+      variables: row.variables ?? [],
+      note: row.note ?? null,
+      author: row.author,
+      status: row.status ?? "draft",
+      createdAt: new Date(),
+    };
+    inMemoryVersions.push(r);
+    return r;
+  },
+  findProdVersion: async (promptId: string): Promise<PromptVersionRow | undefined> =>
+    inMemoryVersions.find((v) => v.promptId === promptId && v.status === "prod"),
+  publishVersion: async (
+    promptId: string,
+    versionId: string,
+    actorEmail: string,
+  ): Promise<PromptVersionRow> => {
+    for (const v of inMemoryVersions) {
+      if (v.promptId === promptId && v.status === "prod") v.status = "archived";
+    }
+    const v = inMemoryVersions.find((x) => x.id === versionId);
+    if (!v) throw new Error(`version ${versionId} not found`);
+    v.status = "prod";
+    const p = inMemoryPrompts.find((x) => x.id === promptId);
+    if (!p) throw new Error(`prompt ${promptId} not found`);
+    p.currentVersionId = versionId;
+    p.updatedBy = actorEmail;
+    p.updatedAt = new Date();
+    return v;
+  },
 };
 
 describe("M2 domain skeleton", () => {
@@ -74,7 +137,10 @@ describe("M2 domain skeleton", () => {
         { provide: APP_GUARD, useClass: JwtAuthGuard },
         { provide: APP_PIPE, useClass: ZodValidationPipe },
       ],
-    }).compile();
+    })
+      .overrideProvider(PromptsRepository)
+      .useValue(inMemoryPromptsRepo)
+      .compile();
     app = ref.createNestApplication();
     applyGlobalConfig(app);
     setupSwagger(app);
@@ -245,26 +311,124 @@ describe("M2 domain skeleton", () => {
   });
 
   describe("prompts", () => {
-    it("GET / → 200 + schema", async () => {
-      const res = await request(app.getHttpServer()).get("/api/prompts").set(auth()).expect(200);
-      for (const p of res.body) expect(() => PromptSchema.parse(p)).not.toThrow();
-    });
-    it("GET /api/prompts/p1/versions → 200 + schema", async () => {
+    let promptId: string;
+    let v1Id: string;
+    let v2Id: string;
+
+    it("POST /api/prompts → 201 + currentVersionId:null + updatedBy=JWT email", async () => {
       const res = await request(app.getHttpServer())
-        .get("/api/prompts/p1/versions")
+        .post("/api/prompts")
+        .set(auth())
+        .send({ name: "测试 Prompt", node: "rewrite", body: "你好 {query}", note: "n" })
+        .expect(201);
+      expect(() => PromptSchema.parse(res.body)).not.toThrow();
+      expect(res.body.currentVersionId).toBeNull();
+      expect(res.body.updatedBy).toBe(PRINCIPAL.email);
+      expect(res.body.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      promptId = res.body.id;
+    });
+
+    it("GET /api/prompts/:id/versions → v1 draft（variables 含 query，author 来自 JWT）", async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/prompts/${promptId}/versions`)
         .set(auth())
         .expect(200);
-      for (const v of res.body) expect(() => PromptVersionSchema.parse(v)).not.toThrow();
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body).toHaveLength(1);
+      const v1 = res.body[0];
+      expect(() => PromptVersionSchema.parse(v1)).not.toThrow();
+      expect(v1.status).toBe("draft");
+      expect(v1.version).toBe(1);
+      expect(v1.variables).toContain("query");
+      expect(v1.author).toBe(PRINCIPAL.email);
+      expect(v1.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      v1Id = v1.id;
     });
-    it("POST /api/prompts/p1/versions → 201", async () => {
+
+    it("POST publish v1 → 200 + v1 prod + currentVersionId 指向 v1", async () => {
       const res = await request(app.getHttpServer())
-        .post("/api/prompts/p1/versions")
+        .post(`/api/prompts/${promptId}/versions/${v1Id}/publish`)
         .set(auth())
-        .send({ body: "新版本...", variables: ["query"] })
+        .expect(200);
+      expect(res.body.status).toBe("prod");
+      const p = await request(app.getHttpServer())
+        .get(`/api/prompts/${promptId}`)
+        .set(auth())
+        .expect(200);
+      expect(p.body.currentVersionId).toBe(v1Id);
+    });
+
+    it("POST publish v1（已 prod）→ 409（D15）", async () => {
+      await request(app.getHttpServer())
+        .post(`/api/prompts/${promptId}/versions/${v1Id}/publish`)
+        .set(auth())
+        .expect(409);
+    });
+
+    it("建 v2 → publish v2 → 200 + v2 prod + v1 archived + updatedBy 推进（D2 + D16）", async () => {
+      const created = await request(app.getHttpServer())
+        .post(`/api/prompts/${promptId}/versions`)
+        .set(auth())
+        .send({ body: "v2 你好 {query}" })
         .expect(201);
-      expect(res.body.promptId).toBe("p1");
-      expect(res.body.status).toBe("draft");
-      expect(typeof res.body.version).toBe("number");
+      expect(created.body.version).toBe(2);
+      expect(created.body.status).toBe("draft");
+      v2Id = created.body.id;
+
+      const pub = await request(app.getHttpServer())
+        .post(`/api/prompts/${promptId}/versions/${v2Id}/publish`)
+        .set(auth())
+        .expect(200);
+      expect(pub.body.status).toBe("prod");
+
+      const versions = await request(app.getHttpServer())
+        .get(`/api/prompts/${promptId}/versions`)
+        .set(auth())
+        .expect(200);
+      const v1 = versions.body.find((v: { id: string }) => v.id === v1Id);
+      const v2 = versions.body.find((v: { id: string }) => v.id === v2Id);
+      expect(v1.status).toBe("archived");
+      expect(v2.status).toBe("prod");
+
+      const p = await request(app.getHttpServer())
+        .get(`/api/prompts/${promptId}`)
+        .set(auth())
+        .expect(200);
+      expect(p.body.currentVersionId).toBe(v2Id);
+      expect(p.body.updatedBy).toBe(PRINCIPAL.email);
+    });
+
+    it("POST rollback v1 → 200 + v1 prod + v2 archived（D2）", async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/prompts/${promptId}/versions/${v1Id}/rollback`)
+        .set(auth())
+        .expect(200);
+      expect(res.body.status).toBe("prod");
+
+      const versions = await request(app.getHttpServer())
+        .get(`/api/prompts/${promptId}/versions`)
+        .set(auth())
+        .expect(200);
+      const v1 = versions.body.find((v: { id: string }) => v.id === v1Id);
+      const v2 = versions.body.find((v: { id: string }) => v.id === v2Id);
+      expect(v1.status).toBe("prod");
+      expect(v2.status).toBe("archived");
+
+      const p = await request(app.getHttpServer())
+        .get(`/api/prompts/${promptId}`)
+        .set(auth())
+        .expect(200);
+      expect(p.body.currentVersionId).toBe(v1Id);
+    });
+
+    it("D6 不接受请求体 author（服务端从 JWT 填）", async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/prompts/${promptId}/versions`)
+        .set(auth())
+        .send({ body: "v3 {query}", author: "forged@evil.com" })
+        .expect(201);
+      expect(res.body.author).toBe(PRINCIPAL.email);
+      expect(res.body.author).not.toBe("forged@evil.com");
     });
   });
 
@@ -329,7 +493,10 @@ describe("M2 domain skeleton", () => {
       expect(paths).toContain("/api/chunks/{docId}");
       expect(paths).toContain("/api/retrieval/test");
       expect(paths).toContain("/api/agents");
+      expect(paths).toContain("/api/prompts");
       expect(paths).toContain("/api/prompts/{id}/versions");
+      expect(paths).toContain("/api/prompts/{id}/versions/{versionId}/publish");
+      expect(paths).toContain("/api/prompts/{id}/versions/{versionId}/rollback");
       expect(paths).toContain("/api/chat");
       expect(paths).toContain("/api/conversations/{id}/messages");
     });
