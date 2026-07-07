@@ -37,6 +37,17 @@ Story 5: "Service 重写 + Controller 扩展 + Module + e2e" — complete
   Concerns: none（后端全量 110/110）
   Review: 跳过（同上）
 
+协议化改造（原型变更后的 arch-design 落地，2026-07-07）— complete
+  Commits: 8226efd（契约+后端）, 8ae0545（前端+导航+docs）, 2df2535（review 三项修复）
+  Files: contracts/models.ts（ModelProtocolSchema/PROTOCOLS_BY_TYPE/isValidProtocol/params/TestModelOverrideSchema）,
+    backend models（schema protocol+params 列、迁移 0004 回填版+0005、ProtocolDispatchAdapter + adapters/protocols/* 12 探针 builder、service 合并校验+testById override）,
+    frontend（ModelsPage 协议 UI/可编辑参数/key 不回显、mocks PROTOCOL_OPTIONS+一致性测试、AdminLayout 分组导航、GapsPage 壳、App 路由/测试）,
+    docs/design/001-003 协议化修订
+  Produces: (type, protocol) 路由键契约；MODEL_PROVIDER_PORT 的 ModelCallConfig{type,protocol,name,baseUrl,apiKey,deploymentId?,params?}；
+    POST /api/models/test（ad-hoc）与 POST /api/models/:id/test（可带不含 key 的 override）
+  Review: peer（Codex）全量 diff 审——round 1 FAIL（迁移非空表阻塞/PATCH 组合洞/编辑态测旧配置），修复后 round 2 PASS
+  Concerns: self_hosted=TEI 形状为假设（首个真实自建接入时验证）；GapsPage 仅壳（M10 波 1:1）
+
 Story 6: "前端接通（client + ModelsPage + mocks + App.test）" — complete
   Commits: 6861e89
   Files: apps/frontend/src/{api/client.ts,pages/admin/ModelsPage.tsx,mocks/models.ts,app/App.test.tsx}
