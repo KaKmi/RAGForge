@@ -11,5 +11,7 @@ export const envSchema = z.object({
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
   JWT_SECRET: z.string().min(32),
   JWT_EXPIRES_IN: z.string().default("12h"),
+  // 模型 API Key 加密主密钥：32 字节 base64（44 字符），生成：openssl rand -base64 32
+  MODEL_API_KEY_ENCRYPTION_KEY: z.string().min(44),
 });
 export type Env = z.infer<typeof envSchema>;

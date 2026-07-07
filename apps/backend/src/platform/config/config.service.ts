@@ -36,4 +36,7 @@ export class AppConfigService {
   get jwtExpiresIn(): string {
     return this.config.get("JWT_EXPIRES_IN", { infer: true });
   }
+  get modelApiKeyEncryptionKey(): string {
+    return this.config.get("MODEL_API_KEY_ENCRYPTION_KEY", { infer: true });
+  }
 }

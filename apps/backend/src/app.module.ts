@@ -4,6 +4,7 @@ import { ZodSerializerInterceptor, ZodValidationPipe } from "nestjs-zod";
 import { AppConfigModule } from "./platform/config/config.module";
 import { PersistenceModule } from "./platform/persistence/persistence.module";
 import { ClickHouseModule } from "./platform/clickhouse/clickhouse.module";
+import { SecurityModule } from "./platform/security/security.module";
 import { HealthModule } from "./modules/health/health.module";
 import { TracesModule } from "./modules/traces/traces.module";
 import { UsersModule } from "./modules/users/users.module";
@@ -24,6 +25,7 @@ import { ConversationsModule } from "./modules/conversations/conversations.modul
     AppConfigModule,
     PersistenceModule,
     ClickHouseModule,
+    SecurityModule,
     HealthModule,
     TracesModule,
     UsersModule,
