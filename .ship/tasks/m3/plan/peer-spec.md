@@ -1,266 +1,162 @@
-# M3 — 模型接入（Peer Spec）
+# M3 模型接入 Peer Spec
 
-> 独立调查产出。未参考任何已存在的 M3 spec/plan/arch-design 文档。所有结论均引用实际读过的 `file:line`。属 CLAUDE.md「轻量对抗档」（CRUD/配置型），跳过 execution drill。
+## 范围与目标
 
-## Problem / Motivation
+M3 的权威范围是 `model_providers CRUD、密钥加密、连通性测试、OpenAI 兼容适配器(LLM/Embedding/Rerank)`，验收是“注册模型并测试通过；key 前端掩码”（[docs/design/002-implementation-roadmap.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/002-implementation-roadmap.md:86)）。架构不变量要求模型 API Key 永不明文回传前端、存储加密（[docs/design/001-rag-platform-architecture.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/001-rag-platform-architecture.md:43)、[docs/design/001-rag-platform-architecture.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/001-rag-platform-architecture.md:159)）。
 
-M2 已落地模型域的 **skeleton**（返回 mock 数组、`test` 恒返回 `{ok:true}`），但无任何持久化、无密钥加密、无真实模型调用（`apps/backend/src/modules/models/models.service.ts:4-30` `MOCK_MODELS` 硬编码、`:49-52` `test` 桩）。前端 `ModelsPage.tsx` 同样纯 mock，从 `../../mocks/models` 取数据，"测试连接"仅翻转本地 `tested` 状态（`apps/frontend/src/pages/admin/ModelsPage.tsx:489-504`、`:170-185` `save` 只 push 到本地 state）。
+本 spec 的完成标准：后端 `models` 从 M2 mock 数组变为 Drizzle/Postgres 持久化；前端模型页从本地 mock 改为真实 API；“测试连接”必须真实调用 OpenAI-compatible endpoint；读 API 永不返回 `apiKey` 明文，只返回 `apiKeyMasked`。
 
-M3 要把 skeleton 填成真实逻辑：`model_providers` 表 CRUD、API Key 加密存储 + 前端掩码返回、连通性测试端点调用真实模型、OpenAI 兼容适配器覆盖 LLM/Embedding/Rerank 三类调用。
+非目标：不实现 M4/M5/M7 的知识库、检索、Agent 绑定真实逻辑；不把 `@codecrush/otel` 扩成完整 `trace.llm` SDK；不引入新的 HTTP client 依赖。
 
-**验收锚点**（`docs/design/002-implementation-roadmap.md:86`）：(1) 注册模型并点"测试"通过；(2) API key 前端掩码显示、不明文返回。
+## 调查结论
 
-**架构不变量**（`docs/design/001-rag-platform-architecture.md:42-44`）：`ModelProviderPort` / `RetrieverPort` / `BlobStore` 藏在端口背后；**模型 API Key 永不明文回传前端，存储加密**（Invariant 4）；`model_providers(id, type[llm/embedding/rerank], provider, name, base_url, api_key_enc, deployment_id, enabled)`（`001:81`）。
+当前 contracts 的模型契约很薄：`ModelTypeSchema = ["llm","embedding","rerank"]`，`ModelProviderSchema` 包含 `id/type/provider/name/baseUrl/apiKeyMasked/role/enabled`，`CreateModelRequestSchema` 直接 `omit({ id: true })`（[packages/contracts/src/models.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/contracts/src/models.ts:3)、[packages/contracts/src/models.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/contracts/src/models.ts:6)、[packages/contracts/src/models.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/contracts/src/models.ts:21)）。这会让写入侧接受 `apiKeyMasked`，但没有明文 `apiKey` 字段，必须改成独立 create/update DTO。
 
-## Design approach
+后端 `models` 目前是桩：controller 只有 `GET /models`、`GET /models/:id`、`POST /models`、`POST /models/:id/test`（[apps/backend/src/modules/models/models.controller.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/models/models.controller.ts:12)）；service 使用 `MOCK_MODELS`，create 只回显不持久化，test 永远 `{ ok: true }`（[apps/backend/src/modules/models/models.service.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/models/models.service.ts:4)、[apps/backend/src/modules/models/models.service.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/models/models.service.ts:44)、[apps/backend/src/modules/models/models.service.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/models/models.service.ts:49)）。`models.module.ts` 只注册 service/controller，没有 repository 或 adapter（[apps/backend/src/modules/models/models.module.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/models/models.module.ts:5)）。
 
-1. **端口/适配器落地。** `models` 域拥有 `ModelProviderPort`（interface，`chat()/embed()/rerank()/test()`），首个适配器 `OpenAiCompatProvider` 经 NestJS DI token 注入（`003:101`「拿端口不拿适配器」，日后换云零改动）。任何地方不得直接 import `adapters/`（`AGENTS.md` 边界 5）。
-2. **密钥加密 = AES-256-GCM + 主密钥。** 用 `node:crypto`（Node 内建，后端 only，符合边界）实现可逆加密（argon2 是单向哈希，只适合密码不适合 API Key，见 `apps/backend/src/modules/users/password.ts:1-20`）。主密钥从 env 读取，fail-fast。密文带版本前缀 `v1:` 便于未来密钥轮换。**返回前端只有 `apiKeyMasked`，永不回传明文 / 密文**（Invariant 4）。
-3. **契约读写分离。** M2 的 `CreateModelRequestSchema = ModelProviderSchema.omit({ id: true })`（`packages/contracts/src/models.ts:21`）把读字段 `apiKeyMasked` 当写字段用——这是 M2 skeleton 的偷懒。M3 拆为：读侧 `ModelProviderSchema`（含 `apiKeyMasked`），写侧 `CreateModelRequestSchema` / `UpdateModelRequestSchema`（含 `apiKey` 明文，write-only），测试响应 `TestModelResponseSchema`（真实结果：`ok/latencyMs?/error?/model?`）。
-4. **OpenAI 兼容走原生 fetch。** `apps/backend/package.json:16-33` 无 `openai` SDK 依赖。Node 22 有全局 `fetch`，OpenAI 兼容 API 是简单 REST（`/chat/completions`、`/embeddings`、`/rerank`），原生 fetch 足够且零新依赖（呼应 M2 `006:71` 不引入多余运行时依赖的取向）。Rerank 无 OpenAI 标准，用 Cohere/Jina 兼容的 `/rerank` 端点（BGE-reranker 经 TEI/inference endpoints 同形）。
-5. **连通性测试可观测。** 测试是 admin 操作（不在问答关键路径），可同步打 span。用 `@codecrush/otel` 的 `withSpan`（`packages/otel/src/trace.ts:35-54`）+ `GEN_AI.*` 属性（`packages/otel-conventions/src/index.ts:1-12`）。**不建 `trace.llm/embeddings` 语义封装**——那是 M0.5 未完成项（`003:270`「M0.5 即建通用版」但 `trace.ts` 只交付了 `emitManualHelloSpan`），M3 不越界扩 SDK scope，直接用 `withSpan`。
+Drizzle 现有模式是域内 `schema.ts` + repository + service，中央 `db/schema.ts` re-export（users: [apps/backend/src/modules/users/schema.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/users/schema.ts:3)、[apps/backend/src/modules/users/users.repository.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/users/users.repository.ts:7)、[apps/backend/src/db/schema.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/db/schema.ts:9)；prompts: [apps/backend/src/modules/prompts/schema.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/prompts/schema.ts:6)、[apps/backend/src/modules/prompts/prompts.repository.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/prompts/prompts.repository.ts:47)、[apps/backend/src/db/schema.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/db/schema.ts:10)）。迁移是显式脚本，不在应用启动时跑（[apps/backend/src/db/migrate.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/db/migrate.ts:6)、[apps/backend/src/db/migrate.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/db/migrate.ts:9)）。
 
-## Investigation findings（带 file:line 证据）
+配置层已经有 Zod fail-fast：`envSchema.parse(raw)` 在 `ConfigModule.forRoot` 中执行（[apps/backend/src/platform/config/config.module.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/platform/config/config.module.ts:9)），但当前 env 没有模型密钥加密主密钥（[apps/backend/src/platform/config/config.schema.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/platform/config/config.schema.ts:3)、[apps/backend/.env.example](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/.env.example:1)）。
 
-### 1. M2 skeleton 现状（要被填实的代码）
+前端 API client 现在只有 `getModels()`，没有 create/update/delete/test 方法（[apps/frontend/src/api/client.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/api/client.ts:118)）。`ModelsPage` 完全用 `../../mocks/models`，初始 rows 来自 `LLM_ROWS`，toggle/edit/test/save 都是本地 state，测试按钮只是 `setTested(true)`（[apps/frontend/src/pages/admin/ModelsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/ModelsPage.tsx:1)、[apps/frontend/src/pages/admin/ModelsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/ModelsPage.tsx:124)、[apps/frontend/src/pages/admin/ModelsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/ModelsPage.tsx:143)、[apps/frontend/src/pages/admin/ModelsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/ModelsPage.tsx:170)、[apps/frontend/src/pages/admin/ModelsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/ModelsPage.tsx:488)）。mock 类型是 `"LLM" | "Rerank" | "Embedding"`，与 contracts 小写 enum 不一致（[apps/frontend/src/mocks/models.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/mocks/models.ts:5)、[packages/contracts/src/models.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/contracts/src/models.ts:3)）。
 
-- **契约**（`packages/contracts/src/models.ts:1-22`）：`ModelTypeSchema = z.enum(["llm","embedding","rerank"])`（小写）；`ModelProviderSchema` 字段 `id/type/provider/name/baseUrl?/apiKeyMasked?/role?/enabled`；`CreateModelRequestSchema = ModelProviderSchema.omit({ id: true })`（**写侧误用读字段 `apiKeyMasked`，无 `apiKey` 明文字段**）；无 `UpdateModelRequestSchema` / `TestModelResponseSchema`。
-- **后端 controller**（`apps/backend/src/modules/models/models.controller.ts:1-31`）：`@Controller("models")`，`GET /` → `ModelProvider[]`、`GET /:id`、`POST /`（201）、`POST /:id/test`（200 `{ok:boolean}`）。用 `createZodDto(CreateModelRequestSchema)`。无 `PATCH`/`DELETE`。
-- **后端 service**（`apps/backend/src/modules/models/models.service.ts:1-53`）：`MOCK_MODELS` 3 条；`list/get/create`（回显）/`test`（恒 `{ok:true}`）。无 repository、无 schema、无 port。
-- **后端 module**（`apps/backend/src/modules/models/models.module.ts:1-9`）：仅 `controllers:[ModelsController], providers:[ModelsService]`，无 exports。
-- **前端页**（`apps/frontend/src/pages/admin/ModelsPage.tsx:1-519`）：纯 mock，`useState<LlmRow[]>(LLM_ROWS)`（`:125`）；drawer `ModelDraft={type,prov,name,base,key}`（`mocks/models.ts:77-83`）；"测试连接" `setTested(true)`（`:489`）；"接入" push 本地（`:179-184`）；列表"编辑/测试/删除"链接无 onClick（`:332-336`）。前端 `ModelType="LLM"|"Rerank"|"Embedding"`（**大写**，`mocks/models.ts:5`）与契约小写不一致，接真后端需对齐。
-- **前端 typed client**（`apps/frontend/src/api/client.ts:109-111`）：仅 `getModels()`。无 `createModel/testModel/updateModel/deleteModel`。
+M6 的 prompts 是前端真实接 API 的参考：页面 `useEffect` 调 `getPrompts`，保存/发布/删除都 await API 后刷新，错误进 `Alert`（[apps/frontend/src/pages/admin/PromptsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/PromptsPage.tsx:112)、[apps/frontend/src/pages/admin/PromptsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/PromptsPage.tsx:220)、[apps/frontend/src/pages/admin/PromptsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/PromptsPage.tsx:254)、[apps/frontend/src/pages/admin/PromptsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/PromptsPage.tsx:276)、[apps/frontend/src/pages/admin/PromptsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/PromptsPage.tsx:526)）。
 
-### 2. 类比 feature：`users` 模块（CRUD + schema + repository 完整范式）
+Telemetry 当前代码只导出 `startNodeTelemetry`、`withSpan`、`emitManualHelloSpan` 等基础能力（[packages/otel/src/index.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel/src/index.ts:1)、[packages/otel/src/trace.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel/src/trace.ts:35)、[packages/otel/src/trace.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel/src/trace.ts:56)）。`otel-conventions` 现有 GenAI key 有 `gen_ai.system`、`gen_ai.operation.name`、`gen_ai.request.model`、usage token keys，operation 有 `chat/embeddings/rerank`（[packages/otel-conventions/src/index.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel-conventions/src/index.ts:1)、[packages/otel-conventions/src/index.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel-conventions/src/index.ts:25)）。因此 M3 只能用 `withSpan` + conventions 常量埋点，不能假设已有 `trace.llm()`。
 
-- `apps/backend/src/modules/users/schema.ts:1-12` — `pgTable("users",{...})` + `export type UserRow = typeof users.$inferSelect;`（纯表定义，零 service 引用，`AGENTS.md` 边界 8）。
-- `apps/backend/src/modules/users/users.repository.ts:1-27` — `@Injectable()`，`@Inject(DRIZZLE) private readonly db: DB`，drizzle `select/update` 查询。`DB = NodePgDatabase<typeof schema>`（`platform/persistence/persistence.module.ts:8`）。
-- `apps/backend/src/modules/users/users.service.ts:1-60` — `@Injectable()`，`toProfile(row): UserProfile` 做 row→DTO 映射（`11-20`）。M3 的 `ModelsService.toProvider(row)` 同构（row→`ModelProvider`，把 `apiKeyEnc` 映成 `apiKeyMasked`）。
-- `apps/backend/src/modules/users/users.controller.ts:1-31` — `createZodDto(...)` + `@Body`；`@Req() req: AuthedRequest`（`:13` `type AuthedRequest = { user: AuthenticatedUser }`）拿 principal。
-- `apps/backend/src/modules/users/users.module.ts:1-11` — `providers:[UsersRepository, UsersService], exports:[UsersService]`。
-- `apps/backend/src/modules/users/password.ts:1-20` — argon2id 单向哈希。**API Key 需可逆加密，不能用 argon2**，必须新建 AES-GCM 工具。
+已验证不存在的目标文件：`apps/backend/src/modules/models/schema.ts`、`models.repository.ts`、`models/ports/`、`models/adapters/` 当前都不存在；`.ship/tasks/m3/plan/peer-spec.md` 在本次写入前也不存在。
 
-### 3. 平台基础设施现状（哪些已有 / 哪些 M3 新增）
+## 设计方案
 
-- **config**（`apps/backend/src/platform/config/config.schema.ts:1-14`）：env Zod schema，**无主加密密钥**。`config.service.ts:1-39` getters。`config.module.ts:1-17` `@Global` + `validate: (raw)=>envSchema.parse(raw)` fail-fast。→ **M3 新增 `MODEL_API_KEY_MASTER_KEY`（min 32 字符）到 schema + getter + `.env.example`**。
-- **persistence**（`apps/backend/src/platform/persistence/persistence.module.ts:1-24`）：`@Global`，`DRIZZLE = Symbol("DRIZZLE")`（`drizzle.constants.ts:1`），`drizzle(pool,{schema})`，schema 来自 `../../db/schema` barrel。→ M3 复用 `@Inject(DRIZZLE)`。
-- **db schema barrel**（`apps/backend/src/db/schema.ts:1-8`）：`app_meta` + `export * from "../modules/users/schema"`。→ **M3 追加 `export * from "../modules/models/schema"`**。
-- **security**（`apps/backend/src/platform/security/`）：仅 `authenticated-user.ts`（`AuthenticatedUser={id,email}` 类型）+ `public.decorator.ts`（`@Public()`）。**无加密工具、无 SecurityModule**。→ **M3 新增 `platform/security/encryption.ts`（AES-GCM）+ `platform/security/security.module.ts`（@Global，提供 `EncryptionService`）**，镜像 clickhouse module 的 `@Global` + token provider 模式。
-- **clickhouse module**（`apps/backend/src/platform/clickhouse/`）：`@Global` + `CLICKHOUSE` token + `useFactory`（参考其 `clickhouse.module.ts` 模式给 `SecurityModule` 注入 `AppConfigService` 取主密钥）。
-- **无 `platform/queue` / `platform/storage` / `platform/observability`**（`LS platform/` 仅 4 子目录）。M3 不需要 queue/storage；可观测直接用 `@codecrush/otel` 的 `withSpan`。
+### Contracts
 
-### 4. Drizzle 迁移机制
+`packages/contracts/src/models.ts` 改为读写分离：
 
-- `apps/backend/drizzle.config.ts:1-9` — `schema:"./src/db/schema.ts"`, `out:"./drizzle"`, `dialect:"postgresql"`。
-- `apps/backend/drizzle/0000_natural_trish_tilby.sql`（app_meta）、`0001_spooky_ultimatum.sql`（users）。→ **M3 `pnpm db:generate` 生成 `0002_*.sql`（model_providers 表）**，`pnpm db:migrate` 显式应用（`AGENTS.md` 边界 9，不在启动时静默执行；`db/migrate.ts:1-16` `migrate(db,{migrationsFolder:"./drizzle"})`）。
-- 迁移文件名由 drizzle-kit 随机生成，spec 只约束表 DDL。
+- `ModelProviderSchema` 是读侧，字段建议为 `id,type,provider,name,baseUrl,apiKeyMasked,deploymentId?,enabled`。不包含 `apiKey`。当前 `role` 不在 001 的 `model_providers` 表形状里（[docs/design/001-rag-platform-architecture.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/001-rag-platform-architecture.md:81)），M3 不应把它作为持久字段；若要保留展示，前端可按 type 派生文案。
+- `CreateModelRequestSchema` 不能再从读 schema omit 出来，必须显式包含明文 `apiKey: z.string().min(1)`，并用 strict object 拒绝 `apiKeyMasked`。
+- `UpdateModelRequestSchema` 用于编辑、启停、密钥轮换：`type/provider/name/baseUrl/deploymentId/enabled/apiKey` 均可选，但至少一个字段存在；`apiKey` 为空字符串不允许。
+- `TestModelConnectionResponseSchema` 返回 `{ ok, latencyMs?, statusCode?, message? }`。`message` 必须是脱敏错误摘要，不含 key。
+- 新增 `TestModelDraftConnectionRequestSchema = CreateModelRequestSchema`，用于抽屉保存前测试；已注册模型的主路径仍是 `POST /api/models/:id/test`。
 
-### 5. 鉴权与路由
+### 数据库与迁移
 
-- 全局 `JwtAuthGuard`（`apps/backend/src/modules/auth/auth.module.ts:22` `APP_GUARD`），`@Public()` opt-out（`jwt-auth.guard.ts:23-27`）。`request.user={id,email}`（`:41`）。
-- 全局前缀 `/api`（`app/app-bootstrap.ts:10-12` `setGlobalPrefix("api",{exclude:["health"]})`）。models 端点 → `/api/models`，受 JwtAuthGuard 保护（admin only，不标 `@Public`）。
-- `app.module.ts:11,32` 已 imports `ModelsModule`。M3 扩展 `ModelsModule` 的 providers/imports，不改 `app.module.ts` 的 import 行（除非要加 `SecurityModule`——`SecurityModule` 应在 `app.module.ts` imports 中显式列出，紧挨 `AppConfigModule`/`PersistenceModule`）。
+新增 `apps/backend/src/modules/models/schema.ts`，用 Drizzle 定义：
 
-### 6. OTel 现状（连通性测试埋点）
+`model_providers(id uuid pk defaultRandom, type text notNull, provider text notNull, name text notNull, base_url text, api_key_enc text notNull, deployment_id text, enabled boolean notNull default true)`。
 
-- `packages/otel/src/trace.ts:35-54` — `withSpan(name,{attributes},fn)`，自动 setStatus / recordException / end。`emitManualHelloSpan`（`:56-77`）是唯一语义封装示例。**无 `trace.llm/embeddings/retrieve` 封装**（M0.5 未交付，`003:270` 计划但 `trace.ts` 未落地）。
-- `packages/otel-conventions/src/index.ts:1-48` — `GEN_AI.{SYSTEM,OPERATION_NAME,REQUEST_MODEL,USAGE_INPUT_TOKENS,USAGE_OUTPUT_TOKENS}`、`OTEL_OPERATIONS.{CHAT,EMBEDDINGS,RERANK,...}`、`CODECRUSH_SPAN_KIND` 全部可用。
-- `@codecrush/otel` 已在后端 deps（`apps/backend/package.json:20`）。M3 直接 import `withSpan`。
-- **埋点不入关键路径**（`AGENTS.md` 边界 7）：连通性测试是 admin 操作，同步打 span 安全；真实 `chat()/embed()/rerank()` 在 M8 问答路径上时再考虑异步。
+这与 001 的控制面表形状保持一致（[docs/design/001-rag-platform-architecture.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/001-rag-platform-architecture.md:81)）。如果实现者想加 `created_at/updated_at` 或 `role`，必须先更新设计文档；否则 M3 只按上述列落库。`schema.ts` 保持纯表定义，参考 prompts 的“零 service 引用”模式（[apps/backend/src/modules/prompts/schema.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/prompts/schema.ts:3)）。
 
-### 7. 已有测试会断（必须同步改，非软化断言）
+`apps/backend/src/db/schema.ts` re-export models schema，保证 `PersistenceModule` 的 `NodePgDatabase<typeof schema>` 感知新表（[apps/backend/src/db/schema.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/db/schema.ts:1)、[apps/backend/src/platform/persistence/persistence.module.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/platform/persistence/persistence.module.ts:8)）。迁移通过 `pnpm --filter @codecrush/backend db:generate` 生成 `0003_*.sql`，不手写应用启动迁移。
 
-- `apps/backend/test/skeleton.e2e.spec.ts:98-128` 测 M2 mock skeleton：
-  - `:103` `GET /api/models` 断言 `res.body.length > 0`（mock 3 条）。M3 真实空库 → 0。**改**：测试前 seed 一条，或断言 `>= 0` + schema 合规（这是行为从 mock→真实的迁移，非弱化校验，依据 `AGENTS.md`「不要软化测试断言——修代码」此处是改测试适配新真实行为）。
-  - `:109-119` `POST /api/models` body `{type,provider,name,enabled}`（**无 apiKey**）。M3 写侧契约要求 `apiKey` → ZodValidationPipe 400。**改**：补 `apiKey` 字段 + 断言响应含 `apiKeyMasked` 不含明文。
-  - `:121-127` `POST /api/models/m1/test → 200 {ok:true}`。M3 真实测试 → 响应形状变（`TestModelResponseSchema`）。**改**：换 schema 断言；m1 不存在 → 404 路径单独测。
-  - `:105-107` `GET /api/models/m1 → 200`。M3 真实库 m1 不存在 → 404。**改**：先 seed 或测 404。
-- 这些是 mock→真实的行为迁移，**更新测试以匹配新真实行为**（不弱化校验，而是断言新形状：掩码、加密、真实测试结果）。spec 显式列出，避免 dev 阶段当成「测试坏了」。
+### 密钥加密与掩码
 
-### 8. 边界 lint 现状
+新增后端平台级加密服务，建议路径 `apps/backend/src/platform/crypto/`，只供后端使用。原因：003 明确 Node/密钥能力不能进共享包（[docs/design/003-code-organization.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/003-code-organization.md:253)），frontend 也被 lint 禁止 import Node-only SDK（[eslint.config.mjs](/Users/zhaopengcheng/Desktop/rag-service/eslint.config.mjs:30)）。
 
-- `eslint.config.mjs:29-49` 强制 frontend 不 import backend / `@codecrush/otel`；`:51-70` contracts 不依赖 apps/OTel；`:72-96` otel-conventions 零运行时依赖；`:99-122` `@codecrush/otel` 不碰 contracts/clickhouse/apps。
-- **无后端跨域 barrel-only 规则**（`003:137-139` 要求但未落地，M2 peer-spec `:188` 已记录）。M3 的 `models/adapters/` 禁止被直接 import——靠人工遵守 + 模块封装（adapter 只在 `models.module.ts` 作为 DI provider 注册，不 export）。
+配置：
 
-## Changes by file
+- 在 `envSchema` 增加 `MODEL_API_KEY_ENCRYPTION_KEY`，要求 base64 解码后正好 32 bytes；缺失或长度不对 fail-fast。
+- `AppConfigService` 暴露 decoded key 或原始 base64 getter。
+- `.env.example` 放 dev-only 32-byte base64 示例。
+- 更新 `apps/backend/test/config.schema.spec.ts`，现有合法 env 只测 JWT（[apps/backend/test/config.schema.spec.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/test/config.schema.spec.ts:16)），新增主密钥合法/非法断言。
 
-### A. 契约扩展（`packages/contracts/src/models.ts`）— 读写分离
+算法：Node `crypto` 的 AES-256-GCM，密文 envelope 为 `v1:<ivB64>:<tagB64>:<ciphertextB64>`。Repository 永远只存 `api_key_enc`。Service 只有在创建、更新 key、连接测试时短暂解密；DTO 映射只输出 `apiKeyMasked`。掩码规则固定为：长度 >= 8 时 `${first3}****${last4}`，否则 `****`；例如 `sk-abcdef1234` → `sk-****1234`。测试必须断言响应 JSON 和 repository row 都不含明文 key。
 
-重写为读写分离 + 测试响应（沿用 `users.ts:1-20` 的 `z.object + export type` 风格，Zod 4）：
+### 后端 models 模块
 
-- `ModelTypeSchema = z.enum(["llm","embedding","rerank"])`（保留）。
-- `ModelProviderSchema`（**读/响应**）：`id:z.string().uuid()`、`type:ModelTypeSchema`、`provider,name:z.string().min(1)`、`baseUrl:z.string().url().optional()`、`apiKeyMasked:z.string()`（**必填**，永不明文）、`deploymentId:z.string().optional()`（对齐 `001:81`）、`role:z.string().optional()`、`enabled:z.boolean()`、`createdAt/updatedAt:z.string().datetime()`。
-- `CreateModelRequestSchema`（**写**）：`ModelProviderSchema.omit({id,apiKeyMasked,createdAt,updatedAt}).extend({ apiKey:z.string().min(1) })`（**明文 apiKey，write-only**，不进响应）。
-- `UpdateModelRequestSchema`（**写，partial**）：`CreateModelRequestSchema.partial()`（启用开关 / 改 key 都走它）。
-- `TestModelResponseSchema`：`z.object({ ok:z.boolean(), latencyMs:z.number().int().nonnegative().optional(), model:z.string().optional(), error:z.string().optional() })`。
-- `ModelProviderListResponseSchema = z.array(ModelProviderSchema)`（保留）。
-- `index.ts:5` 已 `export * from "./models"`，无需改。
+按 prompts/users 的形状实现：
 
-### B. 平台：加密服务（新增 `apps/backend/src/platform/security/`）
+- `models.repository.ts`：`findAll/findById/insert/update/delete`，只处理 row，不做 DTO 和加密业务。
+- `models.service.ts`：`toModelProvider(row)`、create/update/delete、启停、测试连接；不存在抛 `NotFoundException`，删除成功无响应体。
+- `models.controller.ts`：保留现有 list/get/create/test 路径，新增 `PATCH /models/:id`、`DELETE /models/:id`、`POST /models/test` 草稿测试。控制器仍使用 `createZodDto`，与现有 controller 风格一致（models 当前用法见 [apps/backend/src/modules/models/models.controller.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/models/models.controller.ts:1)，prompts 参考见 [apps/backend/src/modules/prompts/prompts.controller.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/src/modules/prompts/prompts.controller.ts:35)）。
+- `models.module.ts` 注册 repository、crypto service/module、OpenAI-compatible adapter token；不得让其它模块直接 import `adapters/`。003 要求端口归 models，适配器经 DI token 注入（[docs/design/003-code-organization.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/003-code-organization.md:101)）。
 
-- `encryption.ts`（新）— `EncryptionService` class：
-  - 构造注入 master key（hex 或 base64，32 字节）。
-  - `encrypt(plaintext:string):string` — AES-256-GCM，返回 `v1:` + base64(iv(12)|tag(16)|ciphertext)。随机 iv 每次不同（同 key 加密两次密文不同）。
-  - `decrypt(serialized:string):string` — 解析前缀版本，校验 tag，失败抛错。
-  - `mask(plaintext:string):string` — 掩码：`sk-****1234` 风格（首 3 + 末 4，中间 `****`；长度 < 8 全 `****` 末 2）。**纯函数，不暴露明文**。
-  - 用 `node:crypto`（`createCipheriv/createDecipheriv/randomBytes`），Node 内建，后端 only，不违反边界。
-- `security.module.ts`（新）— `@Global`，`providers:[{provide:ENCRYPTION,useFactory:(config:AppConfigService)=>new EncryptionService(config.modelApiKeyMasterKey),inject:[AppConfigService]}],exports:[ENCRYPTION]`。`ENCRYPTION = Symbol("ENCRYPTION")`（`drizzle.constants.ts:1` 同模式）。
-- `config.schema.ts:1-14` 追加 `MODEL_API_KEY_MASTER_KEY:z.string().min(32)`（fail-fast，主密钥缺失/过短启动即崩）。
-- `config.service.ts` 追加 `get modelApiKeyMasterKey():string`。
-- `.env.example` 追加 `MODEL_API_KEY_MASTER_KEY=<generate-32-byte-hex>`（示例给生成命令注释）。
-- `app.module.ts:23-30` imports 紧挨 `PersistenceModule` 加 `SecurityModule`。
+### OpenAI-compatible 端口与连通性测试
 
-### C. models 域模块（`apps/backend/src/modules/models/`）— 填真实逻辑
+新增 `apps/backend/src/modules/models/ports/model-provider.port.ts`，最小接口：
 
-- `schema.ts`（新）— 纯表定义（`users/schema.ts:1-12` 同构）：
-  ```ts
-  export const modelProviders = pgTable("model_providers", {
-    id: uuid("id").primaryKey().defaultRandom(),
-    type: text("type").notNull(),          // llm|embedding|rerank
-    provider: text("provider").notNull(),
-    name: text("name").notNull(),
-    baseUrl: text("base_url"),             // nullable
-    apiKeyEnc: text("api_key_enc").notNull(),  // 加密密文
-    deploymentId: text("deployment_id"),
-    role: text("role"),
-    enabled: boolean("enabled").notNull().default(true),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
-  });
-  export type ModelProviderRow = typeof modelProviders.$inferSelect;
-  ```
-- `models.repository.ts`（新）— `@Injectable()`，`@Inject(DRIZZLE) db: DB`（`users.repository.ts:1-27` 同构）。方法：`findAll()/findById(id)/insert(row)/update(id,patch)/delete(id)`。
-- `ports/model-provider.port.ts`（新）— interface：
-  ```ts
-  export interface ChatInput { messages:{role:string;content:string}[]; model:string; maxTokens?:number; temperature?:number; }
-  export interface EmbedInput { input:string|string[]; model:string; }
-  export interface RerankInput { query:string; documents:string[]; model:string; topN?:number; }
-  export interface ModelProviderPort {
-    test(cfg:{baseUrl?:string;apiKey:string;model:string;type:ModelType;}): Promise<{ok:boolean;latencyMs:number;error?:string}>;
-    chat(cfg:{baseUrl?:string;apiKey:string}, input:ChatInput): Promise<{content:string;inputTokens?:number;outputTokens?:number;}>;
-    embed(cfg, input:EmbedInput): Promise<{vectors:number[][];}>;
-    rerank(cfg, input:RerankInput): Promise<{scores:number[];}>;
-  }
-  export const MODEL_PROVIDER_PORT = Symbol("MODEL_PROVIDER_PORT");
-  ```
-  仅 interface + token，无实现（端口归域模块所有，`003:101`）。
-- `adapters/openai-compat.adapter.ts`（新）— `@Injectable()` implements `ModelProviderPort`：
-  - 用全局 `fetch`（Node 22，无新依赖）。
-  - `test()` 按 `type` 分派：llm→`POST {baseUrl}/chat/completions`（`messages:[{role:"user",content:"ping"}],max_tokens:1`），embedding→`POST {baseUrl}/embeddings`（`input:"ping"`），rerank→`POST {baseUrl}/rerank`（`query:"ping",documents:["a","b"],top_n:1`）。测 2xx + 关键字段存在，计时 `latencyMs`。
-  - `chat/embed/rerank()` 实现真实调用（M8 chat 路径会用，M3 先可用但连通性测试是首个消费方）。`baseUrl` 默认按 provider 推断（DeepSeek→`https://api.deepseek.com/v1` 等，或要求必填）。
-  - headers：`Authorization: Bearer ${apiKey}`、`Content-Type: application/json`。
-  - 失败：HTTP 非 2xx → 读 `error.message`；网络错 → `ok:false,error:err.message`；不抛错（测试端点要友好结果）。
-  - **不在 adapters 里做 trace 埋点**（埋点在 service 层用 `withSpan` 包，adapter 保持纯调用）。
-- `models.service.ts`（重写）— `@Injectable()`，构造注入 `ModelsRepository` + `@Inject(ENCRYPTION) enc:EncryptionService` + `@Inject(MODEL_PROVIDER_PORT) port:ModelProviderPort`：
-  - `list():Promise<ModelProvider[]>` — repo.findAll + `toProvider(row)`（映射，`apiKeyEnc`→`enc.mask(enc.decrypt(row.apiKeyEnc))`）。
-  - `get(id):Promise<ModelProvider>` — 同映射，not found 抛 `NotFoundException`。
-  - `create(req:CreateModelRequest):Promise<ModelProvider>` — `enc.encrypt(req.apiKey)` → repo.insert → 返回映射（**不含明文 apiKey**）。
-  - `update(id,patch:UpdateModelRequest):Promise<ModelProvider>` — 若 `patch.apiKey` 存在则重新加密；`enabled` 开关走这里。not found 抛错。
-  - `delete(id):Promise<void>`。
-  - `test(id):Promise<TestModelResponse>` — 取 row（not found 抛 404）→ 解密 key → `withSpan("model.test",{attributes:{[GEN_AI.OPERATION_NAME]:type===..."chat":"embeddings",[GEN_AI.REQUEST_MODEL]:row.name,[GEN_AI.SYSTEM]:row.provider,[CODECRUSH_SPAN_KIND.xxx]:...}})` 包 `port.test({...})` → 返回 `{ok,latencyMs,error?}`。**同步埋点**（admin 路径，非关键路径）。
-- `models.controller.ts`（重写）— 加 `PATCH/:id`、`DELETE/:id`；`POST/:id/test` 返回 `TestModelResponse`；`POST /` 用 `CreateModelRequestDto`（含 apiKey）；`PATCH /:id` 用 `UpdateModelRequestDto`。响应类型 `ModelProvider`（含 `apiKeyMasked`，**不含 apiKey**）。沿用 `createZodDto`（`users.controller.ts:11`）。
-- `models.module.ts`（重写）— `controllers:[ModelsController]`，`providers:[ModelsRepository,ModelsService,{provide:MODEL_PROVIDER_PORT,useClass:OpenAiCompatProvider},OpenAiCompatProvider]`，`exports:[ModelsService]`。imports: `[SecurityModule]`（拿 `ENCRYPTION`）。**adapter 不 export**（禁止直接 import adapters/）。
-- `db/schema.ts:8` 追加 `export * from "../modules/models/schema";`。
-- `drizzle/0002_*.sql` — `pnpm db:generate` 自动生成（`CREATE TABLE "model_providers"...`，字段见 schema.ts）。
+```ts
+export interface ModelProviderPort {
+  testConnection(config: PlainModelProviderConfig): Promise<ModelConnectionTestResult>;
+  chat?(...): Promise<unknown>;
+  embed?(...): Promise<unknown>;
+  rerank?(...): Promise<unknown>;
+}
+```
 
-### D. 前端（`apps/frontend/`）— 接真后端
+M3 只消费 `testConnection`，但端口名称和模型类型要给 M4/M5/M8 留出 `chat/embed/rerank` 方向，呼应 001 的 `ModelProviderPort: chat() / embed() / rerank()`（[docs/design/001-rag-platform-architecture.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/001-rag-platform-architecture.md:95)）。
 
-- `api/client.ts` 扩展（`:99-111` 之后）：`createModel(body):Promise<ModelProvider>`（`postJson`，请求 `CreateModelRequestSchema` 含 apiKey，响应 `ModelProviderSchema`）、`updateModel(id,patch):Promise<ModelProvider>`（`PATCH`，需加 `patchJson` 辅助或复用 fetch）、`deleteModel(id):Promise<void>`、`testModel(id):Promise<TestModelResponse>`。沿用 `apiFetch`（Bearer token 自动注入，`:51-64`）。
-- `pages/admin/ModelsPage.tsx` 改写：
-  - 去掉 `../../mocks/models` 的 `LLM_ROWS` 数据依赖（保留 `MODEL_TYPES`/`LLM_TABS` 作为 UI 配置：tab、provider 选项、placeholder）。
-  - `useEffect` 调 `getModels()` 初始化 `rows`（映射契约 `ModelProvider` → 渲染行；`type` 小写→展示大写 Tag）。
-  - drawer "测试连接" 调 `testModel(id)`（已存模型）或 `createModel` 后再 test；显示 `ok/error/latencyMs`。
-  - "接入" 调 `createModel({type,provider,name,baseUrl,apiKey,enabled})`，成功后刷新列表。
-  - 启用开关 → `updateModel(id,{enabled})`。
-  - "编辑/删除" 链接接 `updateModel`/`deleteModel`（M2 无 onClick，`:332-336`）。
-  - **apiKey 输入**：新建时明文输入（`type="password"`），编辑时预填 `apiKeyMasked` + 可选"重新输入 key"（留空不改）。
-  - 类型对齐：前端 `ModelType` 改为契约小写 `llm|embedding|rerank`（`mocks/models.ts:5` 大写仅 UI 展示用，内部走契约）。
-- `mocks/models.ts` — 保留 `MODEL_TYPES`/`LLM_TABS`/`ModelDraft`（UI 配置），删 `LLM_ROWS`（不再用 mock 数据）或保留作 fallback（建议删，避免漂移）。
+适配器放 `apps/backend/src/modules/models/adapters/openai-compatible.provider.ts`，使用 Node 22 内置 `fetch`，不新增 axios/undici 依赖；仓库要求 Node >=22（[package.json](/Users/zhaopengcheng/Desktop/rag-service/package.json:5)，[.nvmrc](/Users/zhaopengcheng/Desktop/rag-service/.nvmrc:1)）。
 
-## Intent / Non-goals / Forbidden shortcuts
+测试请求规则：
 
-**Intent**：模型注册 CRUD 落库、密钥加密 + 掩码返回、真实连通性测试（三类调用）、OpenAI 兼容适配器端口化。让 M4（embedding 消费）/M5（rerank 消费）/M7（Agent 绑模型）/M8（chat 编排）有可用的 `ModelProviderPort`。
+- LLM：`POST {baseUrl}/chat/completions`，body `{ model: deploymentId ?? name, messages: [{ role: "user", content: "ping" }], max_tokens: 1, temperature: 0 }`，成功条件是 2xx 且有 `choices` 数组。
+- Embedding：`POST {baseUrl}/embeddings`，body `{ model: deploymentId ?? name, input: "ping" }`，成功条件是 2xx 且 `data[0].embedding` 是数组。
+- Rerank：`POST {baseUrl}/rerank`，body `{ model: deploymentId ?? name, query: "ping", documents: ["ping", "pong"] }`，成功条件是 2xx 且存在常见 rerank 结果数组（优先 `results`，兼容 `data`）。如果 `baseUrl` 已以 `/rerank` 结尾，则直接使用该 URL，避免 `/rerank/rerank`。
 
-**Non-goals**：
-- 不建 `trace.llm/embeddings` 语义封装（M0.5 未完成项，M3 用 `withSpan` 直接打）。
-- 不做密钥轮换 UI / KMS 集成（阿里云 Tier B，`001:159`；密文 `v1:` 前缀为未来轮换留口）。
-- 不做模型调用计费 / 用量聚合（M10 看板）。
-- 不做多租户 / RBAC（M12）。
-- 不接真实第三方模型做 e2e（测试用 mock fetch，真实 key 由用户填）。
-- 不改 `traces` / `chat` / 其他域模块。
+通用规则：`Authorization: Bearer <apiKey>`；`Content-Type: application/json`；用 `AbortController` 或 `AbortSignal.timeout()` 实现默认 8s 超时，可通过 `MODEL_PROVIDER_TEST_TIMEOUT_MS` 调整。Provider 返回 401/403/404/5xx、JSON 形状错误、网络错误、超时，都返回 `{ ok:false, statusCode?, message }`，不要把第三方错误提升为 500；只有本地 provider id 不存在才是 404。错误 message 必须脱敏，不包含 request headers、apiKey 或完整 body。
 
-**Forbidden shortcuts**：
-- 不得把明文 apiKey 放进响应 / 日志 / span 属性（Invariant 4，`001:43`）。
-- 不得直接 import `adapters/`（`AGENTS.md` 边界 5），只能经 `MODEL_PROVIDER_PORT` token。
-- 不得在 `contracts` 引入 `node:crypto` / 任何运行时依赖（`AGENTS.md` 边界 3）。
-- 不得软化 `skeleton.e2e.spec.ts` 断言来「过」测试——改测试适配新真实行为（掩码、真实测试响应），保留 schema 合规断言强度。
-- 不得在应用启动时静默跑迁移（`AGENTS.md` 边界 9）。
-- 不得把加密工具放 `contracts` 或 `otel-conventions`（地基包保持纯净）。
+### Observability
 
-## Acceptance criteria
+连接测试不是问答关键路径，但应该用现有 OTel 原语记录一个 span。不要新增 `trace.llm` wrapper；用 `withSpan("models.test_connection", { attributes }, fn)`（[packages/otel/src/trace.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel/src/trace.ts:35)）。
 
-1. **注册模型**：`POST /api/models`（含 `apiKey` 明文）→ 201，响应 `ModelProvider` 含 `apiKeyMasked`（如 `sk-****1234`），**不含 `apiKey` 字段**，符合 `ModelProviderSchema`。
-2. **掩码返回**：`GET /api/models` / `GET /api/models/:id` 响应只含 `apiKeyMasked`，DB 存的是 `v1:` 加密密文（非明文、非掩码）。
-3. **连通性测试通过**：注册一个真实可用的 OpenAI 兼容模型（用户提供 key），点"测试"→ `POST /api/models/:id/test` 返回 `{ok:true,latencyMs,model?}`；对错误 key/URL 返回 `{ok:false,error}`（不抛 500）。
-4. **三类模型**：LLM/Embedding/Rerank 各能注册并测试（adapter 按 type 分派到 `/chat/completions`、`/embeddings`、`/rerank`）。
-5. **启用开关**：`PATCH /api/models/:id {enabled:false}` → 200，`GET` 反映新状态。
-6. **删除**：`DELETE /api/models/:id` → 204，再 `GET /:id` → 404。
-7. **前端接真**：`ModelsPage` 列表来自 `getModels()`，"接入"→`createModel`，"测试"→`testModel`，开关→`updateModel`，"删除"→`deleteModel`；apiKey 输入框 `type=password`，列表只显掩码。
-8. **迁移显式**：`pnpm db:generate` 生成 `0002_*.sql`；`pnpm db:migrate` 后表存在；启动时不跑迁移。
-9. **fail-fast**：缺 `MODEL_API_KEY_MASTER_KEY`（或 < 32 字符）→ 启动崩（config schema 拒绝）。
-10. **lint/边界 0 违规**：`pnpm lint` 通过；frontend 不 import backend；contracts 无平台依赖；adapter 不被域外直接 import。
+span 属性：
 
-## Test plan
+- `gen_ai.system`: provider 名或 `"openai-compatible"`（常量见 [packages/otel-conventions/src/index.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel-conventions/src/index.ts:2)）
+- `gen_ai.operation.name`: LLM 用 `chat`，Embedding 用 `embeddings`，Rerank 用 `rerank`（[packages/otel-conventions/src/index.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel-conventions/src/index.ts:25)）
+- `gen_ai.request.model`: `deploymentId ?? name`（[packages/otel-conventions/src/index.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel-conventions/src/index.ts:4)）
+- `codecrush.span.kind`: LLM/Embedding/Rerank 分别用现有 `CODECRUSH_SPAN_KIND.LLM/EMBEDDINGS/RERANK`（[packages/otel-conventions/src/index.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel-conventions/src/index.ts:39)）
 
-**契约（vitest，沿用 `packages/contracts` 现有 `*.test.ts` 模式）：**
-- `ModelProviderSchema`：正例（含 apiKeyMasked）通过；反例（含 `apiKey` 明文字段）—— 决策：响应 schema 不含 apiKey，若误传应被忽略或拒（zod 默认 strip，可加 `.strict()`）。反例（缺 enabled / type 非法）抛错。
-- `CreateModelRequestSchema`：正例（含 apiKey）通过；反例（缺 apiKey / type 非法）抛错。
-- `TestModelResponseSchema`：正例（ok:true）+（ok:false,error）都通过；反例（缺 ok）抛错。
+不得记录 `apiKey`、Authorization header、完整请求体。`withSpan` 会在异常时标 ERROR 并重抛（[packages/otel/src/trace.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/otel/src/trace.ts:46)），因此 adapter 的 provider 错误应转换为 `{ ok:false }`，避免普通连通性失败被当成后端异常。
 
-**后端单元（jest，沿用 `test/users.service.spec.ts` mock repo 模式）：**
-- `EncryptionService`：encrypt→decrypt 往返一致；同明文两次加密密文不同（随机 iv）；mask 不含明文中间段；解密被篡改密文抛错。
-- `ModelsService`（mock repo + mock port + real enc）：
-  - `create`：调用 `enc.encrypt(apiKey)`，repo.insert 收到 `apiKeyEnc` 以 `v1:` 开头；返回值含 `apiKeyMasked` 不含 `apiKey`。
-  - `list/get`：返回值 `apiKeyMasked` = `enc.mask(enc.decrypt(row.apiKeyEnc))`，无明文泄漏。
-  - `test`：not found → `NotFoundException`；正常 → 调 `port.test` 并返回其结果；span 被创建（可用 `@opentelemetry/sdk-trace-base` 的 `InMemorySpanExporter` 断言，已在 devDeps `apps/backend/package.json:40`）。
-- `OpenAiCompatProvider`（mock global `fetch`）：
-  - `test` llm → fetch 调 `POST {baseUrl}/chat/completions`，body 含 `max_tokens:1`；200 + `choices[0]` → `{ok:true,latencyMs}`；500 → `{ok:false,error}`。
-  - `test` embedding → `/embeddings`，body `input:"ping"`。
-  - `test` rerank → `/rerank`，body `query+documents`。
-  - 网络错（fetch reject）→ `{ok:false,error:err.message}`，不抛。
+### 前端
 
-**后端 e2e（jest + supertest，沿用 `test/skeleton.e2e.spec.ts` 模式，需真 PG 或 mock repo）：**
-- 因 `ModelsService` 依赖真 DB + 真 enc，e2e 需决策：**方案 A**（推荐）e2e 用真实 PG（compose 起的，`AGENTS.md` `docker compose ... up --wait`）+ 测试用 master key env + mock `MODEL_PROVIDER_PORT`（避免真调第三方）。**方案 B** 全 mock（repo + port + enc），e2e 只验 controller 接线。
-- `POST /api/models`（apiKey）→ 201，响应无 `apiKey` 字段，有 `apiKeyMasked`，DB 查 `api_key_enc` 以 `v1:` 开头且 ≠ apiKey 明文。
-- `GET /api/models` → 200，每条 `ModelProviderSchema.parse` 通过，无明文 key。
-- `POST /api/models/:id/test`（mock port 返回 `{ok:true,latencyMs:42}`）→ 200 `{ok:true,latencyMs:42}`；`/test` 不存在的 id → 404。
-- `PATCH /api/models/:id {enabled:false}` → 200；`GET` 反映。
-- `DELETE /api/models/:id` → 204；`GET /:id` → 404。
-- **更新 `skeleton.e2e.spec.ts:98-128`**：mock→真实行为迁移（见 Investigation §7），补 apiKey、改 test 响应断言、seed 或调整 list 断言。
-- OpenAPI（`test/openapi.e2e.spec.ts` 模式）：`/api/docs-json` paths 含 `/api/models/{id}/test`、`PATCH /api/models/{id}`、`DELETE /api/models/{id}`。
+`apps/frontend/src/api/client.ts` 扩展 models 方法：`createModel`、`updateModel`、`deleteModel`、`testModelConnection(id)`、`testModelDraftConnection(body)`。复用 `apiFetch` 的鉴权和 401 处理（[apps/frontend/src/api/client.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/api/client.ts:60)）；当前只有 `postJson`，需要增加 `patchJson` 或显式 `apiFetch`。
 
-**前端（vitest + @testing-library/react，沿用 `App.test.tsx` 模式）：**
-- `ModelsPage` 渲染：mock `getModels` 返回 2 条 → 列表显 2 行，掩码显示。
-- drawer "接入"：填表 → `createModel` 被调（参数含 apiKey），成功后列表刷新。
-- "测试连接"：调 `testModel`，显示 ok/错误。
-- 启用开关：点击 → `updateModel({enabled})`。
-- 不显式断言明文 apiKey（保证无明文渲染）。
+`ModelsPage.tsx` 改成真实 API 页面：
 
-## Risks / unknowns
+- on mount 调 `getModels()`，维护 loading/error，参考 PromptsPage 的 `refreshList` 和 `Alert`（[apps/frontend/src/pages/admin/PromptsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/PromptsPage.tsx:112)、[apps/frontend/src/pages/admin/PromptsPage.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/pages/admin/PromptsPage.tsx:526)）。
+- tabs 内部状态用 `"all" | ModelType`，显示层用映射 `llm -> LLM`、`embedding -> Embedding`、`rerank -> Rerank`，消除当前大小写 mismatch。
+- 抽屉“测试连接”调用 `POST /api/models/test`，创建时发送明文 `apiKey`；编辑时 API Key 输入框为空，旁边显示 `apiKeyMasked`，只有用户输入新 key 才发送 `apiKey`。
+- 行内“启用”调用 `PATCH /models/:id { enabled }`；“测试”调用真实 test endpoint 并显示 ok/failed；“删除”用确认后 `DELETE`；“编辑”打开同一抽屉。
+- `apps/frontend/src/mocks/models.ts` 可保留 provider 列表、placeholder、颜色等纯 UI 元数据，但 `LLM_ROWS` 不再作为数据源。
 
-1. **e2e 测试 DB 策略未定。** 现有 e2e（`skeleton.e2e.spec.ts`）全用 mock service，不打真 DB。M3 `ModelsService` 依赖真 repo + 真 enc。**方案 A**（真 PG + mock port）需要测试启动 compose（`AGENTS.md` 命令），CI 要有 PG；**方案 B**（全 mock）e2e 失去验真实加密/映射的价值。**建议**：单元测覆盖 enc + service 映射（mock repo），e2e 用方案 A 验端点接线 + 掩码返回。dev 阶段定。
-2. **OpenAI 兼容 baseUrl 是否必填。** 原型 `MODEL_TYPES.LLM.base` 给默认值（`mocks/models.ts:42` DeepSeek）。但不同 provider 默认不同。**决策**：`baseUrl` 契约 optional，但 adapter 调用时若缺则按 `provider` 推断（DeepSeek→`https://api.deepseek.com/v1`，OpenAI→`https://api.openai.com/v1`，自部署→必填否则 test 报错）。推断表放 adapter。或简化：要求 `baseUrl` 必填（用户填，M2 drawer 已有该字段）。倾向必填，减少推断复杂度——dev 定。
-3. **Rerank 端点形状多样性。** Cohere（`/rerank`，body `query/documents/top_n`）、Jina（`/rerank` 同形）、TEI（`/rerank` 同形）、vLLM（无原生 rerank）。M3 adapter 锁 Cohere/Jina/TEI 兼容的 `/rerank` 形状。对 vLLM 等无 rerank 端点的部署，test 报 `{ok:false,error}`（合理）。**不抽象多 rerank 协议**（YAGNI，等真有第二类需求再加适配器）。
-4. **前端 `ModelType` 大小写迁移。** `mocks/models.ts:5` `ModelType="LLM"|"Rerank"|"Embedding"`（大写）vs 契约小写。改前端内部用小写、UI 展示时大写首字母。`MODEL_TYPES` 的 key 也要改小写。这是 mock→契约对齐，`006:67` Invariant 2 要求类型一致。低风险但需细心。
-5. **`trace.llm/embeddings` 封装缺失。** M3 用 `withSpan` 直接打，属性手填 `GEN_AI.*`。M0.5 本应建 `trace.*` 封装（`003:270`）但未落地。**不阻塞 M3**，但 M8 chat 路径会重复手填属性。**Revisit**：M3 收尾后单列任务补 `trace.{llm,embeddings,rerank}` 封装（M0.5 收尾），M8 受益。
-6. **主密钥管理与轮换。** `v1:` 前缀留轮换口，但 M3 不实现轮换。若主密钥泄漏，需手动重加密所有 key（脚本）。**风险**：单点，首期接受（`001:126` Postgres 单点同构）。dev 文档给生成命令 `openssl rand -hex 32`。
-7. **`skeleton.e2e.spec.ts` 行为迁移边界。** 改测试时易顺手弱化（如把 `length>0` 改 `>=0`）。**纪律**：list 断言改为「seed 后 length===1 + schema 合规」而非「>=0」；test 断言改为 `TestModelResponseSchema.parse` + `ok` 布言；create 断言加「响应无 apiKey 字段」。保持断言强度，只换形状。
-8. **adapter 内 fetch 的超时与重试。** 连通性测试若目标 URL 慢/挂，会阻塞。**决策**：`AbortController` 设 10s 超时，超时→`{ok:false,error:"timeout"}`。不重试（test 是一次性探测）。M8 真实调用再定重试策略（`001:122` 生成不重试、改写/embed 重试 1 次）。
+## 受影响文件
 
-## Self-review
+- `packages/contracts/src/models.ts`：读写 schema 分离，新增 update/test schemas。
+- `packages/contracts/src/m2-schemas.test.ts`：更新模型正负例；新增“create 接受 apiKey 且不接受 apiKeyMasked”、“read schema 不接受 apiKey”。
+- `apps/backend/src/platform/config/*`、`apps/backend/.env.example`、`apps/backend/test/config.schema.spec.ts`：加密主密钥和 timeout 配置。
+- `apps/backend/src/platform/crypto/*`：新增 AES-GCM 服务。
+- `apps/backend/src/modules/models/schema.ts`、`models.repository.ts`、`ports/model-provider.port.ts`、`adapters/openai-compatible.provider.ts`、`models.service.ts`、`models.controller.ts`、`models.module.ts`。
+- `apps/backend/src/db/schema.ts`、`apps/backend/drizzle/0003_*.sql`。
+- `apps/backend/test/skeleton.e2e.spec.ts`：替换 models mock 断言，覆盖真实 create/mask/test path。
+- 新增 `apps/backend/test/models.service.spec.ts`、`models.repository.spec.ts` 或 service-level repo mock、`openai-compatible.provider.spec.ts`。
+- `apps/frontend/src/api/client.ts`、`apps/frontend/src/pages/admin/ModelsPage.tsx`、必要时 `apps/frontend/src/mocks/models.ts`。
+- `apps/frontend/src/app/App.test.tsx` 或新增 `ModelsPage.test.tsx`：断言 `/admin/models` 挂载调用 `/api/models`，并覆盖 create/test/toggle/delete。
 
-- **placeholder 扫描**：无 TBD/XXX/待定 占位。
-- **内部一致**：契约读写分离（§A）与 service 映射（§C）、前端 typed client（§D）、AC（1-7）、Test plan 一致；端口 token `MODEL_PROVIDER_PORT` / `ENCRYPTION` 全文一致。
-- **scope 检查**：未越界到 traces/chat/M0.5 trace 封装；Non-goals 显式排除。
-- **ambiguity**：e2e DB 策略（Risk 1）、baseUrl 必填否（Risk 2）列为 dev 决策点，不阻塞 spec。
-- **integrity**：所有 file:line 引用均实际读过（见 Investigation）；未臆测未开文件。`ModelProviderPort` 形状对齐 `001:96` `chat()/embed()/rerank()` + 加 `test()`；表结构对齐 `001:81`。
+## 会破的现有测试与更新方式
+
+`packages/contracts/src/m2-schemas.test.ts` 当前 valid model 带 `apiKeyMasked` 和 `role`，create request 直接用读模型去掉 id（[packages/contracts/src/m2-schemas.test.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/contracts/src/m2-schemas.test.ts:35)、[packages/contracts/src/m2-schemas.test.ts](/Users/zhaopengcheng/Desktop/rag-service/packages/contracts/src/m2-schemas.test.ts:310)）。应改为读侧只断言 masked，写侧单独断言 plaintext `apiKey`。
+
+`apps/backend/test/skeleton.e2e.spec.ts` 当前断言 GET models 非空、GET `/m1` 成功、POST 不带 apiKey 也 201、POST `/m1/test` 恒 `{ok:true}`（[apps/backend/test/skeleton.e2e.spec.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/test/skeleton.e2e.spec.ts:197)）。M3 后应使用 in-memory ModelsRepository + fake ModelProviderPort：先 POST 带 apiKey 创建，再 GET，断言 `apiKey` 不在响应、`apiKeyMasked` 存在；test 断言 fake port 被调用且响应 schema 合规。不能把断言软化成“任意 200”。
+
+`apps/frontend/src/app/App.test.tsx` 目前只有 PromptsPage 真实 API 挂载断言，没有 ModelsPage API 断言（[apps/frontend/src/app/App.test.tsx](/Users/zhaopengcheng/Desktop/rag-service/apps/frontend/src/app/App.test.tsx:68)）。M3 应新增 `/admin/models` 测试，mock `/api/models` 返回 contracts 合规数组，断言页面不再渲染本地 `LLM_ROWS` 的数据源。
+
+`apps/backend/test/config.schema.spec.ts` 现有合法 env 只包含 `DATABASE_URL/JWT_SECRET`（[apps/backend/test/config.schema.spec.ts](/Users/zhaopengcheng/Desktop/rag-service/apps/backend/test/config.schema.spec.ts:3)）。加密主密钥 required 后，该测试必须补 key，并增加缺失/非法 base64/非 32 bytes fail-fast 用例。
+
+## 验收标准
+
+1. `POST /api/models` 必须要求 plaintext `apiKey`，数据库只存 `api_key_enc`，响应只有 `apiKeyMasked`。
+2. `GET /api/models` 和 `GET /api/models/:id` 永不包含 `apiKey` 或 `apiKeyEnc`。
+3. `PATCH /api/models/:id { enabled:false }` 后列表反映禁用状态；不带 `apiKey` 的编辑不会清空原 key；带 `apiKey` 会轮换密文和掩码。
+4. `DELETE /api/models/:id` 后再次 GET 返回 404。
+5. `POST /api/models/:id/test` 会真实调用对应 OpenAI-compatible endpoint；LLM/Embedding/Rerank 三类分别命中不同 path/body；provider 失败返回 `{ ok:false }` 且错误脱敏。
+6. 前端模型页加载、创建、编辑、启停、测试、删除都走 API；刷新页面后数据仍来自后端而非本地 mock。
+7. `pnpm test`、`pnpm lint`、`pnpm build` 通过。
+
+## 风险与明确假设
+
+Rerank 没有 OpenAI 官方统一 endpoint；本 spec 选 `/rerank` 并兼容 `results`/`data` 数组，这是面向 Jina/Cohere/vLLM 类兼容服务的最小交集。若实际供应商要求完全不同 body，应新增 provider-specific adapter，而不是把前端或 service 写成条件拼接。
+
+`role` 目前只是 M2 mock/UI 字段，权威 DB 表没有它。M3 不持久化 `role`；若产品要求“用途”可编辑，应先更新 001 的 `model_providers` 表定义，再实现。
+
+配置主密钥是 dev/local 的应用层加密方案。001 提到阿里云可用 KMS（[docs/design/001-rag-platform-architecture.md](/Users/zhaopengcheng/Desktop/rag-service/docs/design/001-rag-platform-architecture.md:152)），但 M3 不接 KMS；以后替换时应只改 platform crypto 实现，不改 models service/controller。

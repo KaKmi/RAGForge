@@ -1,58 +1,36 @@
-# M3 Dev Context
+# Dev Context — M3 模型接入
 
 ## Test Command
-
-- Per-story targeted: `pnpm --filter @codecrush/{contracts|backend|frontend} test`
-- Full regression: `pnpm test` (turbo) + `pnpm lint` + `pnpm build`
-- DB migration: `pnpm db:generate` then `pnpm db:migrate` (needs `docker compose -f infra/docker-compose.yml --profile infra up -d --wait`)
+- 全仓：`pnpm test`（turbo）；lint：`pnpm lint`；build：`pnpm build`
+- 分包：`pnpm --filter @codecrush/contracts test`（vitest）、`pnpm --filter @codecrush/backend test`（jest，可 `-- <spec>` 过滤）、`pnpm --filter @codecrush/frontend test`（vitest）
+- 迁移：`pnpm db:generate` / `pnpm db:migrate`（需 `docker compose -f infra/docker-compose.yml --profile infra up -d --wait`）
 
 ## Code Conduct
+- Conventional Commits，结尾 `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`；仅提交不推送。
+- `pnpm lint` 边界规则 0 违规（前端只 import contracts/otel-conventions；跨模块只走 barrel/DI token；禁 import adapters/）。
+- 中文注释风格（对齐 prompts 模块）；zod v4；Node 22 fetch；后端 jest、contracts/前端 vitest。
 
-- TS strict; Prettier `semi: true`, double quotes, printWidth 100, trailingComma all.
-- Conventional Commits; co-author trailer per CLAUDE.md.
-- Dependency boundary (AGENTS.md): contracts/otel-conventions depend only on zod/zero-dep; backend imports down; frontend imports only contracts + otel-conventions (never backend/otel).
-- Port/adapter: domain owns port (interface), adapter via NestJS DI token; never import `adapters/` directly.
-- Domain `schema.ts` is pure table def, zero service refs.
-- Observability never on critical path; best-effort spans.
-- Never soften test assertions to pass — fix code (契约演进更新测试体是合法的，非软化).
+## Review 策略（CLAUDE.md 轻量对抗，用户 2026-07-05 拍板）
+- 不做每 story peer 审。
+- **Story 2（加密，安全敏感）单独 peer 审**。
+- 全部 story 完成后一次 peer review 覆盖全量 diff（WAVE_BASE..HEAD）。
+- WAVE_BASE_SHA = 3b55109d1452bfde161be21e60c4f8fc59100a01
 
 ## Pattern References
-
-### Story 1 (contracts) — `packages/contracts/src/models.ts`
-- Reference: existing `packages/contracts/src/models.ts` (M2 skeleton), `m2-schemas.test.ts` valid.model block.
-- Mirror: `z.enum` lowercase types; `ModelProviderSchema.omit({id,...}).extend({...})` for write DTOs; list response = `z.array`.
-- Deviations: baseUrl optional→required; add `deploymentId`; split write(`apiKey`)/read(`apiKeyMasked`); add `UpdateModelRequestSchema` (.partial) + `TestModelResponseSchema`.
-
-### Story 2 (encryption) — `apps/backend/src/platform/security/`
-- Reference: `apps/backend/src/platform/persistence/persistence.module.ts` (@Global module + DRIZZLE token + useFactory(AppConfigService)); `drizzle.constants.ts` (Symbol token); `config.schema.ts`/`config.service.ts` (env getter); `config.schema.spec.ts` (envSchema fail-fast test pattern); `config.module.ts` (AppConfigModule.forRoot validate).
-- Mirror: @Global module + Symbol token + useFactory(AppConfigService) + fail-fast envSchema `z.string().min(44)`.
-- Deviations: AES-256-GCM via Node `crypto` (backend-only); maskApiKey co-located on service. Existing `security/` has only `authenticated-user.ts` + `public.decorator.ts` — add `encryption.ts`, `security.constants.ts`, `security.module.ts`.
-- NOTE: `envSchema` only directly tested in `test/config.schema.spec.ts`; must update its `base` to include `MODEL_API_KEY_ENCRYPTION_KEY` (44-char base64) so "合法 JWT_SECRET → 通过" stays green. AppConfigModule only imported by app.module.ts (no test triggers env validation at runtime).
-
-### Story 3 (DB schema) — `apps/backend/src/modules/models/schema.ts`
-- Reference: `apps/backend/src/modules/users/schema.ts` (pgTable + $inferSelect); `db/schema.ts` barrel (`export * from "../modules/users/schema"`); `drizzle/0001_*.sql` (existing migrations).
-- Mirror: uuid PK defaultRandom, text/boolean/timestamp columns, snake_case column names, `$inferSelect`/`$inferInsert` exports.
-- Deviations: column `api_key_enc`/`base_url`/`deployment_id` per 001:81; no `unique` on email.
-
-### Story 4 (port + adapter) — `apps/backend/src/modules/models/ports/` + `adapters/`
-- Reference: AGENTS.md §端口/适配器; Node 22 global `fetch`.
-- Mirror: `interface ModelProviderPort` in ports/; Symbol DI token `MODEL_PROVIDER_PORT`; adapter `@Injectable() implements ModelProviderPort`.
-- Deviations: only `testConnection` exposed (chat/embed/rerank leave M4/M8); real-path POST per type (chat/completions max_tokens:1, embeddings input:"ping", rerank query+documents+top_n); AbortController 10s timeout; failures → `{ok:false}` never throw.
-
-### Story 5 (service + controller + e2e) — `apps/backend/src/modules/models/`
-- Reference: `users.repository.ts` (@Inject(DRIZZLE) + eq + select/insert/update/delete); `users.service.ts` (@Injectable + toProfile row→DTO mapping + NotFoundException); `users.controller.ts` (createZodDto + @Req AuthedRequest); `users.module.ts` (providers + exports); `skeleton.e2e.spec.ts` (TestingModule + JwtModule + APP_GUARD/APP_PIPE + overrideProvider).
-- Mirror: repo find/findById/insert/update/delete; service row→DTO with enc.encrypt/decrypt/maskApiKey; controller GET/GET:id/POST/PATCH:id/DELETE:test; module providers [repo, service, {provide: MODEL_PROVIDER_PORT, useClass: OpenAiCompatAdapter}] + exports [service, port].
-- Deviations: withSpan best-effort in test(); e2e uses inMemoryRepo + mock port + fixed-key EncryptionService (NOT SecurityModule — skeleton.e2e doesn't import AppConfigModule).
-- CRITICAL test-coupling: Story 1 makes `baseUrl` required + `apiKey` required-write → `skeleton.e2e.spec.ts` models block breaks (m3 has no baseUrl; POST sends no apiKey). Stays red until Story 5 fixes it (non-softening: update test body + assertions). So `pnpm --filter @codecrush/backend test` is NOT green for Stories 1–4; run targeted new spec per story, full backend suite green at Story 5+.
-
-### Story 6 (frontend) — `apps/frontend/src/pages/admin/ModelsPage.tsx`
-- Reference: existing `ModelsPage.tsx` (tab+grid+drawer local state); `mocks/models.ts` (LLM_ROWS/MODEL_TYPES/ModelType uppercase); `api/client.ts` (apiFetch/getJson/postJson + ZodSchema<T> interface); M2 dev-ledger Story 6 conventions (frontend never imports zod directly).
-- Mirror: typed client via contracts ZodSchema<T>; `useEffect` getModels on mount; enum mapping TYPE_LABEL lower→upper.
-- Deviations: drop `LLM_ROWS` (mock data); keep `MODEL_TYPES` (UI constants); `ModelType` = `z.infer<ModelTypeSchema>` (lowercase) + `TYPE_LABEL` map; apiKey not refilled on edit.
+### Story 1（契约）
+- `packages/contracts/src/prompts.ts` + `m2-schemas.test.ts` — schema 读写分离与正反例测试风格。
+### Story 2（加密/SecurityModule）
+- `apps/backend/src/platform/persistence/persistence.module.ts` — @Global + Symbol token + useFactory 范式。
+- `apps/backend/test/config.schema.spec.ts` — env fail-fast 测试风格。
+### Story 3（schema/repository）
+- `apps/backend/src/modules/prompts/schema.ts`、`users.repository.ts` — 域内表定义（零 service 引用）+ 最简 repo。
+### Story 4（port/adapter）
+- `docs/design/003-code-organization.md:101` 端口/适配器落位；无现成 adapter 先例（M3 首个），`none found`（搜索过 modules/*/adapters）。
+### Story 5（service/controller/e2e）
+- `apps/backend/src/modules/prompts/prompts.service.ts`、`prompts.controller.ts`、`skeleton.e2e.spec.ts:58-148`（in-memory repo override 范式）。
+### Story 6（前端）
+- `apps/frontend/src/pages/admin/PromptsPage.tsx:86-130`（loading/err/busy 态）、`api/client.ts` deletePrompt 204 范式、`App.test.tsx:68-92`（挂载测试）。
 
 ## Waves
-
-All sequential single-story waves (strict dependency chain):
-1 → 2 → 3 → 4 → 5 → 6 → 7
-
-Lightweight对抗 (CLAUDE.md): peer review only for security/data-integrity stories (Story 2 encryption, Story 5 service+apikey); final review at Story 7 covers all diff. Others host self-checked.
+Story 1→2→3→4→5→6→7 全部单 story 顺序波（2/3/4 文件不重叠理论上可并行，但均为 mechanical/含完整代码，host 直接实现比派子代理更省；且顺序执行保证 Story 5 汇聚时上游已就绪）。
+Story 1 落地后 backend/frontend 短暂红（未适配新契约），Story 5/6 恢复——中途只跑本包过滤测试，Story 7 跑全仓。
