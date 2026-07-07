@@ -21,6 +21,16 @@ import {
   type MessageListResponse,
   ModelProviderListResponseSchema,
   type ModelProviderListResponse,
+  ModelProviderSchema,
+  type ModelProvider,
+  CreateModelRequestSchema,
+  type CreateModelRequest,
+  UpdateModelRequestSchema,
+  type UpdateModelRequest,
+  TestModelRequestSchema,
+  type TestModelRequest,
+  TestModelResponseSchema,
+  type TestModelResponse,
   CreatePromptRequestSchema,
   type CreatePromptRequest,
   CreatePromptVersionRequestSchema,
@@ -115,9 +125,31 @@ export const getAgents = (): Promise<AgentListResponse> =>
 export const getAgent = (id: string): Promise<Agent> =>
   getJson(`/api/agents/${encodeURIComponent(id)}`, AgentSchema);
 
-// models — @Controller("models")
+// models — @Controller("models")（M3 真实 CRUD + 连通性测试）
 export const getModels = (): Promise<ModelProviderListResponse> =>
   getJson("/api/models", ModelProviderListResponseSchema);
+export const createModel = (req: CreateModelRequest): Promise<ModelProvider> =>
+  postJson("/api/models", req, CreateModelRequestSchema, ModelProviderSchema);
+export async function updateModel(id: string, req: UpdateModelRequest): Promise<ModelProvider> {
+  const resp = await apiFetch(`/api/models/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(UpdateModelRequestSchema.parse(req)),
+  });
+  if (!resp.ok) throw new Error(`update model failed: ${resp.status} ${resp.statusText}`);
+  return ModelProviderSchema.parse(await resp.json());
+}
+export async function deleteModel(id: string): Promise<void> {
+  const resp = await apiFetch(`/api/models/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!resp.ok) throw new Error(`delete model failed: ${resp.status} ${resp.statusText}`);
+}
+export async function testModel(id: string): Promise<TestModelResponse> {
+  const resp = await apiFetch(`/api/models/${encodeURIComponent(id)}/test`, { method: "POST" });
+  if (!resp.ok) throw new Error(`test model failed: ${resp.status} ${resp.statusText}`);
+  return TestModelResponseSchema.parse(await resp.json());
+}
+// ad-hoc 测试：抽屉保存前验活（明文 key 仅经 HTTPS 透传，不落库）
+export const testModelConfig = (req: TestModelRequest): Promise<TestModelResponse> =>
+  postJson("/api/models/test", req, TestModelRequestSchema, TestModelResponseSchema);
 
 // knowledge-bases — @Controller("knowledge-bases")
 export const getKnowledgeBases = (): Promise<KnowledgeBaseListResponse> =>

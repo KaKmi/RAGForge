@@ -91,6 +91,31 @@ it("loads PromptsPage from real /api/prompts on /admin/prompts (M6)", async () =
   });
 });
 
+it("loads ModelsPage from real /api/models on /admin/models (M3)", async () => {
+  localStorage.setItem("token", "fake-token");
+  // mock fetch：GET /api/models 返空数组，其余 404。证明页面挂载调真 API 而非本地 mock。
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _opts?: RequestInit) => {
+    const u = typeof input === "string" ? input : input.toString();
+    if (u.includes("/api/models")) {
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response;
+    }
+    return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+  });
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/admin/models"]}>
+      <App />
+    </MemoryRouter>,
+  );
+  // 空态出现 = 页面消费了 API 响应（不再渲染本地 LLM_ROWS）
+  expect(await screen.findByText(/暂无模型/)).toBeInTheDocument();
+  await waitFor(() => {
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls.some(u => u.includes("/api/models"))).toBe(true);
+  });
+});
+
 it("renders chat three-column layout on /chat when authenticated", async () => {
   localStorage.setItem("token", "fake-token");
   render(

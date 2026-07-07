@@ -1,39 +1,27 @@
+import type { ModelType } from "@codecrush/contracts";
 import type { TagKey } from "./agents";
 
-/** M2 mock：模型调用管理页用，对齐原型 LLM_ROWS / MODEL_TYPES。M3 接真实 /api/models。 */
+/** 模型接入页 UI 常量（非数据 mock，数据走 /api/models）：类型文案 / provider 候选 / baseUrl placeholder / 参数提示。 */
 
-export type ModelType = "LLM" | "Rerank" | "Embedding";
-
-export interface LlmRow {
-  m: string;
-  type: ModelType;
-  role: string;
-  prov: string;
-  off?: boolean;
-}
-
-export const LLM_ROWS: LlmRow[] = [
-  { m: "DeepSeek-V3", type: "LLM", role: "回复生成（主）", prov: "DeepSeek" },
-  { m: "DeepSeek-V3 (低温)", type: "LLM", role: "问题改写 · 意图识别", prov: "DeepSeek" },
-  { m: "Qwen-Max", type: "LLM", role: "生成备用 / 降级链路", prov: "阿里云" },
-  { m: "GPT-4o-mini", type: "LLM", role: "评测裁判", prov: "OpenAI" },
-  { m: "bge-m3", type: "Embedding", role: "向量嵌入 · 全部知识库", prov: "自部署" },
-  { m: "text-embedding-3-large", type: "Embedding", role: "备用嵌入", prov: "OpenAI", off: true },
-  { m: "bge-reranker-v2-m3", type: "Rerank", role: "召回重排", prov: "自部署" },
-];
+export const TYPE_LABEL: Record<ModelType, string> = {
+  llm: "LLM",
+  embedding: "Embedding",
+  rerank: "Rerank",
+};
 
 export interface ModelTypeDef {
   hint: string;
   tag: TagKey;
   provs: string[];
   namePh: string;
+  /** 根形态 URL；后端 adapter 自动拼 canonical 路径（/chat/completions | /embeddings | /rerank） */
   base: string;
   paramLabel: string;
   params: { k: string; v: string }[];
 }
 
 export const MODEL_TYPES: Record<ModelType, ModelTypeDef> = {
-  LLM: {
+  llm: {
     hint: "生成 · 改写 · 意图",
     tag: "blue",
     provs: ["DeepSeek", "阿里云", "OpenAI", "智谱", "自部署"],
@@ -45,24 +33,24 @@ export const MODEL_TYPES: Record<ModelType, ModelTypeDef> = {
       { k: "max_tokens", v: "2048" },
     ],
   },
-  Rerank: {
+  rerank: {
     hint: "召回结果重排",
     tag: "purple",
     provs: ["自部署", "Jina", "Cohere", "阿里云"],
     namePh: "bge-reranker-v2-m3",
-    base: "http://infra.internal:8080/rerank",
+    base: "http://infra.internal:8080",
     paramLabel: "重排参数",
     params: [
       { k: "top_n", v: "5" },
       { k: "score 阈值", v: "0.65" },
     ],
   },
-  Embedding: {
+  embedding: {
     hint: "文本向量嵌入",
     tag: "cyan",
     provs: ["自部署", "OpenAI", "Jina", "智谱"],
     namePh: "bge-m3",
-    base: "http://infra.internal:8080/embed",
+    base: "http://infra.internal:8080",
     paramLabel: "向量参数",
     params: [
       { k: "维度", v: "1024" },
@@ -71,13 +59,21 @@ export const MODEL_TYPES: Record<ModelType, ModelTypeDef> = {
   },
 };
 
-export const LLM_TABS = ["全部", "LLM", "Rerank", "Embedding"] as const;
+export const MODEL_TABS: Array<{ key: "all" | ModelType; label: string }> = [
+  { key: "all", label: "全部" },
+  { key: "llm", label: "LLM" },
+  { key: "rerank", label: "Rerank" },
+  { key: "embedding", label: "Embedding" },
+];
 
-/** 接入模型抽屉表单。 */
+/** 接入/编辑模型抽屉表单。 */
 export interface ModelDraft {
+  /** 有值 = 编辑模式 */
+  id?: string;
   type: ModelType;
-  prov: string;
+  provider: string;
   name: string;
-  base: string;
-  key: string;
+  baseUrl: string;
+  /** 编辑模式留空 = 不改 */
+  apiKey: string;
 }
