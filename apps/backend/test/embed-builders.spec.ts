@@ -34,6 +34,36 @@ describe("openai_compat embed builder", () => {
       [3, 4],
     ]);
   });
+
+  it("data 乱序返回（带 index）时按 index 对齐输入文本顺序", () => {
+    const req = EMBED_BUILDERS.openai_compat(cfg(), ["t0", "t1"]);
+    const vectors = req.parseResponse({
+      data: [
+        { index: 1, embedding: [3, 4] },
+        { index: 0, embedding: [1, 2] },
+      ],
+    });
+    expect(vectors).toEqual([
+      [1, 2],
+      [3, 4],
+    ]);
+  });
+});
+
+describe("jina embed builder", () => {
+  it("data 乱序返回（带 index）时按 index 对齐输入文本顺序", () => {
+    const req = EMBED_BUILDERS.jina(cfg({ protocol: "jina" }), ["t0", "t1"]);
+    const vectors = req.parseResponse({
+      data: [
+        { index: 1, embedding: [3, 4] },
+        { index: 0, embedding: [1, 2] },
+      ],
+    });
+    expect(vectors).toEqual([
+      [1, 2],
+      [3, 4],
+    ]);
+  });
 });
 
 describe("self_hosted (TEI) embed builder", () => {

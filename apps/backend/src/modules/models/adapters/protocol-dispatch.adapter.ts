@@ -111,6 +111,18 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     }
     const json = await resp.json();
     const vectors = req.parseResponse(json);
+    // 200 但响应形状不符时 parseResponse 返回 []/缺项——必须与输入数一致，防止静默空结果流出
+    if (vectors.length !== texts.length) {
+      throw new Error(
+        `embedding 响应向量数与输入文本数不一致（期望 ${texts.length}，实际 ${vectors.length}）`,
+      );
+    }
+    const malformedIdx = vectors.findIndex(
+      (v) => !Array.isArray(v) || v.some((n) => typeof n !== "number"),
+    );
+    if (malformedIdx !== -1) {
+      throw new Error(`embedding 响应形状不符：第 ${malformedIdx + 1} 个向量不是数字数组`);
+    }
     const bad = vectors.find((v) => v.length !== 1024);
     if (bad) {
       throw new Error(`embedding 维度不是 1024（实际 ${bad.length}），平台统一要求 1024 维`);

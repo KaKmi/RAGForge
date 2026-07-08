@@ -21,6 +21,17 @@ function geminiHeaders(apiKey: string): Record<string, string> {
 
 const dimensionsOf = (c: ModelCallConfig): number => Number(c.params?.dimensions ?? "1024");
 
+// OpenAI 形嵌入响应契约含 data[].index：部分网关可能乱序返回 data，须按 index 对齐输入文本顺序
+// （index 缺失时退回数组顺序）。openai_compat 与 jina 共用此形态。
+function parseOpenAiStyleData(json: unknown): number[][] {
+  if (!isObj(json) || !Array.isArray(json.data)) return [];
+  const data = json.data as Array<{ index?: unknown; embedding: number[] }>;
+  const ordered = data.every((d) => typeof d.index === "number")
+    ? [...data].sort((a, b) => (a.index as number) - (b.index as number))
+    : data;
+  return ordered.map((d) => d.embedding);
+}
+
 // (protocol) → 批量向量化 builder 表：与契约 PROTOCOLS_BY_TYPE.embedding 的 5 个协议一一对应
 // （完整性由 embed-builders.spec 断言，同 PROBE_BUILDERS 的查表+防御分支模式）。
 // llm/rerank-only 协议（anthropic/dashscope）不在表内：ProtocolDispatchAdapter.embed() 对查不到
@@ -36,10 +47,7 @@ export const EMBED_BUILDERS: Record<ModelProtocol, EmbedBuilder> = {
     url: joinUrl(c.baseUrl, "/embeddings"),
     headers: bearerHeaders(c.apiKey),
     body: { model: modelId(c), input: texts, dimensions: dimensionsOf(c) },
-    parseResponse: (json) => {
-      if (!isObj(json) || !Array.isArray(json.data)) return [];
-      return (json.data as Array<{ embedding: number[] }>).map((d) => d.embedding);
-    },
+    parseResponse: parseOpenAiStyleData,
   }),
   gemini: (c, texts) => ({
     url: joinUrl(c.baseUrl, `/models/${modelId(c)}:batchEmbedContents`),
@@ -68,9 +76,6 @@ export const EMBED_BUILDERS: Record<ModelProtocol, EmbedBuilder> = {
     url: joinUrl(c.baseUrl, "/embeddings"),
     headers: bearerHeaders(c.apiKey),
     body: { model: modelId(c), input: texts },
-    parseResponse: (json) => {
-      if (!isObj(json) || !Array.isArray(json.data)) return [];
-      return (json.data as Array<{ embedding: number[] }>).map((d) => d.embedding);
-    },
+    parseResponse: parseOpenAiStyleData,
   }),
 } as Record<string, EmbedBuilder>;
