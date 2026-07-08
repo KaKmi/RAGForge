@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import type { ModelProtocol, ModelType } from "@codecrush/contracts";
 import type {
+  EmbedResult,
   ModelCallConfig,
   ModelProviderPort,
   TestModelResult,
@@ -17,6 +18,7 @@ import { cohereEmbeddingProbe, cohereRerankProbe } from "./protocols/cohere";
 import { jinaEmbeddingProbe, jinaRerankProbe } from "./protocols/jina";
 import { dashscopeRerankProbe } from "./protocols/dashscope";
 import { selfHostedEmbeddingProbe, selfHostedRerankProbe } from "./protocols/self-hosted";
+import { EMBED_BUILDERS } from "./embed-builders";
 
 export const TEST_CONNECTION_TIMEOUT_MS = 10_000;
 
@@ -89,6 +91,31 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult> {
+    const builder = EMBED_BUILDERS[config.protocol];
+    if (!builder) {
+      // 契约层已收口 embedding 合法协议组合，此分支正常不可达（防御新枚举值漏配 builder）
+      throw new Error(`unsupported protocol ${config.protocol} for embedding`);
+    }
+    const req = builder(config, texts);
+    const resp = await fetch(req.url, {
+      method: "POST",
+      headers: req.headers,
+      body: JSON.stringify(req.body),
+    });
+    if (!resp.ok) {
+      const json: unknown = await resp.json().catch(() => undefined);
+      throw new Error(redactSecret(upstreamError(resp.status, json), config.apiKey));
+    }
+    const json = await resp.json();
+    const vectors = req.parseResponse(json);
+    const bad = vectors.find((v) => v.length !== 1024);
+    if (bad) {
+      throw new Error(`embedding 维度不是 1024（实际 ${bad.length}），平台统一要求 1024 维`);
+    }
+    return { vectors };
   }
 }
 

@@ -97,6 +97,24 @@ export class ModelsService {
     return this.doTest({ ...req });
   }
 
+  // 供 ingestion 域调用：按 modelId 查行、解密 key、调端口 embed()。密钥解密不出 models 域。
+  async embedTexts(modelId: string, texts: string[]): Promise<number[][]> {
+    const row = await this.mustFind(modelId);
+    const { vectors } = await this.provider.embed(
+      {
+        type: row.type as ModelType,
+        protocol: row.protocol as ModelProtocol,
+        name: row.name,
+        baseUrl: row.baseUrl,
+        deploymentId: row.deploymentId ?? undefined,
+        params: row.params,
+        apiKey: this.enc.decrypt(row.apiKeyEnc),
+      },
+      texts,
+    );
+    return vectors;
+  }
+
   // best-effort span：属性只含类型/协议/模型名，永不含 apiKey。
   // gen_ai.system 填协议值（provider 字段已随协议化移除，协议值比自由文本更规范）
   private async doTest(config: ModelCallConfig): Promise<TestModelResponse> {
