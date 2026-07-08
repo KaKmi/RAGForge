@@ -300,9 +300,13 @@ const inMemoryDocsRepo: Partial<DocumentsRepository> = {
   },
 } as Partial<DocumentsRepository>;
 
+// 只存 id 集合即可支撑删除计数语义：真实 batchDelete 返回「实际删掉的行数」，
+// 不存在的 id 不计数——回显 ids.length 的坏实现必须被这里揪出来。
+const inMemoryChunkIds = new Set<string>();
 const inMemoryChunksRepo: Partial<ChunksRepository> = {
   findPage: async () => ({ items: [], total: 0 }),
-  batchDelete: async (ids: string[]) => ids.length,
+  batchDelete: async (ids: string[]) =>
+    ids.filter((id) => inMemoryChunkIds.delete(id)).length,
   replaceVersion: async () => undefined,
   deleteByVersion: async () => 0,
 } as Partial<ChunksRepository>;
@@ -806,13 +810,16 @@ describe("M2 domain skeleton", () => {
         .expect(400);
     });
 
-    it("POST /chunks/batch-delete 合法 ids → 201 + deletedCount", async () => {
+    it("POST /chunks/batch-delete → 201 + deletedCount 只计实际存在的行", async () => {
+      inMemoryChunkIds.clear();
+      inMemoryChunkIds.add("c1");
       const res = await request(app.getHttpServer())
         .post("/api/chunks/batch-delete")
         .set(auth())
-        .send({ ids: ["c1", "c2"] })
+        .send({ ids: ["c1", "c2"] }) // c2 不存在——回显 ids.length 的实现会在这里露馅
         .expect(201);
-      expect(res.body.deletedCount).toBe(2);
+      expect(res.body.deletedCount).toBe(1);
+      expect(inMemoryChunkIds.size).toBe(0);
     });
   });
 
