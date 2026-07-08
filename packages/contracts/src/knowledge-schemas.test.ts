@@ -9,6 +9,11 @@ import {
   DocumentStatusSchema,
   UpdateDocumentMetadataRequestSchema,
 } from "./documents";
+import {
+  KnowledgeBaseSchema,
+  CreateKnowledgeBaseRequestSchema,
+  UpdateKnowledgeBaseRequestSchema,
+} from "./knowledge-bases";
 
 const validChunk = {
   id: "c1",
@@ -92,5 +97,47 @@ describe("UpdateDocumentMetadataRequestSchema", () => {
     expect(
       UpdateDocumentMetadataRequestSchema.parse({ metadata: { author: "x" } }).metadata.author,
     ).toBe("x");
+  });
+});
+
+const validKb = {
+  id: "kb1",
+  name: "课程目录库",
+  desc: "",
+  chunkTemplate: "general" as const,
+  embeddingModelId: "m2",
+  docsCount: 0,
+  chunksCount: 0,
+  status: "ready" as const,
+  activeVersion: 1,
+  buildingVersion: null,
+  updatedAt: "2026-07-08T00:00:00.000Z",
+};
+
+describe("KnowledgeBaseSchema", () => {
+  it("accepts a valid kb with chunkTemplate and version fields", () => {
+    expect(KnowledgeBaseSchema.parse(validKb)).toEqual(validKb);
+  });
+  it("accepts building state with a buildingVersion set", () => {
+    const building = { ...validKb, status: "building" as const, buildingVersion: 2, progress: 40 };
+    expect(KnowledgeBaseSchema.parse(building).buildingVersion).toBe(2);
+  });
+});
+
+describe("CreateKnowledgeBaseRequestSchema", () => {
+  it("requires chunkTemplate and embeddingModelId", () => {
+    expect(() =>
+      CreateKnowledgeBaseRequestSchema.parse({ name: "x" }),
+    ).toThrow();
+  });
+});
+
+describe("UpdateKnowledgeBaseRequestSchema", () => {
+  it("does not accept embeddingModelId (locked post-creation)", () => {
+    const parsed = UpdateKnowledgeBaseRequestSchema.parse({
+      chunkTemplate: "qa",
+      embeddingModelId: "m3",
+    } as unknown as Record<string, unknown>);
+    expect(parsed).not.toHaveProperty("embeddingModelId");
   });
 });
