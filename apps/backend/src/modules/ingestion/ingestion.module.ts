@@ -7,8 +7,9 @@ import { ChunksRepository } from "../chunks/chunks.repository";
 import { AppConfigService } from "../../platform/config/config.service";
 import { QueueModule } from "../../platform/queue/queue.module";
 import { StorageModule } from "../../platform/storage/storage.module";
-import { IngestionService } from "./ingestion.service";
+import { IngestionService, DOCUMENT_TERMINAL_LISTENER } from "./ingestion.service";
 import { IngestionProcessor } from "./ingestion.processor";
+import { KbRebuildService } from "./kb-rebuild.service";
 import { DefaultIngestionPipeline } from "./default-ingestion-pipeline";
 import { INGESTION_PIPELINE_PORT } from "./ingestion.constants";
 
@@ -24,6 +25,10 @@ import { INGESTION_PIPELINE_PORT } from "./ingestion.constants";
   providers: [
     IngestionService,
     IngestionProcessor,
+    KbRebuildService,
+    // 用 useExisting 把重建服务绑到终态监听 token；IngestionService 经 ModuleRef 懒解析此 token，
+    // 不构造期依赖，避免与 KbRebuildService（构造依赖 IngestionService.enqueue）的循环。
+    { provide: DOCUMENT_TERMINAL_LISTENER, useExisting: KbRebuildService },
     DocumentsRepository,
     KnowledgeBasesRepository,
     ChunksRepository,
@@ -34,6 +39,7 @@ import { INGESTION_PIPELINE_PORT } from "./ingestion.constants";
         new DefaultIngestionPipeline(models, chunksRepo, config.ingestionEmbedBatchSize),
     },
   ],
-  exports: [IngestionService],
+  // KbRebuildService 导出供 Task 18 KnowledgeBasesService.update 改 chunkTemplate 时调用 startRebuild。
+  exports: [IngestionService, KbRebuildService],
 })
 export class IngestionModule {}

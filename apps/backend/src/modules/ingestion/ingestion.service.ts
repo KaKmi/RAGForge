@@ -1,4 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import type { ChunkTemplate, DocumentType } from "@codecrush/contracts";
 import { BLOB_STORE } from "../../platform/storage/blob-store.constants";
 import type { BlobStore } from "../../platform/storage/blob-store.port";
@@ -12,6 +13,16 @@ import { INGEST_DOCUMENT_JOB } from "./ingestion-job.constants";
 
 const nowIso = (): string => new Date().toISOString();
 
+// 文档终态监听端口：KbRebuildService 实现之，经此 token 由 ingestion.module 用 useExisting 绑定。
+// 用 token + 懒解析（ModuleRef）而非直接 import KbRebuildService 类：KbRebuildService 构造依赖本服务
+// enqueue，本服务又要在文档终态回调它——若两侧互相 import 类值会触发 ES 模块循环（TDZ）与 Nest 构造期循环依赖。
+// token 解耦后运行时导入图单向（kb-rebuild → ingestion），Nest 侧本服务不构造期依赖监听器，无需 forwardRef。
+export const DOCUMENT_TERMINAL_LISTENER = Symbol("DOCUMENT_TERMINAL_LISTENER");
+
+export interface DocumentTerminalListener {
+  onDocumentTerminal(kbId: string): Promise<void>;
+}
+
 @Injectable()
 export class IngestionService {
   constructor(
@@ -20,7 +31,18 @@ export class IngestionService {
     private readonly docsRepo: DocumentsRepository,
     private readonly kbRepo: KnowledgeBasesRepository,
     @Inject(INGESTION_PIPELINE_PORT) private readonly pipeline: IngestionPipelinePort,
+    private readonly moduleRef?: ModuleRef,
   ) {}
+
+  // 文档到达终态（ready/failed）后回调重建监听器，检查全库重建是否可原子切换。
+  // 懒解析：非 Nest 场景（单测直接 new，无 moduleRef）时短路为 no-op，不影响单文档处理逻辑。
+  private async notifyDocumentTerminal(kbId: string): Promise<void> {
+    const listener = this.moduleRef?.get<DocumentTerminalListener>(DOCUMENT_TERMINAL_LISTENER, {
+      strict: false,
+    });
+    if (!listener) return;
+    await listener.onDocumentTerminal(kbId);
+  }
 
   // 上传 autoParse=true 或手动 /parse 触发都走这里：立即标 queued + 发布任务，HTTP 立即返回（007 禁止同步入库）。
   // singletonKey=documentId + retryLimit=1：同一文档重复入队不并行双跑、失败不自动重试（幂等由 queue 保证）。
@@ -77,6 +99,8 @@ export class IngestionService {
         startedAt: nowIso(),
         endedAt: nowIso(),
       });
+      // 成功终态：通知重建检查是否可原子切换。
+      await this.notifyDocumentTerminal(doc.kbId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this.docsRepo.update(documentId, { status: "failed", error: message });
@@ -87,6 +111,8 @@ export class IngestionService {
         endedAt: nowIso(),
         error: message,
       });
+      // 失败也是终态：不卡住重建切换（007 拍板 failed 亦终态）。
+      await this.notifyDocumentTerminal(doc.kbId);
     }
   }
 }
