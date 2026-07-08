@@ -31,9 +31,14 @@ export default function ChunksPage() {
   const [deleting, setDeleting] = useState(false);
 
   const sentinelRef = useRef<HTMLDivElement>(null);
+  // 请求代际计数：reset（搜索/换文档）时递增；迟到的旧代际响应直接丢弃，
+  // 防止 (A) 两次搜索乱序回包旧结果覆盖新结果、(B) 旧 query 的翻页追加污染新列表与 offset。
+  const genRef = useRef(0);
 
   const loadPage = useCallback(
     async (reset: boolean) => {
+      if (reset) genRef.current += 1;
+      const gen = genRef.current;
       setLoading(true);
       try {
         const page = await getDocumentChunks(docId, {
@@ -41,19 +46,29 @@ export default function ChunksPage() {
           limit: PAGE_SIZE,
           q: query || undefined,
         });
+        if (gen !== genRef.current) return; // 已被更新的 reset 取代，丢弃
         setChunks(prev => (reset ? page.items : [...prev, ...page.items]));
         setOffset((reset ? 0 : offset) + page.items.length);
         setHasMore(page.hasMore);
         setTotal(page.total);
         setError(null);
       } catch (e) {
+        if (gen !== genRef.current) return;
         setError(errMsg(e));
       } finally {
-        setLoading(false);
+        // loading 也只由当前代际的请求收尾，避免旧请求提前放行 IntersectionObserver
+        if (gen === genRef.current) setLoading(false);
       }
     },
     [docId, offset, query],
   );
+
+  // 卸载时作废所有在途请求
+  useEffect(() => {
+    return () => {
+      genRef.current += 1;
+    };
+  }, []);
 
   // 原文：docId 变化时拉一次，独立于切片分页/搜索
   useEffect(() => {
