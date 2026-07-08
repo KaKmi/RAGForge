@@ -1,4 +1,4 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import type { ChunkTemplate, DocumentType } from "@codecrush/contracts";
 import { BLOB_STORE } from "../../platform/storage/blob-store.constants";
@@ -25,6 +25,8 @@ export interface DocumentTerminalListener {
 
 @Injectable()
 export class IngestionService {
+  private readonly logger = new Logger(IngestionService.name);
+
   constructor(
     @Inject(INGESTION_QUEUE) private readonly queue: Queue,
     @Inject(BLOB_STORE) private readonly blobStore: BlobStore,
@@ -36,12 +38,20 @@ export class IngestionService {
 
   // 文档到达终态（ready/failed）后回调重建监听器，检查全库重建是否可原子切换。
   // 懒解析：非 Nest 场景（单测直接 new，无 moduleRef）时短路为 no-op，不影响单文档处理逻辑。
+  // 全程自吞异常（含 token 未注册时 moduleRef.get 的抛错）：回调失败只 warn，
+  // 绝不影响已落地的文档终态写入，也不使 pg-boss 任务失败。
   private async notifyDocumentTerminal(kbId: string): Promise<void> {
-    const listener = this.moduleRef?.get<DocumentTerminalListener>(DOCUMENT_TERMINAL_LISTENER, {
-      strict: false,
-    });
-    if (!listener) return;
-    await listener.onDocumentTerminal(kbId);
+    if (!this.moduleRef) return;
+    try {
+      const listener = this.moduleRef.get<DocumentTerminalListener>(DOCUMENT_TERMINAL_LISTENER, {
+        strict: false,
+      });
+      await listener.onDocumentTerminal(kbId);
+    } catch (err) {
+      this.logger.warn(
+        `文档终态回调失败 kb=${kbId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // 上传 autoParse=true 或手动 /parse 触发都走这里：立即标 queued + 发布任务，HTTP 立即返回（007 禁止同步入库）。
@@ -99,8 +109,6 @@ export class IngestionService {
         startedAt: nowIso(),
         endedAt: nowIso(),
       });
-      // 成功终态：通知重建检查是否可原子切换。
-      await this.notifyDocumentTerminal(doc.kbId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this.docsRepo.update(documentId, { status: "failed", error: message });
@@ -111,8 +119,10 @@ export class IngestionService {
         endedAt: nowIso(),
         error: message,
       });
-      // 失败也是终态：不卡住重建切换（007 拍板 failed 亦终态）。
-      await this.notifyDocumentTerminal(doc.kbId);
     }
+    // 终态回调：成功（ready）与失败（failed）都是终态（007 拍板 failed 亦终态，不卡住重建切换）。
+    // 单一调用点放在 try/catch 之后：回调抛错既不会把已 ready 的文档误改成 failed（AC3），
+    // 也不会二次触发；notifyDocumentTerminal 内部自吞异常，双保险。
+    await this.notifyDocumentTerminal(doc.kbId);
   }
 }
