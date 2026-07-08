@@ -3,8 +3,6 @@ import {
   AgentSchema,
   ChatRequestSchema,
   ChatStreamEventSchema,
-  ChunkListResponseSchema,
-  ChunkSchema,
   ConversationSchema,
   CreateAgentRequestSchema,
   CreateDocumentRequestSchema,
@@ -29,7 +27,6 @@ import {
   RetrievalTestRequestSchema,
   RetrievalTestResponseSchema,
   UpdateAgentRequestSchema,
-  UpdateChunkEnabledRequestSchema,
 } from "./index";
 
 const valid = {
@@ -63,16 +60,6 @@ const valid = {
     status: "ready",
     blobKey: "blob/d1",
     updatedAt: "2026-06-30T00:00:00.000Z",
-  },
-  chunk: {
-    id: "c1",
-    docId: "d1",
-    kbId: "kb1",
-    seq: 0,
-    text: "7天无理由退货...",
-    tokenCount: 128,
-    section: "退换货政策 > 退货条件",
-    enabled: true,
   },
   retrievalReq: {
     query: "退货流程",
@@ -158,9 +145,6 @@ describe("M2 contracts — positive cases", () => {
   it("DocumentSchema accepts a valid document", () => {
     expect(DocumentSchema.parse(valid.doc)).toEqual(valid.doc);
   });
-  it("ChunkSchema accepts a valid chunk", () => {
-    expect(ChunkSchema.parse(valid.chunk)).toEqual(valid.chunk);
-  });
   it("RetrievalTestRequestSchema accepts a valid request", () => {
     expect(RetrievalTestRequestSchema.parse(valid.retrievalReq)).toEqual(valid.retrievalReq);
   });
@@ -197,10 +181,6 @@ describe("M2 contracts — positive cases", () => {
   it("DocumentListResponseSchema wraps documents", () => {
     expect(DocumentListResponseSchema.parse([valid.doc]).length).toBe(1);
     expect(() => DocumentListResponseSchema.parse([{ ...valid.doc, type: "xlsx" }])).toThrow();
-  });
-  it("ChunkListResponseSchema wraps chunks", () => {
-    expect(ChunkListResponseSchema.parse([valid.chunk]).length).toBe(1);
-    expect(() => ChunkListResponseSchema.parse([{ ...valid.chunk, seq: -1 }])).toThrow();
   });
   it("MessageListResponseSchema wraps messages", () => {
     expect(MessageListResponseSchema.parse([valid.msg]).length).toBe(1);
@@ -352,10 +332,6 @@ describe("M2 request schemas (skeleton DTOs)", () => {
     expect(() =>
       IngestionStatusSchema.parse({ documentId: "d1", status: "queued", progress: 0, stage: "" }),
     ).toThrow();
-  });
-  it("UpdateChunkEnabledRequestSchema accepts { enabled }", () => {
-    expect(UpdateChunkEnabledRequestSchema.parse({ enabled: false }).enabled).toBe(false);
-    expect(() => UpdateChunkEnabledRequestSchema.parse({ enabled: "yes" })).toThrow();
   });
   it("CreateAgentRequestSchema omits id", () => {
     const { id: _id, ...rest } = valid.agent;
