@@ -5,6 +5,8 @@ import { AppConfigModule } from "./platform/config/config.module";
 import { PersistenceModule } from "./platform/persistence/persistence.module";
 import { ClickHouseModule } from "./platform/clickhouse/clickhouse.module";
 import { SecurityModule } from "./platform/security/security.module";
+import { StorageModule } from "./platform/storage/storage.module";
+import { QueueModule } from "./platform/queue/queue.module";
 import { HealthModule } from "./modules/health/health.module";
 import { TracesModule } from "./modules/traces/traces.module";
 import { UsersModule } from "./modules/users/users.module";
@@ -26,12 +28,14 @@ import { ConversationsModule } from "./modules/conversations/conversations.modul
     PersistenceModule,
     ClickHouseModule,
     SecurityModule,
+    StorageModule,
+    QueueModule,
     HealthModule,
     TracesModule,
     UsersModule,
     AuthModule,
-    // M2 域骨架（10 个）：mock/空态，无持久化；M3+ 按里程碑填真实逻辑
     ModelsModule,
+    // M4 真实实现：知识库/文档/切片/入库管线（持久化 + BlobStore + pg-boss 异步四阶段管线）
     KnowledgeBasesModule,
     DocumentsModule,
     IngestionModule,
