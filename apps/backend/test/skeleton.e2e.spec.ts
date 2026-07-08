@@ -1,3 +1,13 @@
+// pg-boss v12 是纯 ESM 包，Jest CJS runtime 无法加载真实模块；QueueModule 的 PG_BOSS_INSTANCE
+// 工厂在测试树里仍会 new PgBoss(...) 并在生命周期钩子 start/stop——用无副作用桩类顶替
+//（@swc/jest 开启 hidden.jest 转换，jest.mock 会被提升到 require 之前）。
+jest.mock("pg-boss", () => ({
+  PgBoss: class FakePgBoss {
+    async start(): Promise<void> {}
+    async stop(): Promise<void> {}
+  },
+}));
+
 import { type INestApplication } from "@nestjs/common";
 import { APP_GUARD, APP_PIPE } from "@nestjs/core";
 import { JwtModule, JwtService } from "@nestjs/jwt";
@@ -8,10 +18,10 @@ import { applyGlobalConfig, setupSwagger } from "../src/app/app-bootstrap";
 import {
   AgentSchema,
   ChatStreamEventSchema,
-  ChunkSchema,
+  ChunkPageResponseSchema,
   ConversationSchema,
+  DocumentLifecycleResponseSchema,
   DocumentSchema,
-  IngestionStatusSchema,
   KnowledgeBaseSchema,
   MessageSchema,
   ModelProviderSchema,
@@ -41,9 +51,24 @@ import { ENCRYPTION } from "../src/platform/security/security.constants";
 import { ModelsRepository } from "../src/modules/models/models.repository";
 import { MODEL_PROVIDER_PORT } from "../src/modules/models/model-provider.constants";
 import type { ModelProviderRow, NewModelProvider } from "../src/modules/models/schema";
+import { AppConfigModule } from "../src/platform/config/config.module";
+import { BLOB_STORE } from "../src/platform/storage/blob-store.constants";
+import { INGESTION_QUEUE } from "../src/platform/queue/queue.constants";
+import { KnowledgeBasesRepository } from "../src/modules/knowledge-bases/knowledge-bases.repository";
+import type { KnowledgeBaseRow } from "../src/modules/knowledge-bases/schema";
+import { DocumentsRepository } from "../src/modules/documents/documents.repository";
+import type { DocumentRow } from "../src/modules/documents/schema";
+import { ChunksRepository } from "../src/modules/chunks/chunks.repository";
 
 const SECRET = "test-secret-at-least-32-characters-long!!";
 const PRINCIPAL = { sub: "u1", email: "demo@codecrush.local" };
+
+// M4：测试树引入 QueueModule/StorageModule/IngestionModule 的工厂 provider，它们注入
+// AppConfigService——导入真实 AppConfigModule 并兜底必填 env（不连任何真实服务：
+// pg-boss 已被 jest.mock 桩掉、BLOB_STORE/INGESTION_QUEUE token 均被 override）。
+process.env.DATABASE_URL ??= "postgres://test:test@localhost:5432/skeleton_e2e_unused";
+process.env.JWT_SECRET ??= SECRET;
+process.env.MODEL_API_KEY_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString("base64");
 
 const validCreateAgent = {
   name: "新助手",
@@ -192,8 +217,107 @@ const inMemoryModelsRepo = {
 };
 const fakeModelProviderPort = {
   testConnection: jest.fn(async () => ({ ok: true, latencyMs: 5, statusCode: 200 })),
+  // KnowledgeBasesService.create() 的 1024 维探针会走到这里
+  embed: jest.fn(async (_config: unknown, texts: string[]) => ({
+    vectors: texts.map(() => Array.from({ length: 1024 }, () => 0.01)),
+  })),
 };
 const testEncryption = new EncryptionService(Buffer.alloc(32, 7).toString("base64"));
+
+// —— M4 内存假实现（同 inMemoryModelsRepo 手写风格；不连真实 Postgres/pg-boss）——
+// 真实 drizzle 的 .set() 会跳过 undefined 字段；假实现必须同语义，否则部分 PATCH 会把
+// 未携带的列冲成 undefined（null 是显式清空，保留）。
+const stripUndefined = <T extends Record<string, unknown>>(patch: T): Partial<T> =>
+  Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as Partial<T>;
+
+let kbSeq = 0;
+const inMemoryKbs: KnowledgeBaseRow[] = [];
+const inMemoryKbsRepo: Partial<KnowledgeBasesRepository> = {
+  find: async () => [...inMemoryKbs],
+  findById: async (id: string) => inMemoryKbs.find((k) => k.id === id),
+  findByName: async (name: string) => inMemoryKbs.find((k) => k.name === name),
+  insert: async (row) => {
+    const r = {
+      id: `kb${++kbSeq}`,
+      desc: "",
+      status: "ready",
+      activeVersion: 1,
+      buildingVersion: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...stripUndefined(row as Record<string, unknown>),
+    } as KnowledgeBaseRow;
+    inMemoryKbs.push(r);
+    return r;
+  },
+  update: async (id, patch) => {
+    const r = inMemoryKbs.find((k) => k.id === id);
+    if (r) Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
+    return r;
+  },
+  updateVersions: async (id, patch) => {
+    const r = inMemoryKbs.find((k) => k.id === id);
+    if (r) Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
+    return r;
+  },
+};
+
+let docSeq = 0;
+const inMemoryDocs: DocumentRow[] = [];
+const inMemoryDocsRepo: Partial<DocumentsRepository> = {
+  find: async () => [...inMemoryDocs],
+  findByKb: async (kbId: string) => inMemoryDocs.filter((d) => d.kbId === kbId),
+  findById: async (id: string) => inMemoryDocs.find((d) => d.id === id),
+  insert: async (row) => {
+    const r = {
+      id: `doc${++docSeq}`,
+      parsedText: null,
+      metadata: {},
+      status: "pending",
+      chunkVersion: null,
+      lifecycle: [],
+      error: null,
+      uploadedAt: new Date(),
+      updatedAt: new Date(),
+      ...stripUndefined(row as Record<string, unknown>),
+    } as DocumentRow;
+    inMemoryDocs.push(r);
+    return r;
+  },
+  update: async (id, patch) => {
+    const r = inMemoryDocs.find((d) => d.id === id);
+    if (r) Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
+    return r;
+  },
+  appendLifecycleStage: async (id, stage) => {
+    const r = inMemoryDocs.find((d) => d.id === id);
+    if (r) (r.lifecycle as unknown[]).push(stage);
+    return r;
+  },
+  delete: async (id: string) => {
+    const i = inMemoryDocs.findIndex((d) => d.id === id);
+    if (i >= 0) inMemoryDocs.splice(i, 1);
+  },
+} as Partial<DocumentsRepository>;
+
+const inMemoryChunksRepo: Partial<ChunksRepository> = {
+  findPage: async () => ({ items: [], total: 0 }),
+  batchDelete: async (ids: string[]) => ids.length,
+  replaceVersion: async () => undefined,
+  deleteByVersion: async () => 0,
+} as Partial<ChunksRepository>;
+
+const inMemoryBlobs = new Map<string, Buffer>();
+const fakeBlobStore = {
+  put: async (key: string, data: Buffer) => void inMemoryBlobs.set(key, data),
+  get: async (key: string) => inMemoryBlobs.get(key) ?? Buffer.alloc(0),
+  delete: async (key: string) => void inMemoryBlobs.delete(key),
+};
+
+const fakeQueue = {
+  publish: jest.fn(async () => undefined),
+  subscribe: jest.fn(async () => undefined),
+};
 
 describe("M2 domain skeleton", () => {
   let app: INestApplication;
@@ -203,6 +327,8 @@ describe("M2 domain skeleton", () => {
     const ref = await Test.createTestingModule({
       imports: [
         JwtModule.register({ secret: SECRET, signOptions: { expiresIn: "1h" } }),
+        // M4：QueueModule/StorageModule/IngestionModule 的工厂 provider 注入 AppConfigService
+        AppConfigModule,
         ModelsModule,
         KnowledgeBasesModule,
         DocumentsModule,
@@ -229,6 +355,16 @@ describe("M2 domain skeleton", () => {
       .useValue(testEncryption)
       .overrideProvider(MODEL_PROVIDER_PORT)
       .useValue(fakeModelProviderPort)
+      .overrideProvider(KnowledgeBasesRepository)
+      .useValue(inMemoryKbsRepo)
+      .overrideProvider(DocumentsRepository)
+      .useValue(inMemoryDocsRepo)
+      .overrideProvider(ChunksRepository)
+      .useValue(inMemoryChunksRepo)
+      .overrideProvider(BLOB_STORE)
+      .useValue(fakeBlobStore)
+      .overrideProvider(INGESTION_QUEUE)
+      .useValue(fakeQueue)
       .compile();
     app = ref.createNestApplication();
     applyGlobalConfig(app);
@@ -377,63 +513,306 @@ describe("M2 domain skeleton", () => {
     });
   });
 
-  describe("knowledge-bases", () => {
-    it("GET / → 200 + schema", async () => {
-      const res = await request(app.getHttpServer()).get("/api/knowledge-bases").set(auth()).expect(200);
-      for (const k of res.body) expect(() => KnowledgeBaseSchema.parse(k)).not.toThrow();
-    });
-    it("POST / → 201", async () => {
+  // —— M4：KB/documents/chunks 走真实 service/controller（仓储/blob/队列为内存假实现）——
+  // 三个 describe 共享一个 embedding 模型（type=embedding 且 enabled，探针走 fakeModelProviderPort.embed）。
+  let embeddingModelId: string;
+  const ensureEmbeddingModel = async (): Promise<void> => {
+    if (embeddingModelId) return;
+    const res = await request(app.getHttpServer())
+      .post("/api/models")
+      .set(auth())
+      .send({
+        type: "embedding",
+        protocol: "openai_compat",
+        name: "bge-large-zh",
+        baseUrl: "http://embeddings.internal:8080/v1",
+        apiKey: "sk-embedding1234",
+      })
+      .expect(201);
+    embeddingModelId = res.body.id;
+  };
+
+  describe("knowledge-bases (M4 真实 CRUD + 探针 + 蓝绿重建)", () => {
+    let kbId: string;
+    let kbName: string;
+
+    beforeAll(ensureEmbeddingModel);
+
+    it("POST / 缺 chunkTemplate → 400（ZodValidationPipe）", async () => {
       await request(app.getHttpServer())
         .post("/api/knowledge-bases")
         .set(auth())
-        .send({ name: "新库", desc: "", embeddingModelId: "m2" })
+        .send({ name: "缺字段库", desc: "", embeddingModelId })
+        .expect(400);
+    });
+
+    it("POST / 成功 → 201 + schema，activeVersion=1，探针收到解密明文", async () => {
+      fakeModelProviderPort.embed.mockClear();
+      kbName = `课程库-${Date.now()}`;
+      const res = await request(app.getHttpServer())
+        .post("/api/knowledge-bases")
+        .set(auth())
+        .send({ name: kbName, desc: "", chunkTemplate: "general", embeddingModelId })
         .expect(201);
+      expect(() => KnowledgeBaseSchema.parse(res.body)).not.toThrow();
+      expect(res.body.activeVersion).toBe(1);
+      expect(res.body.buildingVersion).toBeNull();
+      expect(res.body.status).toBe("ready");
+      expect(fakeModelProviderPort.embed).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: "sk-embedding1234" }),
+        ["probe"],
+      );
+      kbId = res.body.id;
+    });
+
+    it("POST / 同名 → 409", async () => {
+      await request(app.getHttpServer())
+        .post("/api/knowledge-bases")
+        .set(auth())
+        .send({ name: kbName, desc: "", chunkTemplate: "general", embeddingModelId })
+        .expect(409);
+    });
+
+    it("GET / → 200 + schema；GET /:id 不存在 → 404", async () => {
+      const res = await request(app.getHttpServer())
+        .get("/api/knowledge-bases")
+        .set(auth())
+        .expect(200);
+      for (const k of res.body) expect(() => KnowledgeBaseSchema.parse(k)).not.toThrow();
+      await request(app.getHttpServer()).get("/api/knowledge-bases/nope").set(auth()).expect(404);
+    });
+
+    it("PATCH /:id 携带 embeddingModelId → 400（strictObject 契约层拒绝，创建后锁定）", async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/knowledge-bases/${kbId}`)
+        .set(auth())
+        .send({ embeddingModelId: "other" })
+        .expect(400);
+    });
+
+    it("PATCH /:id 空库改 chunkTemplate → 200，空库短路直切（activeVersion+1，回到 ready）", async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/knowledge-bases/${kbId}`)
+        .set(auth())
+        .send({ chunkTemplate: "qa" })
+        .expect(200);
+      // 库下无文档：startRebuild 立即 finalize——版本推进、building 清空、状态回 ready
+      expect(res.body.chunkTemplate).toBe("qa");
+      expect(res.body.activeVersion).toBe(2);
+      expect(res.body.buildingVersion).toBeNull();
+      expect(res.body.status).toBe("ready");
+    });
+
+    it("PATCH /:id 有未完成文档时改 chunkTemplate → 200 + building；重建中再改 → 409", async () => {
+      // 先给库塞一个 pending 文档（fakeQueue 不真消费，重建停留在 building 态）
+      await request(app.getHttpServer())
+        .post(`/api/knowledge-bases/${kbId}/documents`)
+        .set(auth())
+        .field("autoParse", "false")
+        .attach("files", Buffer.from("重建测试文本"), "rebuild.txt")
+        .expect(201);
+
+      fakeQueue.publish.mockClear();
+      const res = await request(app.getHttpServer())
+        .patch(`/api/knowledge-bases/${kbId}`)
+        .set(auth())
+        .send({ chunkTemplate: "general" })
+        .expect(200);
+      expect(res.body.status).toBe("building");
+      expect(res.body.buildingVersion).toBe(3);
+      expect(res.body.activeVersion).toBe(2); // 读侧仍用旧 active_version
+      expect(fakeQueue.publish).toHaveBeenCalled();
+
+      await request(app.getHttpServer())
+        .patch(`/api/knowledge-bases/${kbId}`)
+        .set(auth())
+        .send({ chunkTemplate: "qa" })
+        .expect(409);
     });
   });
 
-  describe("documents + ingestion", () => {
-    it("GET /api/documents?kbId=kb1 → 200 + schema", async () => {
+  describe("documents (M4 multipart 上传/手动解析/元数据/生命周期)", () => {
+    let kbId: string;
+    let docId: string;
+
+    beforeAll(async () => {
+      await ensureEmbeddingModel();
       const res = await request(app.getHttpServer())
-        .get("/api/documents?kbId=kb1")
+        .post("/api/knowledge-bases")
+        .set(auth())
+        .send({
+          name: `文档测试库-${Date.now()}`,
+          desc: "",
+          chunkTemplate: "general",
+          embeddingModelId,
+        })
+        .expect(201);
+      kbId = res.body.id;
+    });
+
+    it("POST /knowledge-bases/:kbId/documents multipart（autoParse=false）→ 201 + pending", async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/knowledge-bases/${kbId}/documents`)
+        .set(auth())
+        .field("autoParse", "false")
+        .attach("files", Buffer.from("hello world"), "a.txt")
+        .expect(201);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(() => DocumentSchema.parse(res.body[0])).not.toThrow();
+      expect(res.body[0].status).toBe("pending");
+      expect(res.body[0].chunkVersion).toBeNull();
+      docId = res.body[0].id;
+    });
+
+    it("POST 混合批次（合法+非法类型）→ 400 且无部分提交", async () => {
+      const before = inMemoryDocs.length;
+      await request(app.getHttpServer())
+        .post(`/api/knowledge-bases/${kbId}/documents`)
+        .set(auth())
+        .field("autoParse", "false")
+        .attach("files", Buffer.from("ok"), "ok.txt")
+        .attach("files", Buffer.from("bad"), "bad.exe")
+        .expect(400);
+      expect(inMemoryDocs.length).toBe(before); // 整批拒绝，前面的合法文件也不落库
+    });
+
+    it("POST 到不存在的库 → 404", async () => {
+      await request(app.getHttpServer())
+        .post("/api/knowledge-bases/nope/documents")
+        .set(auth())
+        .field("autoParse", "false")
+        .attach("files", Buffer.from("x"), "x.txt")
+        .expect(404);
+    });
+
+    it("POST multipart（autoParse 默认开）→ 201 + queued + 幂等入队 opts", async () => {
+      fakeQueue.publish.mockClear();
+      const res = await request(app.getHttpServer())
+        .post(`/api/knowledge-bases/${kbId}/documents`)
+        .set(auth())
+        .attach("files", Buffer.from("auto parse me"), "b.md")
+        .expect(201);
+      expect(res.body[0].status).toBe("queued");
+      const doc = res.body[0];
+      expect(fakeQueue.publish).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ documentId: doc.id }),
+        expect.objectContaining({ singletonKey: doc.id, retryLimit: 1 }),
+      );
+    });
+
+    it("GET /documents?kbId= → 200 + schema", async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/documents?kbId=${kbId}`)
         .set(auth())
         .expect(200);
+      expect(res.body.length).toBeGreaterThanOrEqual(2);
       for (const d of res.body) expect(() => DocumentSchema.parse(d)).not.toThrow();
     });
-    it("POST /api/documents → 202 (上传受理)", async () => {
-      await request(app.getHttpServer())
-        .post("/api/documents")
-        .set(auth())
-        .send({ kbId: "kb1", name: "x.pdf", type: "pdf", size: 1024, blobKey: "blob/x" })
-        .expect(202);
+
+    it("POST /documents/:id/parse → 202，触发入队；不存在 → 404", async () => {
+      fakeQueue.publish.mockClear();
+      await request(app.getHttpServer()).post(`/api/documents/${docId}/parse`).set(auth()).expect(202);
+      expect(fakeQueue.publish).toHaveBeenCalled();
+      await request(app.getHttpServer()).post("/api/documents/nope/parse").set(auth()).expect(404);
     });
-    it("POST /api/documents/d1/ingest → 202", async () => {
+
+    it("GET /documents/:id/lifecycle → 200 + schema（含 upload 完成项）", async () => {
       const res = await request(app.getHttpServer())
-        .post("/api/documents/d1/ingest")
-        .set(auth())
-        .expect(202);
-      expect(() => IngestionStatusSchema.parse(res.body)).not.toThrow();
-    });
-    it("GET /api/documents/d1/ingestion-status → 200", async () => {
-      const res = await request(app.getHttpServer())
-        .get("/api/documents/d1/ingestion-status")
+        .get(`/api/documents/${docId}/lifecycle`)
         .set(auth())
         .expect(200);
-      expect(() => IngestionStatusSchema.parse(res.body)).not.toThrow();
+      expect(() => DocumentLifecycleResponseSchema.parse(res.body)).not.toThrow();
+      expect(res.body.stages.some((s: { stage: string }) => s.stage === "upload")).toBe(true);
+    });
+
+    it("PATCH /documents/:id/metadata → 200，元数据写入", async () => {
+      const res = await request(app.getHttpServer())
+        .patch(`/api/documents/${docId}/metadata`)
+        .set(auth())
+        .send({ metadata: { author: "qa", 来源: "e2e" } })
+        .expect(200);
+      expect(res.body.metadata.author).toBe("qa");
+    });
+
+    it("GET /documents/:id/content → 200（未解析时 text 为空串）", async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/documents/${docId}/content`)
+        .set(auth())
+        .expect(200);
+      expect(res.body.documentId).toBe(docId);
+      expect(res.body.text).toBe("");
+    });
+
+    it("DELETE /documents/:id → 204（blob 同删），再 GET lifecycle → 404", async () => {
+      const blobCountBefore = inMemoryBlobs.size;
+      await request(app.getHttpServer()).delete(`/api/documents/${docId}`).set(auth()).expect(204);
+      expect(inMemoryBlobs.size).toBe(blobCountBefore - 1);
+      await request(app.getHttpServer()).get(`/api/documents/${docId}/lifecycle`).set(auth()).expect(404);
     });
   });
 
-  describe("chunks", () => {
-    it("GET /api/chunks/d1 → 200 + schema", async () => {
-      const res = await request(app.getHttpServer()).get("/api/chunks/d1").set(auth()).expect(200);
-      for (const c of res.body) expect(() => ChunkSchema.parse(c)).not.toThrow();
-    });
-    it("PATCH /api/chunks/c1 → 200 (toggle)", async () => {
-      const res = await request(app.getHttpServer())
-        .patch("/api/chunks/c1")
+  describe("chunks (M4 分页搜索 + 批量删除，删除制)", () => {
+    let docId: string;
+
+    beforeAll(async () => {
+      await ensureEmbeddingModel();
+      const kbRes = await request(app.getHttpServer())
+        .post("/api/knowledge-bases")
         .set(auth())
-        .send({ enabled: false })
+        .send({
+          name: `切片测试库-${Date.now()}`,
+          desc: "",
+          chunkTemplate: "general",
+          embeddingModelId,
+        })
+        .expect(201);
+      const docRes = await request(app.getHttpServer())
+        .post(`/api/knowledge-bases/${kbRes.body.id}/documents`)
+        .set(auth())
+        .field("autoParse", "false")
+        .attach("files", Buffer.from("x"), "x.txt")
+        .expect(201);
+      docId = docRes.body[0].id;
+    });
+
+    it("GET /documents/:id/chunks → 200 + 分页 schema（chunkVersion null 时空页）", async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/documents/${docId}/chunks?offset=0&limit=20`)
+        .set(auth())
         .expect(200);
-      expect(res.body.enabled).toBe(false);
+      expect(() => ChunkPageResponseSchema.parse(res.body)).not.toThrow();
+      expect(res.body.items).toEqual([]);
+      expect(res.body.total).toBe(0);
+      expect(res.body.hasMore).toBe(false);
+    });
+
+    it("GET /documents/:id/chunks limit>100 → 400；文档不存在 → 404", async () => {
+      await request(app.getHttpServer())
+        .get(`/api/documents/${docId}/chunks?limit=500`)
+        .set(auth())
+        .expect(400);
+      await request(app.getHttpServer())
+        .get("/api/documents/nope/chunks")
+        .set(auth())
+        .expect(404);
+    });
+
+    it("POST /chunks/batch-delete 空数组 → 400", async () => {
+      await request(app.getHttpServer())
+        .post("/api/chunks/batch-delete")
+        .set(auth())
+        .send({ ids: [] })
+        .expect(400);
+    });
+
+    it("POST /chunks/batch-delete 合法 ids → 201 + deletedCount", async () => {
+      const res = await request(app.getHttpServer())
+        .post("/api/chunks/batch-delete")
+        .set(auth())
+        .send({ ids: ["c1", "c2"] })
+        .expect(201);
+      expect(res.body.deletedCount).toBe(2);
     });
   });
 
@@ -731,10 +1110,19 @@ describe("M2 domain skeleton", () => {
       expect(paths).toContain("/api/models/test");
       expect(paths).toContain("/api/models/{id}/test");
       expect(paths).toContain("/api/knowledge-bases");
+      expect(paths).toContain("/api/knowledge-bases/{id}");
+      expect(paths).toContain("/api/knowledge-bases/{kbId}/documents");
       expect(paths).toContain("/api/documents");
-      expect(paths).toContain("/api/documents/{id}/ingest");
-      expect(paths).toContain("/api/documents/{id}/ingestion-status");
-      expect(paths).toContain("/api/chunks/{docId}");
+      expect(paths).toContain("/api/documents/{id}/parse");
+      expect(paths).toContain("/api/documents/{id}/lifecycle");
+      expect(paths).toContain("/api/documents/{id}/metadata");
+      expect(paths).toContain("/api/documents/{id}/content");
+      expect(paths).toContain("/api/documents/{id}/chunks");
+      expect(paths).toContain("/api/chunks/batch-delete");
+      // M2 旧入库路由已随删除制/异步管线移除
+      expect(paths).not.toContain("/api/documents/{id}/ingest");
+      expect(paths).not.toContain("/api/documents/{id}/ingestion-status");
+      expect(paths).not.toContain("/api/chunks/{docId}");
       expect(paths).toContain("/api/retrieval/test");
       expect(paths).toContain("/api/agents");
       expect(paths).toContain("/api/prompts");
