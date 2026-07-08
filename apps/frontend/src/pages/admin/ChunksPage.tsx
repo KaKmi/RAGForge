@@ -139,7 +139,6 @@ export default function ChunksPage() {
     void loadPage(true);
     // 仅在 docId/query 变化时整页重置；loadPage 依赖 offset 会随分页变化，
     // 但此处刻意不把它列进依赖数组，避免每次翻页都触发重置死循环。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId, query]);
 
   // IntersectionObserver 触发下一页（无限滚动）——哨兵保留，仅用于触发加载，可见提示统一在底部提示区
