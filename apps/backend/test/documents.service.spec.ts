@@ -2,6 +2,7 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { DocumentsService } from "../src/modules/documents/documents.service";
 import type { DocumentsRepository } from "../src/modules/documents/documents.repository";
 import type { KnowledgeBasesRepository } from "../src/modules/knowledge-bases/knowledge-bases.repository";
+import type { ChunksRepository } from "../src/modules/chunks/chunks.repository";
 import type { BlobStore } from "../src/platform/storage/blob-store.port";
 import type { IngestionService } from "../src/modules/ingestion/ingestion.service";
 
@@ -23,20 +24,28 @@ function makeDeps() {
     appendLifecycleStage: jest.fn(),
     delete: jest.fn(),
   };
-  const kbRepo = { findById: jest.fn(async () => ({ id: "kb1", activeVersion: 1, buildingVersion: null })) };
+  const kbRepo = {
+    findById: jest.fn(async () => ({ id: "kb1", activeVersion: 1, buildingVersion: null })),
+  };
   const blobStore: jest.Mocked<BlobStore> = {
     put: jest.fn(),
     get: jest.fn(async () => Buffer.from("x")),
     delete: jest.fn(),
   };
   const ingestion = { enqueue: jest.fn() };
-  return { repo, kbRepo, blobStore, ingestion };
+  const chunksRepo = {
+    countByDocs: jest.fn(
+      async () => [] as Array<{ docId: string; version: number; count: number }>,
+    ),
+  };
+  return { repo, kbRepo, blobStore, ingestion, chunksRepo };
 }
 
 function makeService(deps: ReturnType<typeof makeDeps>): DocumentsService {
   return new DocumentsService(
     deps.repo as unknown as DocumentsRepository,
     deps.kbRepo as unknown as KnowledgeBasesRepository,
+    deps.chunksRepo as unknown as ChunksRepository,
     deps.blobStore,
     deps.ingestion as unknown as IngestionService,
   );
@@ -46,7 +55,9 @@ describe("DocumentsService.upload", () => {
   it("autoParse=true：建档 status=pending 后立即 enqueue（目标版本取 kb.buildingVersion ?? activeVersion）", async () => {
     const deps = makeDeps();
     const svc = makeService(deps);
-    const files = [{ originalname: "a.pdf", buffer: Buffer.from("x"), size: 3, mimetype: "application/pdf" }];
+    const files = [
+      { originalname: "a.pdf", buffer: Buffer.from("x"), size: 3, mimetype: "application/pdf" },
+    ];
     const docs = await svc.upload("kb1", files as never, { autoParse: true });
     expect(deps.blobStore.put).toHaveBeenCalledWith(
       expect.stringMatching(/^kb\/kb1\/.+\/original\.pdf$/),
@@ -60,7 +71,9 @@ describe("DocumentsService.upload", () => {
     const deps = makeDeps();
     deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: 2 });
     const svc = makeService(deps);
-    const files = [{ originalname: "a.pdf", buffer: Buffer.from("x"), size: 3, mimetype: "application/pdf" }];
+    const files = [
+      { originalname: "a.pdf", buffer: Buffer.from("x"), size: 3, mimetype: "application/pdf" },
+    ];
     await svc.upload("kb1", files as never, { autoParse: true });
     expect(deps.ingestion.enqueue).toHaveBeenCalledWith("d1", 2);
   });
@@ -68,7 +81,9 @@ describe("DocumentsService.upload", () => {
   it("autoParse=false：建档但不 enqueue，状态停在 pending", async () => {
     const deps = makeDeps();
     const svc = makeService(deps);
-    const files = [{ originalname: "b.md", buffer: Buffer.from("# x"), size: 3, mimetype: "text/markdown" }];
+    const files = [
+      { originalname: "b.md", buffer: Buffer.from("# x"), size: 3, mimetype: "text/markdown" },
+    ];
     await svc.upload("kb1", files as never, { autoParse: false });
     expect(deps.ingestion.enqueue).not.toHaveBeenCalled();
   });
@@ -77,7 +92,12 @@ describe("DocumentsService.upload", () => {
     const deps = makeDeps();
     const svc = makeService(deps);
     const files = [
-      { originalname: "../../etc/passwd.txt", buffer: Buffer.from("x"), size: 1, mimetype: "text/plain" },
+      {
+        originalname: "../../etc/passwd.txt",
+        buffer: Buffer.from("x"),
+        size: 1,
+        mimetype: "text/plain",
+      },
     ];
     await svc.upload("kb1", files as never, { autoParse: false });
     const [key] = deps.blobStore.put.mock.calls[0];
@@ -101,7 +121,9 @@ describe("DocumentsService.upload", () => {
     const deps = makeDeps();
     deps.kbRepo.findById.mockResolvedValue(undefined);
     const svc = makeService(deps);
-    const files = [{ originalname: "a.pdf", buffer: Buffer.from("x"), size: 1, mimetype: "application/pdf" }];
+    const files = [
+      { originalname: "a.pdf", buffer: Buffer.from("x"), size: 1, mimetype: "application/pdf" },
+    ];
     await expect(svc.upload("gone", files as never, { autoParse: false })).rejects.toThrow(
       NotFoundException,
     );
@@ -114,7 +136,12 @@ describe("DocumentsService.upload", () => {
     const svc = makeService(deps);
     const files = [
       { originalname: "good.pdf", buffer: Buffer.from("x"), size: 1, mimetype: "application/pdf" },
-      { originalname: "bad.exe", buffer: Buffer.from("x"), size: 1, mimetype: "application/octet-stream" },
+      {
+        originalname: "bad.exe",
+        buffer: Buffer.from("x"),
+        size: 1,
+        mimetype: "application/octet-stream",
+      },
     ];
     await expect(svc.upload("kb1", files as never, { autoParse: true })).rejects.toThrow(
       BadRequestException,
@@ -127,7 +154,14 @@ describe("DocumentsService.upload", () => {
   it("不支持的文件类型（扩展名不在白名单）拒绝：抛 400，不落盘、不建档", async () => {
     const deps = makeDeps();
     const svc = makeService(deps);
-    const files = [{ originalname: "virus.exe", buffer: Buffer.from("x"), size: 1, mimetype: "application/octet-stream" }];
+    const files = [
+      {
+        originalname: "virus.exe",
+        buffer: Buffer.from("x"),
+        size: 1,
+        mimetype: "application/octet-stream",
+      },
+    ];
     await expect(svc.upload("kb1", files as never, { autoParse: false })).rejects.toThrow(
       BadRequestException,
     );
@@ -221,5 +255,73 @@ describe("DocumentsService.remove", () => {
     deps.repo.findById.mockResolvedValue(undefined);
     const svc = makeService(deps);
     await expect(svc.remove("gone")).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe("DocumentsService 文件名编码与切片计数（QA 回归）", () => {
+  it("multipart 文件名被 busboy 按 latin1 误解码时还原 UTF-8 中文；纯 ASCII 不受影响", async () => {
+    const deps = makeDeps();
+    const svc = makeService(deps);
+    const utf8Name = "13问 车险知识 AI客服.md";
+    const mojibake = Buffer.from(utf8Name, "utf8").toString("latin1"); // busboy 实际交付的形态
+    const docs = await svc.upload(
+      "kb1",
+      [
+        { originalname: mojibake, buffer: Buffer.from("x"), size: 1, mimetype: "text/markdown" },
+        { originalname: "plain.txt", buffer: Buffer.from("y"), size: 1, mimetype: "text/plain" },
+      ] as never,
+      { autoParse: false },
+    );
+    expect(deps.repo.insert).toHaveBeenCalledWith(expect.objectContaining({ name: utf8Name }));
+    expect(deps.repo.insert).toHaveBeenCalledWith(expect.objectContaining({ name: "plain.txt" }));
+    expect(docs).toHaveLength(2);
+  });
+
+  it("list 按各文档自己的 chunkVersion 填充 chunksCount；未解析文档恒为 0", async () => {
+    const deps = makeDeps();
+    const now = new Date();
+    deps.repo.findByKb.mockResolvedValue([
+      {
+        id: "d1",
+        kbId: "kb1",
+        name: "a.md",
+        type: "markdown",
+        size: 1,
+        blobKey: "k1",
+        parsedText: "t",
+        metadata: {},
+        status: "ready",
+        chunkVersion: 2,
+        lifecycle: [],
+        error: null,
+        uploadedAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "d2",
+        kbId: "kb1",
+        name: "b.md",
+        type: "markdown",
+        size: 1,
+        blobKey: "k2",
+        parsedText: null,
+        metadata: {},
+        status: "pending",
+        chunkVersion: null,
+        lifecycle: [],
+        error: null,
+        uploadedAt: now,
+        updatedAt: now,
+      },
+    ] as never);
+    deps.chunksRepo.countByDocs.mockResolvedValue([
+      { docId: "d1", version: 1, count: 99 }, // 旧版本残留，不得被计入
+      { docId: "d1", version: 2, count: 7 },
+    ]);
+    const svc = makeService(deps);
+    const docs = await svc.list("kb1");
+    expect(deps.chunksRepo.countByDocs).toHaveBeenCalledWith(["d1"]); // 未解析的 d2 不参与查询
+    expect(docs.find((d) => d.id === "d1")?.chunksCount).toBe(7);
+    expect(docs.find((d) => d.id === "d2")?.chunksCount).toBe(0);
   });
 });

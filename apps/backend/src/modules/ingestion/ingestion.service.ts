@@ -103,6 +103,12 @@ export class IngestionService {
         parsedText: result.parsedText,
         error: null,
       });
+      // 闭合起始处追加的 ingest/running 项（写 endedAt，UI 的耗时/进行中态才有终点），
+      // 再追加 ready 里程碑；不闭合会让前端把该阶段永远渲染为「进行中」且耗时随 now 增长。
+      await this.docsRepo.completeLifecycleStage(documentId, "ingest", {
+        status: "done",
+        endedAt: nowIso(),
+      });
       await this.docsRepo.appendLifecycleStage(documentId, {
         stage: "ready",
         status: "done",
@@ -112,13 +118,21 @@ export class IngestionService {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this.docsRepo.update(documentId, { status: "failed", error: message });
-      await this.docsRepo.appendLifecycleStage(documentId, {
-        stage: "ingest",
+      // 同理闭合 running 项为 failed；无未闭合项（历史数据）时回退追加独立失败项。
+      const closed = await this.docsRepo.completeLifecycleStage(documentId, "ingest", {
         status: "failed",
-        startedAt: nowIso(),
         endedAt: nowIso(),
         error: message,
       });
+      if (!closed) {
+        await this.docsRepo.appendLifecycleStage(documentId, {
+          stage: "ingest",
+          status: "failed",
+          startedAt: nowIso(),
+          endedAt: nowIso(),
+          error: message,
+        });
+      }
     }
     // 终态回调：成功（ready）与失败（failed）都是终态（007 拍板 failed 亦终态，不卡住重建切换）。
     // 单一调用点放在 try/catch 之后：回调抛错既不会把已 ready 的文档误改成 failed（AC3），

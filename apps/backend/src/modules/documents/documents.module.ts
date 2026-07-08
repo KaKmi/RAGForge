@@ -2,6 +2,7 @@ import { forwardRef, Module } from "@nestjs/common";
 import { DocumentsController } from "./documents.controller";
 import { DocumentsRepository } from "./documents.repository";
 import { DocumentsService } from "./documents.service";
+import { ChunksRepository } from "../chunks/chunks.repository";
 import { KnowledgeBasesModule } from "../knowledge-bases/knowledge-bases.module";
 import { IngestionModule } from "../ingestion/ingestion.module";
 
@@ -10,7 +11,9 @@ import { IngestionModule } from "../ingestion/ingestion.module";
 @Module({
   imports: [forwardRef(() => KnowledgeBasesModule), forwardRef(() => IngestionModule)],
   controllers: [DocumentsController],
-  providers: [DocumentsRepository, DocumentsService],
+  // ChunksRepository 只依赖全局 DRIZZLE，直接 provide：ChunksModule imports 本模块，
+  // 反向 import ChunksModule 会成环。
+  providers: [DocumentsRepository, ChunksRepository, DocumentsService],
   exports: [DocumentsRepository, DocumentsService],
 })
 export class DocumentsModule {}

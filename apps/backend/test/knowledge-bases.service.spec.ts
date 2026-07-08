@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException } from "@nestjs/common";
 import { KnowledgeBasesService } from "../src/modules/knowledge-bases/knowledge-bases.service";
 import type { KnowledgeBasesRepository } from "../src/modules/knowledge-bases/knowledge-bases.repository";
+import type { DocumentsRepository } from "../src/modules/documents/documents.repository";
+import type { ChunksRepository } from "../src/modules/chunks/chunks.repository";
 import type { ModelsService } from "../src/modules/models/models.service";
 import type { KbRebuildService } from "../src/modules/ingestion/kb-rebuild.service";
 import type { KnowledgeBaseRow } from "../src/modules/knowledge-bases/schema";
@@ -36,12 +38,22 @@ function makeDeps() {
     embedTexts: jest.fn(async () => [Array.from({ length: 1024 }, () => 0.1)]),
   };
   const kbRebuild = { startRebuild: jest.fn(async () => undefined) };
-  return { repo, models, kbRebuild };
+  const docsRepo = {
+    countByKbs: jest.fn(async () => [] as Array<{ kbId: string; count: number }>),
+  };
+  const chunksRepo = {
+    countByKbVersions: jest.fn(
+      async () => [] as Array<{ kbId: string; version: number; count: number }>,
+    ),
+  };
+  return { repo, models, kbRebuild, docsRepo, chunksRepo };
 }
 
 function makeSvc(deps: ReturnType<typeof makeDeps>): KnowledgeBasesService {
   return new KnowledgeBasesService(
     deps.repo as unknown as KnowledgeBasesRepository,
+    deps.docsRepo as unknown as DocumentsRepository,
+    deps.chunksRepo as unknown as ChunksRepository,
     deps.models as unknown as ModelsService,
     deps.kbRebuild as unknown as KbRebuildService,
   );
@@ -103,9 +115,9 @@ describe("KnowledgeBasesService.update", () => {
   it("携带 embeddingModelId 会被拒绝（创建后锁定）→ 400", async () => {
     const deps = makeDeps();
     deps.repo.findById.mockResolvedValue(baseRow());
-    await expect(
-      makeSvc(deps).update("kb1", { embeddingModelId: "m2" } as never),
-    ).rejects.toThrow(BadRequestException);
+    await expect(makeSvc(deps).update("kb1", { embeddingModelId: "m2" } as never)).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it("改 chunkTemplate 触发 KbRebuildService.startRebuild", async () => {
@@ -142,5 +154,21 @@ describe("KnowledgeBasesService.update", () => {
     deps.repo.update.mockResolvedValue(baseRow({ chunkTemplate: "general" }));
     await makeSvc(deps).update("kb1", { chunkTemplate: "general" });
     expect(deps.kbRebuild.startRebuild).not.toHaveBeenCalled();
+  });
+});
+
+describe("KnowledgeBasesService 计数填充（QA 回归：卡片不再恒 0）", () => {
+  it("list 按 kb 填充 docsCount、按 activeVersion 挑行填充 chunksCount", async () => {
+    const deps = makeDeps();
+    deps.repo.find.mockResolvedValue([baseRow({ id: "kb1", activeVersion: 2 })]);
+    deps.docsRepo.countByKbs.mockResolvedValue([{ kbId: "kb1", count: 3 }]);
+    deps.chunksRepo.countByKbVersions.mockResolvedValue([
+      { kbId: "kb1", version: 1, count: 50 }, // 旧版本切片（待清理），不得计入
+      { kbId: "kb1", version: 2, count: 12 },
+    ]);
+    const svc = makeSvc(deps);
+    const list = await svc.list();
+    expect(list[0].docsCount).toBe(3);
+    expect(list[0].chunksCount).toBe(12);
   });
 });

@@ -42,7 +42,12 @@ import { ModelsModule } from "../src/modules/models/models.module";
 import { PromptsModule } from "../src/modules/prompts/prompts.module";
 import { PromptsRepository } from "../src/modules/prompts/prompts.repository";
 import type { PromptListResult, PromptListRow } from "../src/modules/prompts/prompts.repository";
-import type { NewPrompt, NewPromptVersion, PromptRow, PromptVersionRow } from "../src/modules/prompts/schema";
+import type {
+  NewPrompt,
+  NewPromptVersion,
+  PromptRow,
+  PromptVersionRow,
+} from "../src/modules/prompts/schema";
 import { RetrievalModule } from "../src/modules/retrieval/retrieval.module";
 import { JwtAuthGuard } from "../src/modules/auth/jwt-auth.guard";
 import { SecurityModule } from "../src/platform/security/security.module";
@@ -94,7 +99,7 @@ const inMemoryVersions: PromptVersionRow[] = [];
 const toListRow = (p: PromptRow): PromptListRow => {
   const versions = inMemoryVersions.filter((v) => v.promptId === p.id);
   const current = p.currentVersionId
-    ? versions.find((v) => v.id === p.currentVersionId)?.version ?? null
+    ? (versions.find((v) => v.id === p.currentVersionId)?.version ?? null)
     : null;
   return { ...p, currentVersionNumber: current, versionCount: versions.length };
 };
@@ -252,12 +257,14 @@ const inMemoryKbsRepo: Partial<KnowledgeBasesRepository> = {
   },
   update: async (id, patch) => {
     const r = inMemoryKbs.find((k) => k.id === id);
-    if (r) Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
+    if (r)
+      Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
     return r;
   },
   updateVersions: async (id, patch) => {
     const r = inMemoryKbs.find((k) => k.id === id);
-    if (r) Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
+    if (r)
+      Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
     return r;
   },
 };
@@ -286,7 +293,8 @@ const inMemoryDocsRepo: Partial<DocumentsRepository> = {
   },
   update: async (id, patch) => {
     const r = inMemoryDocs.find((d) => d.id === id);
-    if (r) Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
+    if (r)
+      Object.assign(r, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
     return r;
   },
   appendLifecycleStage: async (id, stage) => {
@@ -294,6 +302,22 @@ const inMemoryDocsRepo: Partial<DocumentsRepository> = {
     if (r) (r.lifecycle as unknown[]).push(stage);
     return r;
   },
+  completeLifecycleStage: async (id, stage, patch) => {
+    const r = inMemoryDocs.find((d) => d.id === id);
+    if (!r) return false;
+    for (let i = r.lifecycle.length - 1; i >= 0; i--) {
+      const st = r.lifecycle[i];
+      if (st.stage === stage && st.status === "running" && !st.endedAt) {
+        r.lifecycle[i] = { ...st, ...patch };
+        return true;
+      }
+    }
+    return false;
+  },
+  countByKbs: async (kbIds: string[]) =>
+    kbIds
+      .map((kbId) => ({ kbId, count: inMemoryDocs.filter((d) => d.kbId === kbId).length }))
+      .filter((c) => c.count > 0),
   delete: async (id: string) => {
     const i = inMemoryDocs.findIndex((d) => d.id === id);
     if (i >= 0) inMemoryDocs.splice(i, 1);
@@ -305,8 +329,9 @@ const inMemoryDocsRepo: Partial<DocumentsRepository> = {
 const inMemoryChunkIds = new Set<string>();
 const inMemoryChunksRepo: Partial<ChunksRepository> = {
   findPage: async () => ({ items: [], total: 0 }),
-  batchDelete: async (ids: string[]) =>
-    ids.filter((id) => inMemoryChunkIds.delete(id)).length,
+  countByDocs: async () => [],
+  countByKbVersions: async () => [],
+  batchDelete: async (ids: string[]) => ids.filter((id) => inMemoryChunkIds.delete(id)).length,
   replaceVersion: async () => undefined,
   deleteByVersion: async () => 0,
 } as Partial<ChunksRepository>;
@@ -386,7 +411,10 @@ describe("M2 domain skeleton", () => {
   describe("auth guard", () => {
     it("无 token → 401", async () => {
       await request(app.getHttpServer()).get("/api/models").expect(401);
-      await request(app.getHttpServer()).post("/api/chat").send({ agentId: "a", query: "q" }).expect(401);
+      await request(app.getHttpServer())
+        .post("/api/chat")
+        .send({ agentId: "a", query: "q" })
+        .expect(401);
     });
   });
 
@@ -509,10 +537,7 @@ describe("M2 domain skeleton", () => {
     });
 
     it("DELETE → 204，再 GET → 404", async () => {
-      await request(app.getHttpServer())
-        .delete(`/api/models/${modelId}`)
-        .set(auth())
-        .expect(204);
+      await request(app.getHttpServer()).delete(`/api/models/${modelId}`).set(auth()).expect(204);
       await request(app.getHttpServer()).get(`/api/models/${modelId}`).set(auth()).expect(404);
     });
   });
@@ -716,7 +741,10 @@ describe("M2 domain skeleton", () => {
 
     it("POST /documents/:id/parse → 202，触发入队；不存在 → 404", async () => {
       fakeQueue.publish.mockClear();
-      await request(app.getHttpServer()).post(`/api/documents/${docId}/parse`).set(auth()).expect(202);
+      await request(app.getHttpServer())
+        .post(`/api/documents/${docId}/parse`)
+        .set(auth())
+        .expect(202);
       expect(fakeQueue.publish).toHaveBeenCalled();
       await request(app.getHttpServer()).post("/api/documents/nope/parse").set(auth()).expect(404);
     });
@@ -752,7 +780,10 @@ describe("M2 domain skeleton", () => {
       const blobCountBefore = inMemoryBlobs.size;
       await request(app.getHttpServer()).delete(`/api/documents/${docId}`).set(auth()).expect(204);
       expect(inMemoryBlobs.size).toBe(blobCountBefore - 1);
-      await request(app.getHttpServer()).get(`/api/documents/${docId}/lifecycle`).set(auth()).expect(404);
+      await request(app.getHttpServer())
+        .get(`/api/documents/${docId}/lifecycle`)
+        .set(auth())
+        .expect(404);
     });
   });
 
@@ -796,10 +827,7 @@ describe("M2 domain skeleton", () => {
         .get(`/api/documents/${docId}/chunks?limit=500`)
         .set(auth())
         .expect(400);
-      await request(app.getHttpServer())
-        .get("/api/documents/nope/chunks")
-        .set(auth())
-        .expect(404);
+      await request(app.getHttpServer()).get("/api/documents/nope/chunks").set(auth()).expect(404);
     });
 
     it("POST /chunks/batch-delete 空数组 → 400", async () => {
@@ -1038,20 +1066,11 @@ describe("M2 domain skeleton", () => {
         .expect(201);
       const draftId: string = created.body.id;
       // 草稿可删 → 204
-      await request(app.getHttpServer())
-        .delete(`/api/prompts/${draftId}`)
-        .set(auth())
-        .expect(204);
+      await request(app.getHttpServer()).delete(`/api/prompts/${draftId}`).set(auth()).expect(204);
       // 删除后再 GET → 404
-      await request(app.getHttpServer())
-        .get(`/api/prompts/${draftId}`)
-        .set(auth())
-        .expect(404);
+      await request(app.getHttpServer()).get(`/api/prompts/${draftId}`).set(auth()).expect(404);
       // 已启用（块前 publish/rollback 过的 promptId）→ 409
-      await request(app.getHttpServer())
-        .delete(`/api/prompts/${promptId}`)
-        .set(auth())
-        .expect(409);
+      await request(app.getHttpServer()).delete(`/api/prompts/${promptId}`).set(auth()).expect(409);
       // 不存在 → 404
       await request(app.getHttpServer())
         .delete("/api/prompts/nonexistent-id")

@@ -17,6 +17,7 @@ function makeDeps() {
     findById: jest.fn(),
     update: jest.fn(async (id: string, patch: unknown) => ({ id, ...(patch as object) })),
     appendLifecycleStage: jest.fn(),
+    completeLifecycleStage: jest.fn(async () => true),
   };
   const kbRepo = { findById: jest.fn() };
   const pipeline: jest.Mocked<IngestionPipelinePort> = { run: jest.fn() };
@@ -89,6 +90,12 @@ describe("IngestionService.processDocument", () => {
       "d1",
       expect.objectContaining({ stage: "ready", status: "done" }),
     );
+    // 起始追加的 ingest/running 项必须被闭合（endedAt 落终点），否则 UI 永远显示进行中
+    expect(deps.docsRepo.completeLifecycleStage).toHaveBeenCalledWith(
+      "d1",
+      "ingest",
+      expect.objectContaining({ status: "done", endedAt: expect.any(String) }),
+    );
   });
 
   it("文档已被删除（findById 返回 undefined）时静默返回，不抛错、不跑管线", async () => {
@@ -116,9 +123,10 @@ describe("IngestionService.processDocument", () => {
       "d1",
       expect.objectContaining({ status: "failed", error: "解析失败：扫描件" }),
     );
-    expect(deps.docsRepo.appendLifecycleStage).toHaveBeenCalledWith(
+    expect(deps.docsRepo.completeLifecycleStage).toHaveBeenCalledWith(
       "d1",
-      expect.objectContaining({ stage: "ingest", status: "failed", error: "解析失败：扫描件" }),
+      "ingest",
+      expect.objectContaining({ status: "failed", error: "解析失败：扫描件" }),
     );
     expect(deps.docsRepo.update).not.toHaveBeenCalledWith(
       "d1",
@@ -145,6 +153,25 @@ describe("IngestionService.processDocument", () => {
     expect(deps.docsRepo.update).not.toHaveBeenCalledWith(
       "d1",
       expect.objectContaining({ status: "ready" }),
+    );
+  });
+
+  it("失败时若无未闭合 running 项（历史数据）：回退追加独立的 ingest/failed 项", async () => {
+    const deps = makeDeps();
+    deps.docsRepo.findById.mockResolvedValue({ id: "d1", kbId: "kb1", type: "pdf", blobKey: "x" });
+    deps.kbRepo.findById.mockResolvedValue({
+      id: "kb1",
+      chunkTemplate: "general",
+      embeddingModelId: "m1",
+    });
+    deps.pipeline.run.mockRejectedValue(new Error("boom"));
+    deps.docsRepo.completeLifecycleStage.mockResolvedValue(false);
+
+    const svc = makeService(deps);
+    await expect(svc.processDocument("d1", 1)).resolves.toBeUndefined();
+    expect(deps.docsRepo.appendLifecycleStage).toHaveBeenCalledWith(
+      "d1",
+      expect.objectContaining({ stage: "ingest", status: "failed", error: "boom" }),
     );
   });
 });
