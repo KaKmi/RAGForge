@@ -354,7 +354,7 @@ export default function KnowledgeBasesPage() {
         okText="创建"
         cancelText="取消"
         confirmLoading={saving}
-        maskClosable={!saving}
+        mask={{ closable: !saving }}
         okButtonProps={{ disabled: noModels }}
         destroyOnHidden
       >

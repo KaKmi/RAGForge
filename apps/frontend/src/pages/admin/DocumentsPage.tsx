@@ -25,12 +25,14 @@ import type {
   DocumentLifecycleStage,
   DocumentStatus,
   KnowledgeBase,
+  ModelProvider,
 } from "@codecrush/contracts";
 import {
   deleteDocument,
   getDocumentLifecycle,
   getDocuments,
   getKnowledgeBases,
+  getModels,
   triggerParse,
   updateDocumentMetadata,
   updateKnowledgeBase,
@@ -213,6 +215,7 @@ export default function DocumentsPage() {
 
   const [kb, setKb] = useState<KnowledgeBase | null>(null);
   const [docs, setDocs] = useState<Document[]>([]);
+  const [models, setModels] = useState<ModelProvider[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -260,6 +263,17 @@ export default function DocumentsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 模型列表仅用于把 embeddingModelId 解析成可读名称展示，拉一次即可，不随文档轮询重复请求
+  useEffect(() => {
+    getModels()
+      .then(setModels)
+      .catch(() => setModels([]));
+  }, []);
+
+  const embeddingModelName = kb
+    ? (models.find((m) => m.id === kb.embeddingModelId)?.name ?? kb.embeddingModelId)
+    : "";
 
   // 有文档处于处理中状态（queued/processing）时轮询，同 KnowledgeBasesPage 的按需轮询模式
   useEffect(() => {
@@ -522,7 +536,7 @@ export default function DocumentsPage() {
           </span>
           <span style={dotSep}>·</span>
           <span>
-            Embedding：<span style={strong}>{kb.embeddingModelId}</span>
+            Embedding：<span style={strong}>{embeddingModelName}</span>
           </span>
           <span style={dotSep}>·</span>
           <span>文档数 {kb.docsCount}</span>
@@ -728,7 +742,7 @@ export default function DocumentsPage() {
         cancelText="取消"
         confirmLoading={editSaving}
         okButtonProps={{ disabled: !editName.trim() }}
-        maskClosable={!editSaving}
+        mask={{ closable: !editSaving }}
       >
         {kb && (
           <div style={{ display: "flex", flexDirection: "column", gap: 18, paddingTop: 8 }}>
@@ -775,7 +789,7 @@ export default function DocumentsPage() {
               <Select
                 disabled
                 value={kb.embeddingModelId}
-                options={[{ label: kb.embeddingModelId, value: kb.embeddingModelId }]}
+                options={[{ label: embeddingModelName, value: kb.embeddingModelId }]}
                 style={{ width: "100%" }}
               />
               <div style={hintText}>创建后不可更换向量模型。</div>
@@ -790,8 +804,8 @@ export default function DocumentsPage() {
         title={`上传文档 · ${kb?.name ?? ""}`}
         open={uploadOpen}
         onClose={() => (uploading ? undefined : setUploadOpen(false))}
-        width={460}
-        maskClosable={!uploading}
+        size={460}
+        mask={{ closable: !uploading }}
         footer={
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
             <Button onClick={() => setUploadOpen(false)} disabled={uploading}>
@@ -954,7 +968,7 @@ export default function DocumentsPage() {
         okText="保存"
         cancelText="取消"
         confirmLoading={metaSaving}
-        maskClosable={!metaSaving}
+        mask={{ closable: !metaSaving }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 8 }}>
           <div style={{ fontSize: 12, color: "rgba(0,0,0,.4)", lineHeight: 1.6 }}>
@@ -994,7 +1008,7 @@ export default function DocumentsPage() {
       <Drawer
         open={!!lifecycleDoc}
         onClose={() => setLifecycleDocId(null)}
-        width={480}
+        size={480}
         title={
           lifecycleDoc && (
             <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
