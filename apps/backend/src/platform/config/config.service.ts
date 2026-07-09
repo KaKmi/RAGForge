@@ -39,4 +39,10 @@ export class AppConfigService {
   get modelApiKeyEncryptionKey(): string {
     return this.config.get("MODEL_API_KEY_ENCRYPTION_KEY", { infer: true });
   }
+  get blobStorePath(): string {
+    return this.config.get("BLOB_STORE_PATH", { infer: true });
+  }
+  get ingestionEmbedBatchSize(): number {
+    return this.config.get("INGESTION_EMBED_BATCH_SIZE", { infer: true });
+  }
 }

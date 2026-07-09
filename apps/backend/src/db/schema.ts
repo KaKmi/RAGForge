@@ -9,3 +9,6 @@ export const appMeta = pgTable("app_meta", {
 export * from "../modules/users/schema";
 export * from "../modules/prompts/schema";
 export * from "../modules/models/schema";
+export * from "../modules/knowledge-bases/schema";
+export * from "../modules/documents/schema";
+export * from "../modules/chunks/schema";

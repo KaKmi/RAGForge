@@ -1,27 +1,40 @@
-import { Body, Controller, Get, HttpCode, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Param, Patch, Post } from "@nestjs/common";
 import { createZodDto } from "nestjs-zod";
-import { CreateKnowledgeBaseRequestSchema, type KnowledgeBase } from "@codecrush/contracts";
+import {
+  CreateKnowledgeBaseRequestSchema,
+  UpdateKnowledgeBaseRequestSchema,
+  type KnowledgeBase,
+} from "@codecrush/contracts";
 import { KnowledgeBasesService } from "./knowledge-bases.service";
 
 class CreateKnowledgeBaseRequestDto extends createZodDto(CreateKnowledgeBaseRequestSchema) {}
+class UpdateKnowledgeBaseRequestDto extends createZodDto(UpdateKnowledgeBaseRequestSchema) {}
 
 @Controller("knowledge-bases")
 export class KnowledgeBasesController {
   constructor(private readonly knowledgeBasesService: KnowledgeBasesService) {}
 
   @Get()
-  list(): KnowledgeBase[] {
+  list(): Promise<KnowledgeBase[]> {
     return this.knowledgeBasesService.list();
   }
 
   @Get(":id")
-  get(@Param("id") id: string): KnowledgeBase {
+  get(@Param("id") id: string): Promise<KnowledgeBase> {
     return this.knowledgeBasesService.get(id);
   }
 
   @Post()
   @HttpCode(201)
-  create(@Body() body: CreateKnowledgeBaseRequestDto): KnowledgeBase {
+  create(@Body() body: CreateKnowledgeBaseRequestDto): Promise<KnowledgeBase> {
     return this.knowledgeBasesService.create(body);
+  }
+
+  @Patch(":id")
+  update(
+    @Param("id") id: string,
+    @Body() body: UpdateKnowledgeBaseRequestDto,
+  ): Promise<KnowledgeBase> {
+    return this.knowledgeBasesService.update(id, body);
   }
 }

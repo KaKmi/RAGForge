@@ -1,4 +1,10 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import {
   isValidProtocol,
   type CreateModelRequest,
@@ -71,7 +77,17 @@ export class ModelsService {
 
   async remove(id: string): Promise<void> {
     await this.mustFind(id);
-    await this.repo.delete(id);
+    try {
+      await this.repo.delete(id);
+    } catch (err) {
+      // knowledge_bases.embedding_model_id 现有 FK RESTRICT（007 Design「存储 schema」）：
+      // 模型仍被知识库绑定时删除会在 DB 层被拒（embeddingModelId 创建后锁定，语义上就不该能删）。
+      // 转成可读 409，不让原始 23503 裸奔到客户端。
+      if (isForeignKeyViolation(err)) {
+        throw new ConflictException(`model ${id} 仍被知识库引用，无法删除`);
+      }
+      throw err;
+    }
   }
 
   // override：编辑抽屉改了配置但未填新 key 时，用抽屉当前配置 + 存量 key 测试（key 不下发前端）
@@ -95,6 +111,24 @@ export class ModelsService {
 
   async testConfig(req: TestModelRequest): Promise<TestModelResponse> {
     return this.doTest({ ...req });
+  }
+
+  // 供 ingestion 域调用：按 modelId 查行、解密 key、调端口 embed()。密钥解密不出 models 域。
+  async embedTexts(modelId: string, texts: string[]): Promise<number[][]> {
+    const row = await this.mustFind(modelId);
+    const { vectors } = await this.provider.embed(
+      {
+        type: row.type as ModelType,
+        protocol: row.protocol as ModelProtocol,
+        name: row.name,
+        baseUrl: row.baseUrl,
+        deploymentId: row.deploymentId ?? undefined,
+        params: row.params,
+        apiKey: this.enc.decrypt(row.apiKeyEnc),
+      },
+      texts,
+    );
+    return vectors;
   }
 
   // best-effort span：属性只含类型/协议/模型名，永不含 apiKey。
@@ -136,4 +170,16 @@ export class ModelsService {
       apiKeyMasked: this.enc.maskApiKey(this.enc.decrypt(row.apiKeyEnc)),
     };
   }
+}
+
+// drizzle-orm 把底层 pg 错误包在 DrizzleQueryError.cause 里（非顶层 e.code）——
+// 实测验证：直接查 e.code 永远查不到，需下钻 e.cause.code 才是真正的 pg SQLSTATE。
+function isForeignKeyViolation(e: unknown): boolean {
+  const cause = e instanceof Error ? e.cause : undefined;
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "code" in cause &&
+    (cause as { code: string }).code === "23503"
+  );
 }

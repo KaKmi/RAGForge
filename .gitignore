@@ -8,6 +8,12 @@ dist/
 coverage/
 .DS_Store
 
+# Ship 工作流产物（spec/plan/ledger，本地过程数据，不进仓库）
+.ship/
+
+# BlobStore 本地卷（BLOB_STORE_PATH 默认 ./.data/blobs，运行时落盘数据）
+.data/
+
 # 前端 UI 原型参考（单文件 HTML，仅供页面还原参考，不进仓库/打包）
 CodeCrushBot.dc.html
 RAG知识库问答系统设计

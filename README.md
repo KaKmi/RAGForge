@@ -4,14 +4,6 @@
 
 > 可追踪采用 **OpenTelemetry → Collector → ClickHouse** 的标准 OTLP 链路，标准化、可迁移（换 Jaeger/Tempo/阿里云 SLS/ARMS 零改应用代码）。
 
-## 状态
-
-- ✅ **M0 工程地基**已完成（monorepo、后端/前端骨架、契约包、docker-compose、迁移、CI 约定）。
-- ✅ **M0.5 可观测最小闭环**已完成（OTel SDK→Collector→ClickHouse→防腐 VIEW→traces API，见下方验证）。
-- ✅ **M1 用户/认证**已完成（users 实体 + demo seed + JWT 登录 + 全局 guard，`/traces/*` 收保护）。
-- ⏭ 下一步 **M2 前后端页面骨架**（见路线图波次 B）。
-- 完整路线图见 [`docs/design/002-implementation-roadmap.md`](docs/design/002-implementation-roadmap.md)（M0–M12）。
-
 ## 技术栈
 
 | 层 | 选型 |
@@ -63,7 +55,7 @@ pnpm --filter @codecrush/frontend dev       # http://localhost:5173
 
 打开 http://localhost:5173 ，首页会显示「后端健康：ok · db:up」。
 
-## M0.5 可观测验证
+## 可观测链路验证
 
 ```bash
 docker compose -f infra/docker-compose.yml --profile infra up -d --wait
@@ -79,7 +71,7 @@ pnpm observability:verify                 # 另开终端
 `codecrush_trace_spans` 防腐 VIEW → `GET /api/traces/:traceId`；不能由内存或 Postgres 伪造。
 Collector/ClickHouse 不可用时后端与 `/health` 不受影响（埋点只降级、不阻塞）。
 
-> M1 起 `/api/traces/*` 需要登录：verify 脚本会自动用 demo 账号（`demo@codecrush.local` / `DEMO_USER_PASSWORD`，默认 `CodeCrushDemo123!`）换取 token；`GET /health` 保持公开。
+> `/api/traces/*` 需要登录：verify 脚本会自动用 demo 账号（`demo@codecrush.local` / `DEMO_USER_PASSWORD`，默认 `CodeCrushDemo123!`）换取 token；`GET /health` 保持公开。
 
 ## 常用命令
 

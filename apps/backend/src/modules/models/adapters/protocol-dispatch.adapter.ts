@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import type { ModelProtocol, ModelType } from "@codecrush/contracts";
 import type {
+  EmbedResult,
   ModelCallConfig,
   ModelProviderPort,
   TestModelResult,
@@ -17,8 +18,13 @@ import { cohereEmbeddingProbe, cohereRerankProbe } from "./protocols/cohere";
 import { jinaEmbeddingProbe, jinaRerankProbe } from "./protocols/jina";
 import { dashscopeRerankProbe } from "./protocols/dashscope";
 import { selfHostedEmbeddingProbe, selfHostedRerankProbe } from "./protocols/self-hosted";
+import { EMBED_BUILDERS } from "./embed-builders";
 
 export const TEST_CONNECTION_TIMEOUT_MS = 10_000;
+// embed() 批量文本量级远超探针（真实入库调用，非最小 mock 请求），10s 太紧；60s 留够真实厂商延迟余量，
+// 同时仍能兜住 007 Failure modes 要求处理的「Embedding 服务超时/连接 hang」——不设超时会让 pg-boss
+// 单进程 worker 永久卡死在这次 fetch 上，后续入库任务全部堆积不消费。
+export const EMBED_TIMEOUT_MS = 60_000;
 
 // (type, protocol) → 探针 builder 表：与契约 PROTOCOLS_BY_TYPE 的合法组合一一对应
 // （完整性由 protocol-dispatch.adapter.spec 断言）。新增协议 = 加 builder 文件 + 表项。
@@ -89,6 +95,58 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult> {
+    const builder = EMBED_BUILDERS[config.protocol];
+    if (!builder) {
+      // 契约层已收口 embedding 合法协议组合，此分支正常不可达（防御新枚举值漏配 builder）
+      throw new Error(`unsupported protocol ${config.protocol} for embedding`);
+    }
+    const req = builder(config, texts);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
+    let resp: Response;
+    try {
+      resp = await fetch(req.url, {
+        method: "POST",
+        headers: req.headers,
+        body: JSON.stringify(req.body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const message = controller.signal.aborted
+        ? `embedding 请求超时（>${EMBED_TIMEOUT_MS}ms）`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+      throw new Error(redactSecret(message, config.apiKey));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) {
+      const json: unknown = await resp.json().catch(() => undefined);
+      throw new Error(redactSecret(upstreamError(resp.status, json), config.apiKey));
+    }
+    const json = await resp.json();
+    const vectors = req.parseResponse(json);
+    // 200 但响应形状不符时 parseResponse 返回 []/缺项——必须与输入数一致，防止静默空结果流出
+    if (vectors.length !== texts.length) {
+      throw new Error(
+        `embedding 响应向量数与输入文本数不一致（期望 ${texts.length}，实际 ${vectors.length}）`,
+      );
+    }
+    const malformedIdx = vectors.findIndex(
+      (v) => !Array.isArray(v) || v.some((n) => typeof n !== "number"),
+    );
+    if (malformedIdx !== -1) {
+      throw new Error(`embedding 响应形状不符：第 ${malformedIdx + 1} 个向量不是数字数组`);
+    }
+    const bad = vectors.find((v) => v.length !== 1024);
+    if (bad) {
+      throw new Error(`embedding 维度不是 1024（实际 ${bad.length}），平台统一要求 1024 维`);
+    }
+    return { vectors };
   }
 }
 

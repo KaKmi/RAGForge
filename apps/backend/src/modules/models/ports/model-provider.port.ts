@@ -20,6 +20,11 @@ export interface TestModelResult {
   error?: string;
 }
 
+export interface EmbedResult {
+  vectors: number[][];
+}
+
 export interface ModelProviderPort {
   testConnection(config: ModelCallConfig): Promise<TestModelResult>;
+  embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult>;
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "knowledge_bases" ADD CONSTRAINT "knowledge_bases_embedding_model_id_model_providers_id_fk" FOREIGN KEY ("embedding_model_id") REFERENCES "public"."model_providers"("id") ON DELETE restrict ON UPDATE no action;

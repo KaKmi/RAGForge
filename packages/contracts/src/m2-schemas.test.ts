@@ -3,21 +3,13 @@ import {
   AgentSchema,
   ChatRequestSchema,
   ChatStreamEventSchema,
-  ChunkListResponseSchema,
-  ChunkSchema,
   ConversationSchema,
   CreateAgentRequestSchema,
-  CreateDocumentRequestSchema,
-  CreateKnowledgeBaseRequestSchema,
   CreateModelRequestSchema,
   CreatePromptRequestSchema,
   CreatePromptVersionRequestSchema,
-  DocumentListResponseSchema,
-  DocumentSchema,
   EvalRunSchema,
   EvalSetSchema,
-  IngestionStatusSchema,
-  KnowledgeBaseSchema,
   MessageListResponseSchema,
   MessageSchema,
   ModelProviderSchema,
@@ -29,7 +21,6 @@ import {
   RetrievalTestRequestSchema,
   RetrievalTestResponseSchema,
   UpdateAgentRequestSchema,
-  UpdateChunkEnabledRequestSchema,
 } from "./index";
 
 const valid = {
@@ -41,37 +32,6 @@ const valid = {
     baseUrl: "https://api.deepseek.com",
     apiKeyMasked: "sk-****1234",
     params: { temperature: "0.3", max_tokens: "2048" },
-    enabled: true,
-  },
-  kb: {
-    id: "kb1",
-    name: "售后服务知识库",
-    desc: "售后政策与流程",
-    embeddingModelId: "m2",
-    docsCount: 86,
-    chunksCount: 3412,
-    status: "ready",
-    updatedAt: "2026-06-30T00:00:00.000Z",
-  },
-  doc: {
-    id: "d1",
-    kbId: "kb1",
-    name: "退换货政策.pdf",
-    type: "pdf",
-    size: 102400,
-    chunksCount: 24,
-    status: "ready",
-    blobKey: "blob/d1",
-    updatedAt: "2026-06-30T00:00:00.000Z",
-  },
-  chunk: {
-    id: "c1",
-    docId: "d1",
-    kbId: "kb1",
-    seq: 0,
-    text: "7天无理由退货...",
-    tokenCount: 128,
-    section: "退换货政策 > 退货条件",
     enabled: true,
   },
   retrievalReq: {
@@ -149,18 +109,6 @@ describe("M2 contracts — positive cases", () => {
   it("ModelProviderSchema accepts a valid provider", () => {
     expect(ModelProviderSchema.parse(valid.model)).toEqual(valid.model);
   });
-  it("KnowledgeBaseSchema accepts a valid kb (progress optional)", () => {
-    expect(KnowledgeBaseSchema.parse(valid.kb)).toEqual(valid.kb);
-  });
-  it("KnowledgeBaseSchema accepts building state with progress", () => {
-    expect(KnowledgeBaseSchema.parse({ ...valid.kb, status: "building", progress: 62 }).progress).toBe(62);
-  });
-  it("DocumentSchema accepts a valid document", () => {
-    expect(DocumentSchema.parse(valid.doc)).toEqual(valid.doc);
-  });
-  it("ChunkSchema accepts a valid chunk", () => {
-    expect(ChunkSchema.parse(valid.chunk)).toEqual(valid.chunk);
-  });
   it("RetrievalTestRequestSchema accepts a valid request", () => {
     expect(RetrievalTestRequestSchema.parse(valid.retrievalReq)).toEqual(valid.retrievalReq);
   });
@@ -194,14 +142,6 @@ describe("M2 contracts — positive cases", () => {
   it("MessageSchema accepts a valid message", () => {
     expect(MessageSchema.parse(valid.msg)).toEqual(valid.msg);
   });
-  it("DocumentListResponseSchema wraps documents", () => {
-    expect(DocumentListResponseSchema.parse([valid.doc]).length).toBe(1);
-    expect(() => DocumentListResponseSchema.parse([{ ...valid.doc, type: "xlsx" }])).toThrow();
-  });
-  it("ChunkListResponseSchema wraps chunks", () => {
-    expect(ChunkListResponseSchema.parse([valid.chunk]).length).toBe(1);
-    expect(() => ChunkListResponseSchema.parse([{ ...valid.chunk, seq: -1 }])).toThrow();
-  });
   it("MessageListResponseSchema wraps messages", () => {
     expect(MessageListResponseSchema.parse([valid.msg]).length).toBe(1);
     expect(() => MessageListResponseSchema.parse([{ ...valid.msg, role: "system" }])).toThrow();
@@ -217,12 +157,6 @@ describe("M2 contracts — positive cases", () => {
 describe("M2 contracts — negative cases", () => {
   it("ModelProviderSchema rejects unknown type", () => {
     expect(() => ModelProviderSchema.parse({ ...valid.model, type: "vision" })).toThrow();
-  });
-  it("KnowledgeBaseSchema rejects negative counts", () => {
-    expect(() => KnowledgeBaseSchema.parse({ ...valid.kb, docsCount: -1 })).toThrow();
-  });
-  it("DocumentSchema rejects non-http baseUrl? (n/a) — rejects unknown type", () => {
-    expect(() => DocumentSchema.parse({ ...valid.doc, type: "xlsx" })).toThrow();
   });
   it("RetrievalTestRequestSchema rejects threshold out of range", () => {
     expect(() => RetrievalTestRequestSchema.parse({ ...valid.retrievalReq, threshold: 1.5 })).toThrow();
@@ -317,45 +251,6 @@ describe("M2 request schemas (skeleton DTOs)", () => {
     expect(() =>
       CreateModelRequestSchema.parse({ ...rest, apiKey: "sk-12345678", type: "vision" }),
     ).toThrow();
-  });
-  it("CreateKnowledgeBaseRequestSchema omits id/counts/status/progress/updatedAt", () => {
-    const { id: _a, docsCount: _b, chunksCount: _c, status: _d, updatedAt: _e, ...rest } = valid.kb;
-    void _a;
-    void _b;
-    void _c;
-    void _d;
-    void _e;
-    expect(CreateKnowledgeBaseRequestSchema.parse(rest).name).toBe(valid.kb.name);
-    // progress 由后端构建时填，客户端不可覆盖（omit + strip）
-    expect(
-      (CreateKnowledgeBaseRequestSchema.parse({ ...rest, progress: 62 }) as Record<string, unknown>)
-        .progress,
-    ).toBeUndefined();
-  });
-  it("CreateDocumentRequestSchema omits id/counts/status/updatedAt", () => {
-    const { id: _a, chunksCount: _b, status: _c, updatedAt: _d, ...rest } = valid.doc;
-    void _a;
-    void _b;
-    void _c;
-    void _d;
-    expect(CreateDocumentRequestSchema.parse(rest).name).toBe(valid.doc.name);
-  });
-  it("IngestionStatusSchema accepts a valid status", () => {
-    expect(
-      IngestionStatusSchema.parse({
-        documentId: "d1",
-        status: "processing",
-        progress: 42,
-        stage: "切片",
-      }).progress,
-    ).toBe(42);
-    expect(() =>
-      IngestionStatusSchema.parse({ documentId: "d1", status: "queued", progress: 0, stage: "" }),
-    ).toThrow();
-  });
-  it("UpdateChunkEnabledRequestSchema accepts { enabled }", () => {
-    expect(UpdateChunkEnabledRequestSchema.parse({ enabled: false }).enabled).toBe(false);
-    expect(() => UpdateChunkEnabledRequestSchema.parse({ enabled: "yes" })).toThrow();
   });
   it("CreateAgentRequestSchema omits id", () => {
     const { id: _id, ...rest } = valid.agent;

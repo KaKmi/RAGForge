@@ -13,5 +13,7 @@ export const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default("12h"),
   // 模型 API Key 加密主密钥：32 字节 base64（44 字符），生成：openssl rand -base64 32
   MODEL_API_KEY_ENCRYPTION_KEY: z.string().min(44),
+  BLOB_STORE_PATH: z.string().default("./.data/blobs"),
+  INGESTION_EMBED_BATCH_SIZE: z.coerce.number().int().positive().default(10),
 });
 export type Env = z.infer<typeof envSchema>;

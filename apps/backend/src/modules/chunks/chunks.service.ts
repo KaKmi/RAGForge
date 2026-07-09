@@ -1,50 +1,55 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
-import type { Chunk } from "@codecrush/contracts";
-
-const MOCK_CHUNKS: Chunk[] = [
-  {
-    id: "c1",
-    docId: "d1",
-    kbId: "kb1",
-    seq: 0,
-    text: "7天无理由退货需保留商品完好...",
-    tokenCount: 128,
-    section: "退换货政策 > 退货条件",
-    enabled: true,
-  },
-  {
-    id: "c2",
-    docId: "d1",
-    kbId: "kb1",
-    seq: 1,
-    text: "退货流程：1. 申请 2. 审核 3. 寄回...",
-    tokenCount: 96,
-    section: "退换货政策 > 退货流程",
-    enabled: true,
-  },
-  {
-    id: "c3",
-    docId: "d1",
-    kbId: "kb1",
-    seq: 2,
-    text: "已禁用切片示例...",
-    tokenCount: 32,
-    section: "退换货政策 > 附录",
-    enabled: false,
-  },
-];
+import type { Chunk, ChunkBatchDeleteResponse, ChunkListQuery, ChunkPageResponse } from "@codecrush/contracts";
+import { ChunksRepository } from "./chunks.repository";
+import { DocumentsRepository } from "../documents/documents.repository";
+import type { ChunkRow } from "./schema";
 
 @Injectable()
 export class ChunksService {
-  listByDoc(docId: string): Chunk[] {
-    return MOCK_CHUNKS.filter((c) => c.docId === docId);
+  constructor(
+    private readonly chunksRepo: ChunksRepository,
+    private readonly docsRepo: DocumentsRepository,
+  ) {}
+
+  async listPage(docId: string, query: ChunkListQuery): Promise<ChunkPageResponse> {
+    const doc = await this.docsRepo.findById(docId);
+    if (!doc) throw new NotFoundException(`document ${docId} not found`);
+
+    // 版本过滤用文档自己的 chunkVersion（非 kb.activeVersion）：单文档重解析中间态下
+    // 二者可能短暂不同，文档自身 chunkVersion 才是它当前可见切片所属版本。
+    if (doc.chunkVersion === null) {
+      return { items: [], total: 0, offset: query.offset, limit: query.limit, hasMore: false };
+    }
+
+    const page = await this.chunksRepo.findPage(docId, doc.chunkVersion, {
+      offset: query.offset,
+      limit: query.limit,
+      q: query.q,
+    });
+    return {
+      items: page.items.map((r) => this.toChunk(r)),
+      total: page.total,
+      offset: query.offset,
+      limit: query.limit,
+      hasMore: query.offset + page.items.length < page.total,
+    };
   }
 
-  setEnabled(id: string, enabled: boolean): Chunk {
-    const chunk = MOCK_CHUNKS.find((c) => c.id === id);
-    if (!chunk) throw new NotFoundException(`chunk ${id} not found`);
-    // M2 桩：原地变更（不持久化）。M4 接 chunks 表。
-    chunk.enabled = enabled;
-    return chunk;
+  async batchDelete(ids: string[]): Promise<ChunkBatchDeleteResponse> {
+    const deletedCount = await this.chunksRepo.batchDelete(ids);
+    return { deletedCount };
+  }
+
+  private toChunk(row: ChunkRow): Chunk {
+    return {
+      id: row.id,
+      docId: row.docId,
+      kbId: row.kbId,
+      version: row.version,
+      seq: row.seq,
+      text: row.text,
+      tokenCount: row.tokenCount,
+      section: row.section,
+    };
   }
 }

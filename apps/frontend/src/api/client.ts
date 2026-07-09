@@ -3,20 +3,32 @@ import {
   AgentSchema,
   type Agent,
   type AgentListResponse,
-  ChunkListResponseSchema,
-  type ChunkListResponse,
+  ChunkBatchDeleteRequestSchema,
+  type ChunkBatchDeleteRequest,
+  ChunkBatchDeleteResponseSchema,
+  type ChunkBatchDeleteResponse,
+  ChunkPageResponseSchema,
+  type ChunkPageResponse,
   ConversationListResponseSchema,
   ConversationSchema,
   type Conversation,
   type ConversationListResponse,
+  CreateKnowledgeBaseRequestSchema,
+  type CreateKnowledgeBaseRequest,
+  DocumentContentResponseSchema,
+  type DocumentContentResponse,
+  DocumentLifecycleResponseSchema,
+  type DocumentLifecycleResponse,
   DocumentListResponseSchema,
   type DocumentListResponse,
+  DocumentSchema,
+  type Document,
   HealthResponseSchema,
   type HealthResponse,
-  IngestionStatusSchema,
-  type IngestionStatus,
   KnowledgeBaseListResponseSchema,
   type KnowledgeBaseListResponse,
+  KnowledgeBaseSchema,
+  type KnowledgeBase,
   MessageListResponseSchema,
   type MessageListResponse,
   ModelProviderListResponseSchema,
@@ -50,6 +62,10 @@ import {
   type RetrievalTestRequest,
   RetrievalTestResponseSchema,
   type RetrievalTestResponse,
+  UpdateDocumentMetadataRequestSchema,
+  type UpdateDocumentMetadataRequest,
+  UpdateKnowledgeBaseRequestSchema,
+  type UpdateKnowledgeBaseRequest,
 } from "@codecrush/contracts";
 
 const TOKEN_KEY = "token";
@@ -73,7 +89,8 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
   const token = localStorage.getItem(TOKEN_KEY);
   const headers = new Headers(opts.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (opts.body && !headers.has("Content-Type")) {
+  const isFormData = typeof FormData !== "undefined" && opts.body instanceof FormData;
+  if (opts.body && !isFormData && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   const resp = await fetch(path, { ...opts, headers });
@@ -163,18 +180,96 @@ export const testModelConfig = (req: TestModelRequest): Promise<TestModelRespons
 // knowledge-bases — @Controller("knowledge-bases")
 export const getKnowledgeBases = (): Promise<KnowledgeBaseListResponse> =>
   getJson("/api/knowledge-bases", KnowledgeBaseListResponseSchema);
+export const createKnowledgeBase = (req: CreateKnowledgeBaseRequest): Promise<KnowledgeBase> =>
+  postJson("/api/knowledge-bases", req, CreateKnowledgeBaseRequestSchema, KnowledgeBaseSchema);
+export async function updateKnowledgeBase(
+  id: string,
+  req: UpdateKnowledgeBaseRequest,
+): Promise<KnowledgeBase> {
+  const resp = await apiFetch(`/api/knowledge-bases/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(UpdateKnowledgeBaseRequestSchema.parse(req)),
+  });
+  if (!resp.ok) throw new Error(`update kb failed: ${resp.status} ${resp.statusText}`);
+  return KnowledgeBaseSchema.parse(await resp.json());
+}
 
-// documents — @Controller("documents")
+// documents — 上传挂在知识库资源下；其余操作扁平挂在 /api/documents/:id 下
 export const getDocuments = (kbId: string): Promise<DocumentListResponse> =>
   getJson(`/api/documents?kbId=${encodeURIComponent(kbId)}`, DocumentListResponseSchema);
 
-// ingestion — @Controller("documents/:id")
-export const getIngestionStatus = (docId: string): Promise<IngestionStatus> =>
-  getJson(`/api/documents/${encodeURIComponent(docId)}/ingestion-status`, IngestionStatusSchema);
+export async function uploadDocuments(
+  kbId: string,
+  files: File[],
+  opts: { autoParse: boolean },
+): Promise<Document[]> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f, f.name);
+  form.append("autoParse", String(opts.autoParse));
+  const resp = await apiFetch(`/api/knowledge-bases/${encodeURIComponent(kbId)}/documents`, {
+    method: "POST",
+    body: form,
+  });
+  if (!resp.ok) throw new Error(`upload failed: ${resp.status} ${resp.statusText}`);
+  const json = await resp.json();
+  return (json as unknown[]).map((d) => DocumentSchema.parse(d));
+}
 
-// chunks — @Controller("chunks")
-export const getChunks = (docId: string): Promise<ChunkListResponse> =>
-  getJson(`/api/chunks/${encodeURIComponent(docId)}`, ChunkListResponseSchema);
+export async function triggerParse(docId: string): Promise<Document> {
+  const resp = await apiFetch(`/api/documents/${encodeURIComponent(docId)}/parse`, {
+    method: "POST",
+  });
+  if (!resp.ok) throw new Error(`parse trigger failed: ${resp.status} ${resp.statusText}`);
+  return DocumentSchema.parse(await resp.json());
+}
+
+export const getDocumentLifecycle = (docId: string): Promise<DocumentLifecycleResponse> =>
+  getJson(`/api/documents/${encodeURIComponent(docId)}/lifecycle`, DocumentLifecycleResponseSchema);
+
+export async function updateDocumentMetadata(
+  docId: string,
+  req: UpdateDocumentMetadataRequest,
+): Promise<Document> {
+  const resp = await apiFetch(`/api/documents/${encodeURIComponent(docId)}/metadata`, {
+    method: "PATCH",
+    body: JSON.stringify(UpdateDocumentMetadataRequestSchema.parse(req)),
+  });
+  if (!resp.ok) throw new Error(`update metadata failed: ${resp.status} ${resp.statusText}`);
+  return DocumentSchema.parse(await resp.json());
+}
+
+export async function deleteDocument(docId: string): Promise<void> {
+  const resp = await apiFetch(`/api/documents/${encodeURIComponent(docId)}`, { method: "DELETE" });
+  if (!resp.ok) throw new Error(`delete document failed: ${resp.status} ${resp.statusText}`);
+}
+
+export const getDocumentContent = (docId: string): Promise<DocumentContentResponse> =>
+  getJson(`/api/documents/${encodeURIComponent(docId)}/content`, DocumentContentResponseSchema);
+
+// chunks
+export function getDocumentChunks(
+  docId: string,
+  query: { offset: number; limit: number; q?: string },
+): Promise<ChunkPageResponse> {
+  const params = new URLSearchParams();
+  params.set("offset", String(query.offset));
+  params.set("limit", String(query.limit));
+  if (query.q) params.set("q", query.q);
+  return getJson(
+    `/api/documents/${encodeURIComponent(docId)}/chunks?${params.toString()}`,
+    ChunkPageResponseSchema,
+  );
+}
+
+export const batchDeleteChunks = (
+  req: ChunkBatchDeleteRequest,
+): Promise<ChunkBatchDeleteResponse> =>
+  postJson(
+    "/api/chunks/batch-delete",
+    req,
+    ChunkBatchDeleteRequestSchema,
+    ChunkBatchDeleteResponseSchema,
+  );
 
 // conversations — @Controller("conversations")
 export const getConversations = (): Promise<ConversationListResponse> =>
@@ -201,10 +296,7 @@ export async function getPrompts(query: {
   return getJson(`/api/prompts?${params.toString()}`, PromptListResponseSchema);
 }
 export const getPromptVersions = (promptId: string): Promise<PromptVersionListResponse> =>
-  getJson(
-    `/api/prompts/${encodeURIComponent(promptId)}/versions`,
-    PromptVersionListResponseSchema,
-  );
+  getJson(`/api/prompts/${encodeURIComponent(promptId)}/versions`, PromptVersionListResponseSchema);
 
 // M6 写操作：建 Prompt / 出新版本 / 发布 / 回滚（author 由后端从 JWT 填，D6）
 export async function createPrompt(req: CreatePromptRequest): Promise<Prompt> {

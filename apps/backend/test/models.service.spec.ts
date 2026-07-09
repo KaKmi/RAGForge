@@ -146,4 +146,26 @@ describe("ModelsService", () => {
     await svc.remove(created.id);
     expect(repo.rows).toHaveLength(0);
   });
+
+  // 回归：knowledge_bases.embedding_model_id 有 FK RESTRICT（007 Design），delete() 违反时
+  // drizzle-orm 把真实 pg 错误包在 DrizzleQueryError.cause 里（非顶层 e.code）——
+  // 用真实 drizzle 错误形状（cause.code='23503'）而非裸 {code} 对象，防止 mock 掩盖下钻 .cause 的实现细节。
+  it("remove：模型仍被知识库引用（FK RESTRICT 违反）→ 转为可读 409，不裸奔原始 pg 错误", async () => {
+    const repo = makeRepo();
+    const svc = new ModelsService(repo as unknown as ModelsRepository, enc, port);
+    const created = await svc.create(createReq);
+
+    const pgError = Object.assign(new Error("violates foreign key constraint"), {
+      code: "23503",
+    });
+    const drizzleQueryError = Object.assign(new Error("Failed query: delete from ..."), {
+      cause: pgError,
+    });
+    repo.delete.mockRejectedValueOnce(drizzleQueryError);
+
+    await expect(svc.remove(created.id)).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("仍被知识库引用"),
+    });
+  });
 });

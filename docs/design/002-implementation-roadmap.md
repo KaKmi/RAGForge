@@ -5,8 +5,8 @@ category: "design"
 number: "002"
 status: draft
 services: [backend, frontend, observability, deploy]
-related: ["design/001"]
-last_modified: "2026-07-05"
+related: ["design/001", "design/007"]
+last_modified: "2026-07-08"
 ---
 
 # 002 — RAG 平台实现路线图（模块级）
@@ -85,7 +85,7 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
 |---|---|---|---|---|
 | **M3** | 模型接入 | model_providers CRUD、密钥加密、连通性测试、**协议适配层**(LLM: OpenAI 兼容/Anthropic/Gemini；Embedding: 自部署/OpenAI 兼容/Gemini/Cohere/Jina；Rerank: 自部署/OpenAI 兼容(/v1/reranks)/Cohere/Jina/DashScope 原生；`(type,protocol)` 为请求构造路由键)、按类型可编辑参数(params jsonb) | M2 | 注册模型并"测试"通过；key 前端掩码、只写不回显 |
 | **M6** | Prompt 管理 | prompts + 版本 + diff + 发布/回滚 + 变量抽取(`{var}`) | M2 | 建 Prompt、出新版本、diff、发布切生产、回滚 |
-| **M4** | 知识库/文档/切片/入库 | KB CRUD(绑 M3 embedding)、文档上传(BlobStore)、固定入库管线(解析→语义切片→向量化→入索引，pg-boss 异步)、切片查看/启用/禁用、生命周期状态 | M3 | 传 PDF 走到"就绪"；切片可见可开关；失败可重解析 |
+| **M4** | 知识库/文档/切片/入库 | KB CRUD(名称查重、分块模板 通用/问答、绑 M3 embedding 创建后锁定)、文档上传(BlobStore 本地卷、单文件/文件夹批量、自动/手动解析)、四阶段可插拔管线(解析→清洗→分块→向量化，pg-boss 异步)、切片版本化蓝绿重建(改模板全库重建、重建期检索用旧版)、切片查看/搜索/批量删除、文档元数据(jsonb)、生命周期状态——设计见 007 | M3 | 传 PDF 走到"就绪"；切片可见可删~~可开关~~(2026-07-08 改删除制)；改分块模板全库重建且重建期检索不空窗；失败可重试 |
 | **M5** | 检索 | `RetrieverPort`:向量召回 + 关键词召回 + 融合 + 重排；检索测试台(与 chat 共用) | M4, M3 | 测试台输入问题出命中分块 + 三种分数 |
 
 > M3 与 M6 独立、可并行；M4 在 M3 后；M5 在 M4 后。

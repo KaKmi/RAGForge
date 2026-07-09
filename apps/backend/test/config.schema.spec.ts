@@ -37,3 +37,27 @@ describe("envSchema 模型密钥主密钥 fail-fast (M3)", () => {
     ).toBe(false);
   });
 });
+
+describe("envSchema BlobStore/Ingestion 配置 (M4)", () => {
+  const valid = {
+    ...base,
+    JWT_SECRET: "dev-only-change-me-please-32-chars-min!!",
+    MODEL_API_KEY_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
+  };
+
+  it("BLOB_STORE_PATH 未设置时默认 ./.data/blobs", () => {
+    const r = envSchema.safeParse(valid);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.BLOB_STORE_PATH).toBe("./.data/blobs");
+  });
+
+  it("INGESTION_EMBED_BATCH_SIZE 未设置时默认 10", () => {
+    const r = envSchema.safeParse(valid);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.INGESTION_EMBED_BATCH_SIZE).toBe(10);
+  });
+
+  it("INGESTION_EMBED_BATCH_SIZE 非正数 → 校验失败", () => {
+    expect(envSchema.safeParse({ ...valid, INGESTION_EMBED_BATCH_SIZE: "0" }).success).toBe(false);
+  });
+});

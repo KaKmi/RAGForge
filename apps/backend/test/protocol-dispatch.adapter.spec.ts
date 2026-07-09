@@ -172,3 +172,62 @@ describe("ProtocolDispatchAdapter.testConnection", () => {
     expect(r.error).toContain("ECONNREFUSED");
   });
 });
+
+describe("ProtocolDispatchAdapter.embed", () => {
+  const adapter = new ProtocolDispatchAdapter();
+  const embedCfg = () => cfg({ type: "embedding", protocol: "openai_compat", name: "bge-m3" });
+  let fetchMock: jest.Mock;
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  it("200 + 合法响应 → 按序返回 1024 维 vectors", async () => {
+    const v0 = Array.from({ length: 1024 }, () => 0.1);
+    const v1 = Array.from({ length: 1024 }, () => 0.2);
+    fetchMock.mockResolvedValue(
+      okJson({ data: [{ index: 0, embedding: v0 }, { index: 1, embedding: v1 }] }),
+    );
+    const r = await adapter.embed(embedCfg(), ["a", "b"]);
+    expect(r.vectors).toEqual([v0, v1]);
+  });
+
+  it("200 但响应形状不识别（{}）→ 抛出向量数与文本数不一致的可读错误，不静默返回空", async () => {
+    fetchMock.mockResolvedValue(okJson({}));
+    await expect(adapter.embed(embedCfg(), ["a", "b"])).rejects.toThrow(
+      /向量数与输入文本数不一致.*期望 2.*实际 0/,
+    );
+  });
+
+  it("200 但 data 项缺 embedding（{data:[{}]}）→ 抛可读形状错误而非 TypeError", async () => {
+    fetchMock.mockResolvedValue(okJson({ data: [{}] }));
+    await expect(adapter.embed(embedCfg(), ["a"])).rejects.toThrow(/形状不符.*不是数字数组/);
+  });
+
+  it("非 1024 维 → 抛维度错误", async () => {
+    fetchMock.mockResolvedValue(okJson({ data: [{ index: 0, embedding: [0.1, 0.2] }] }));
+    await expect(adapter.embed(embedCfg(), ["a"])).rejects.toThrow(/维度不是 1024.*实际 2/);
+  });
+
+  // 回归：P2-6——embed() 此前无超时保护，厂商网关 hang 住的连接会让 pg-boss 单进程 worker
+  // 永久卡死。用真实 AbortController 行为模拟：fetch 返回一个只在 signal abort 时才 reject 的
+  // promise（连接本身不会自己失败/成功），验证 EMBED_TIMEOUT_MS 到期后确实会中止并抛可读超时错误。
+  it("fetch 挂起超过 EMBED_TIMEOUT_MS → abort 并抛超时错误，不会永久挂起", async () => {
+    jest.useFakeTimers();
+    fetchMock.mockImplementation(
+      (_url: string, opts: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          opts.signal?.addEventListener("abort", () => {
+            const err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        }),
+    );
+    const pending = adapter.embed(embedCfg(), ["a"]);
+    const assertion = expect(pending).rejects.toThrow(/embedding 请求超时/);
+    await jest.advanceTimersByTimeAsync(60_000);
+    await assertion;
+    jest.useRealTimers();
+  });
+});

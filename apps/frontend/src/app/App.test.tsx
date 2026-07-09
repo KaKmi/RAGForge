@@ -16,6 +16,15 @@ const NAV_LABELS = [
 ];
 const NAV_GROUPS = ["配置", "验证 & 观测", "数据飞轮"];
 
+// jsdom 未实现 IntersectionObserver；ChunksPage 无限滚动依赖它，挂载即抛错（同 test/setup.ts 里 ResizeObserver 的处理方式）。
+if (!(globalThis as { IntersectionObserver?: unknown }).IntersectionObserver) {
+  (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 beforeEach(() => {
   localStorage.clear();
 });
@@ -130,6 +139,98 @@ it("loads ModelsPage from real /api/models on /admin/models (M3)", async () => {
   await waitFor(() => {
     const calls = fetchMock.mock.calls.map(c => String(c[0]));
     expect(calls.some(u => u.includes("/api/models"))).toBe(true);
+  });
+});
+
+it("loads KnowledgeBasesPage from real /api/knowledge-bases on /admin/knowledge-bases (M4)", async () => {
+  localStorage.setItem("token", "fake-token");
+  // mock fetch：GET /api/knowledge-bases 返空数组，其余 404。证明页面挂载调真 API 而非本地 mock。
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _opts?: RequestInit) => {
+    const u = typeof input === "string" ? input : input.toString();
+    if (u.includes("/api/knowledge-bases")) {
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response;
+    }
+    return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+  });
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/admin/knowledge-bases"]}>
+      <App />
+    </MemoryRouter>,
+  );
+  // 空列表态出现 = 页面已挂载且消费了 API 响应（不再渲染 mocks/knowledge-bases 里的固定数据）
+  expect(await screen.findByText(/暂无知识库/)).toBeInTheDocument();
+  // 关键断言：挂载时确实调用了 /api/knowledge-bases（非本地 mock）
+  await waitFor(() => {
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls.some(u => u.includes("/api/knowledge-bases"))).toBe(true);
+  });
+});
+
+it("loads DocumentsPage from real /api/documents on /admin/knowledge-bases/:kbId/documents (M4)", async () => {
+  localStorage.setItem("token", "fake-token");
+  // mock fetch：GET /api/documents?kbId= 与 GET /api/knowledge-bases（KB 摘要）都返空/空数组，其余 404。
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _opts?: RequestInit) => {
+    const u = typeof input === "string" ? input : input.toString();
+    if (u.includes("/api/documents")) {
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response;
+    }
+    if (u.includes("/api/knowledge-bases")) {
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response;
+    }
+    return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+  });
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/admin/knowledge-bases/kb1/documents"]}>
+      <App />
+    </MemoryRouter>,
+  );
+  // 空列表态出现 = 页面已挂载且消费了 API 响应（不再渲染本地 mock 文档）
+  expect(await screen.findByText(/该知识库暂无文档/)).toBeInTheDocument();
+  // 关键断言：挂载时确实调用了 /api/documents?kbId=kb1（非本地 mock）
+  await waitFor(() => {
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls.some(u => u.includes("/api/documents") && u.includes("kbId=kb1"))).toBe(true);
+  });
+});
+
+it("loads ChunksPage from real /api/documents/:id/chunks on the chunks route (M4)", async () => {
+  localStorage.setItem("token", "fake-token");
+  // mock fetch：GET /api/documents/d1/content 与 GET /api/documents/d1/chunks 都返空，其余 404。
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _opts?: RequestInit) => {
+    const u = typeof input === "string" ? input : input.toString();
+    if (u.includes("/chunks")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [], total: 0, offset: 0, limit: 20, hasMore: false }),
+      } as unknown as Response;
+    }
+    if (u.includes("/content")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ documentId: "d1", text: "" }),
+      } as unknown as Response;
+    }
+    return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+  });
+  global.fetch = fetchMock as unknown as typeof fetch;
+
+  render(
+    <MemoryRouter initialEntries={["/admin/knowledge-bases/kb1/documents/d1/chunks"]}>
+      <App />
+    </MemoryRouter>,
+  );
+  // 空态出现 = 页面已挂载且消费了 API 响应（不再渲染本地 mock 切片）
+  expect(await screen.findByText("没有匹配的切片")).toBeInTheDocument();
+  // 关键断言：挂载时确实调用了 /api/documents/d1/chunks（非本地 mock）
+  await waitFor(() => {
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls.some(u => u.includes("/api/documents/d1/chunks"))).toBe(true);
   });
 });
 
