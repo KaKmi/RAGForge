@@ -57,6 +57,13 @@
       "when": 1783566447464,
       "tag": "0007_wide_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783587772280,
+      "tag": "0008_mean_la_nuit",
+      "breakpoints": true
     }
   ]
 }
