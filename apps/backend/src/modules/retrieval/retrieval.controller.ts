@@ -11,7 +11,7 @@ export class RetrievalController {
 
   @Post("test")
   @HttpCode(200)
-  test(@Body() body: RetrievalTestRequestDto): RetrievalTestResponse {
+  test(@Body() body: RetrievalTestRequestDto): Promise<RetrievalTestResponse> {
     return this.retrievalService.test(body);
   }
 }

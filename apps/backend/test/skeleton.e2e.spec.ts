@@ -226,6 +226,10 @@ const fakeModelProviderPort = {
   embed: jest.fn(async (_config: unknown, texts: string[]) => ({
     vectors: texts.map(() => Array.from({ length: 1024 }, () => 0.01)),
   })),
+  // M5 retrieval 的 rerank 接线用例走到这里；不校验 config.type（接线验证，非业务校验）
+  rerank: jest.fn(async (_config: unknown, _query: string, documents: string[]) => ({
+    results: documents.map((_, i) => ({ index: i, score: 0.5 })),
+  })),
 };
 const testEncryption = new EncryptionService(Buffer.alloc(32, 7).toString("base64"));
 
@@ -334,6 +338,19 @@ const inMemoryChunksRepo: Partial<ChunksRepository> = {
   batchDelete: async (ids: string[]) => ids.filter((id) => inMemoryChunkIds.delete(id)).length,
   replaceVersion: async () => undefined,
   deleteByVersion: async () => 0,
+  // M5 retrieval：一条罐头行（e2e 只验证 HTTP→service→repo→port 接线与契约形状，非召回语义；
+  // 非空结果才能让 rerank 分支真正执行，空候选会短路跳过重排）
+  searchByVector: async () => [
+    {
+      chunkId: "ch-e2e-1",
+      docId: "doc-e2e-1",
+      docName: "退换货政策.pdf",
+      text: "7天无理由退货需保留商品完好",
+      section: "退货条件",
+      vecScore: 0.9,
+    },
+  ],
+  searchByKeyword: async () => [],
 } as Partial<ChunksRepository>;
 
 const inMemoryBlobs = new Map<string, Buffer>();
@@ -853,13 +870,16 @@ describe("M2 domain skeleton", () => {
 
   describe("retrieval", () => {
     it("POST /api/retrieval/test → 200 + schema", async () => {
+      // M5 起 service 真实查 kb/model：桩时代硬编码的 "m2" 会 404（models describe 删过行，
+      // 内存 repo 以数组长度生成 id），改用文件级共享的 embeddingModelId。
+      await ensureEmbeddingModel();
       const res = await request(app.getHttpServer())
         .post("/api/retrieval/test")
         .set(auth())
         .send({
           query: "退货",
           kbId: "kb1",
-          embedModelId: "m2",
+          embedModelId: embeddingModelId,
           topK: 10,
           threshold: 0.2,
           multi: true,
@@ -873,6 +893,29 @@ describe("M2 domain skeleton", () => {
         .set(auth())
         .send({ query: "" }) // 缺必填
         .expect(400);
+    });
+
+    it("POST /api/retrieval/test 带 rerankModelId → fake rerank port 被调用", async () => {
+      await ensureEmbeddingModel();
+      fakeModelProviderPort.rerank.mockClear();
+      const res = await request(app.getHttpServer())
+        .post("/api/retrieval/test")
+        .set(auth())
+        .send({
+          query: "退货",
+          kbId: "kb1",
+          embedModelId: embeddingModelId,
+          topK: 10,
+          threshold: 0,
+          multi: false,
+          // 复用同一个 embedding 模型 id 当 rerankModelId：fake port 不校验 config.type，
+          // 这里只验证接线（HTTP → service → port.rerank 被调到）而非真实业务校验。
+          rerankModelId: embeddingModelId,
+        })
+        .expect(200);
+      expect(() => RetrievalTestResponseSchema.parse(res.body)).not.toThrow();
+      expect(fakeModelProviderPort.rerank).toHaveBeenCalled();
+      expect(res.body.hits[0].rerankScore).toBe(0.5);
     });
   });
 
