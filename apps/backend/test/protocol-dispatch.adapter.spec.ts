@@ -2,6 +2,7 @@ import { PROTOCOLS_BY_TYPE, type ModelType } from "@codecrush/contracts";
 import {
   PROBE_BUILDERS,
   ProtocolDispatchAdapter,
+  RERANK_TIMEOUT_MS,
 } from "../src/modules/models/adapters/protocol-dispatch.adapter";
 import type { ModelCallConfig } from "../src/modules/models/ports/model-provider.port";
 
@@ -227,6 +228,48 @@ describe("ProtocolDispatchAdapter.embed", () => {
     const pending = adapter.embed(embedCfg(), ["a"]);
     const assertion = expect(pending).rejects.toThrow(/embedding 请求超时/);
     await jest.advanceTimersByTimeAsync(60_000);
+    await assertion;
+    jest.useRealTimers();
+  });
+});
+
+describe("ProtocolDispatchAdapter.rerank", () => {
+  const adapter = new ProtocolDispatchAdapter();
+  const rerankCfg = () => cfg({ type: "rerank", protocol: "cohere", name: "rerank-v3" });
+  let fetchMock: jest.Mock;
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  it("成功：返回解析出的 results", async () => {
+    fetchMock.mockResolvedValue(okJson({ results: [{ index: 0, relevance_score: 0.8 }] }));
+    const res = await adapter.rerank(rerankCfg(), "q", ["a"]);
+    expect(res.results).toEqual([{ index: 0, score: 0.8 }]);
+  });
+
+  it("非 2xx → 抛错，附带脱敏后的上游 message", async () => {
+    fetchMock.mockResolvedValue(okJson({ error: { message: "boom" } }, 500));
+    await expect(adapter.rerank(rerankCfg(), "q", ["a"])).rejects.toThrow(/HTTP 500/);
+  });
+
+  // 回归同 embed() 的 P2-6 超时保护（本文件上方 embed describe 的同名用例）：fetch 挂起超过
+  // RERANK_TIMEOUT_MS → abort 并抛超时错误，不会永久挂起。
+  it("fetch 挂起超过 RERANK_TIMEOUT_MS → abort 并抛超时错误，不会永久挂起", async () => {
+    jest.useFakeTimers();
+    fetchMock.mockImplementation(
+      (_url: string, opts: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          opts.signal?.addEventListener("abort", () => {
+            const err = new Error("The operation was aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        }),
+    );
+    const pending = adapter.rerank(rerankCfg(), "q", ["a"]);
+    const assertion = expect(pending).rejects.toThrow(/rerank 请求超时/);
+    await jest.advanceTimersByTimeAsync(RERANK_TIMEOUT_MS);
     await assertion;
     jest.useRealTimers();
   });

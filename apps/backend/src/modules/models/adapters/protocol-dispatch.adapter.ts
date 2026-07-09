@@ -4,6 +4,7 @@ import type {
   EmbedResult,
   ModelCallConfig,
   ModelProviderPort,
+  RerankResult,
   TestModelResult,
 } from "../ports/model-provider.port";
 import type { ProbeBuilder } from "./protocols/types";
@@ -19,12 +20,17 @@ import { jinaEmbeddingProbe, jinaRerankProbe } from "./protocols/jina";
 import { dashscopeRerankProbe } from "./protocols/dashscope";
 import { selfHostedEmbeddingProbe, selfHostedRerankProbe } from "./protocols/self-hosted";
 import { EMBED_BUILDERS } from "./embed-builders";
+import { RERANK_BUILDERS } from "./rerank-builders";
 
 export const TEST_CONNECTION_TIMEOUT_MS = 10_000;
 // embed() 批量文本量级远超探针（真实入库调用，非最小 mock 请求），10s 太紧；60s 留够真实厂商延迟余量，
 // 同时仍能兜住 007 Failure modes 要求处理的「Embedding 服务超时/连接 hang」——不设超时会让 pg-boss
 // 单进程 worker 永久卡死在这次 fetch 上，后续入库任务全部堆积不消费。
 export const EMBED_TIMEOUT_MS = 60_000;
+// rerank 在检索的同步用户路径上（008 §Requirements），不能沿用 embed() 的 60s 异步预算；
+// 5s 是介于「测试连接」10s 探针与 chat 端 30s 熔断之间的工程估计，未经真实供应商实测校准
+// （008 Revisit：接入真实供应商后需要重新量）。
+export const RERANK_TIMEOUT_MS = 5_000;
 
 // (type, protocol) → 探针 builder 表：与契约 PROTOCOLS_BY_TYPE 的合法组合一一对应
 // （完整性由 protocol-dispatch.adapter.spec 断言）。新增协议 = 加 builder 文件 + 表项。
@@ -147,6 +153,46 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
       throw new Error(`embedding 维度不是 1024（实际 ${bad.length}），平台统一要求 1024 维`);
     }
     return { vectors };
+  }
+
+  async rerank(
+    config: ModelCallConfig,
+    query: string,
+    documents: string[],
+    topN?: number,
+  ): Promise<RerankResult> {
+    const builder = RERANK_BUILDERS[config.protocol];
+    if (!builder) {
+      // 契约层已收口 rerank 合法协议组合，此分支正常不可达（防御新枚举值漏配 builder）
+      throw new Error(`unsupported protocol ${config.protocol} for rerank`);
+    }
+    const req = builder(config, query, documents, topN);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), RERANK_TIMEOUT_MS);
+    let resp: Response;
+    try {
+      resp = await fetch(req.url, {
+        method: "POST",
+        headers: req.headers,
+        body: JSON.stringify(req.body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const message = controller.signal.aborted
+        ? `rerank 请求超时（>${RERANK_TIMEOUT_MS}ms）`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+      throw new Error(redactSecret(message, config.apiKey));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) {
+      const json: unknown = await resp.json().catch(() => undefined);
+      throw new Error(redactSecret(upstreamError(resp.status, json), config.apiKey));
+    }
+    const json = await resp.json();
+    return { results: req.parseResponse(json) };
   }
 }
 

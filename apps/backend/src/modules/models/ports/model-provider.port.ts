@@ -24,7 +24,17 @@ export interface EmbedResult {
   vectors: number[][];
 }
 
+export interface RerankResult {
+  results: { index: number; score: number }[];
+}
+
 export interface ModelProviderPort {
   testConnection(config: ModelCallConfig): Promise<TestModelResult>;
   embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult>;
+  rerank(
+    config: ModelCallConfig,
+    query: string,
+    documents: string[],
+    topN?: number,
+  ): Promise<RerankResult>;
 }
