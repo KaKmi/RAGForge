@@ -1,0 +1,21 @@
+=== E1: fake .pdf (magic bytes mismatch) upload+autoparse ===
+[{"id":"bbc189c0-af3d-40ab-a8ad-80dc27b94703","kbId":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"fake.pdf","type":"pdf","size":46,"chunksCount":0,"chunkVersion":null,"status":"queued","metadata":{},"error":null,"uploadedAt":"2026-07-09T01:57:06.008Z","updatedAt":"2026-07-09T01:57:06.012Z"}]
+HTTP:201
+=== E2: no auth token -> 401 ===
+{"message":"missing bearer token","error":"Unauthorized","statusCode":401}
+HTTP:401
+=== E3: nonexistent KB upload -> ? ===
+{"message":"knowledge base 00000000-0000-0000-0000-000000000000 not found","error":"Not Found","statusCode":404}
+HTTP:404
+=== E4: pagination negative offset ===
+{"statusCode":400,"message":"Validation failed","errors":[{"origin":"number","code":"too_small","minimum":0,"inclusive":true,"path":["offset"],"message":"Too small: expected number to be >=0"}]}
+HTTP:400
+=== E5: pagination limit over max (>100) ===
+{"statusCode":400,"message":"Validation failed","errors":[{"origin":"number","code":"too_big","maximum":100,"inclusive":true,"path":["limit"],"message":"Too big: expected number to be <=100"}]}
+HTTP:400
+=== E6: upload with no files field ===
+[]
+HTTP:201
+=== E7: unsupported extension .exe ===
+{"message":"不支持的文件类型: malware.exe","error":"Bad Request","statusCode":400}
+HTTP:400

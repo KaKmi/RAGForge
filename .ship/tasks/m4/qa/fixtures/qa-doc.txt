@@ -1,0 +1,11 @@
+# M4 QA 纯文本文档
+
+这是完整重跑 M4 QA 用的纯文本文档,用于验证上传-解析-切片-向量化全链路。
+
+## 第一节:背景
+
+本文档由本轮 ship:qa 全新生成,与既往 QA 记录无关。
+
+## 第二节:验证点
+
+上传后应经历 pending/queued -> processing -> ready 的状态流转,并产生若干带 version 字段的切片,tokenCount 应体现 CJK 感知估算。

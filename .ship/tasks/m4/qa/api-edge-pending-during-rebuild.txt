@@ -1,0 +1,6 @@
+=== trigger rebuild (qa template) ===
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"并发改描述","chunkTemplate":"qa","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":4,"chunksCount":6,"status":"building","activeVersion":5,"buildingVersion":6,"updatedAt":"2026-07-09T01:52:34.629Z"}
+HTTP:200
+=== immediately: upload new doc autoParse=false (pending, mid-rebuild) ===
+[{"id":"d4302cf6-3eb7-4164-a985-7d9be1ba5751","kbId":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"qa-pending-during-rebuild.txt","type":"text","size":400,"chunksCount":0,"chunkVersion":null,"status":"pending","metadata":{},"error":null,"uploadedAt":"2026-07-09T01:52:34.672Z","updatedAt":"2026-07-09T01:52:34.675Z"}]
+HTTP:201

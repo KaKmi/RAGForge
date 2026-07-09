@@ -1,0 +1,13 @@
+=== AC5a: batch delete one real chunk ===
+{"deletedCount":1}
+HTTP:201
+=== AC5b: verify removed ===
+total 2
+=== AC5c: empty ids -> 400 ===
+{"statusCode":400,"message":"Validation failed","errors":[{"origin":"array","code":"too_small","minimum":1,"inclusive":true,"path":["ids"],"message":"Too small: expected array to have >=1 items"}]}
+HTTP:400
+=== AC5d: nonexistent id -> deletedCount 0, no error ===
+{"deletedCount":0}
+HTTP:201
+=== AC5e: contract grep for enabled field ===
+no match (good)

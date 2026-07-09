@@ -1,0 +1,12 @@
+=== E8: create KB with extra unexpected field (privilege-field injection) ===
+{"id":"dc3fdcca-abef-4884-9a40-7bf379363780","name":"QA-INJECT-TEST","desc":"","chunkTemplate":"general","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":0,"chunksCount":0,"status":"ready","activeVersion":1,"buildingVersion":null,"updatedAt":"2026-07-09T01:59:57.875Z"}
+HTTP:201
+=== E9: XSS-ish content in name/desc, stored as-is? ===
+{"id":"9bdc9375-fdb8-4fa9-8a79-18a70da1ba27","name":"<script>alert(1)</script>","desc":"","chunkTemplate":"general","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":0,"chunksCount":0,"status":"ready","activeVersion":1,"buildingVersion":null,"updatedAt":"2026-07-09T01:59:58.227Z"}
+HTTP:201
+=== E10: chunks q= search with SQL-ish special chars ===
+{"items":[{"id":"140dfaea-4d7c-4520-99d1-50a28834c041","docId":"6fe92270-e55d-47d8-a50b-33c76e6ee2ed","kbId":"1f5e06e0-a01f-455f-b109-6695bb1d95db","version":8,"seq":0,"text":"这是完整重跑 M4 QA 用的纯文本文档,用于验证上传-解析-切片-向量化全链路。","tokenCount":32,"section":"M4 QA 纯文本文档"},{"id":"d8c04ea2-6acd-41c8-a408-a621d25d805a","docId":"6fe92270-e55d-47d8-a50b-33c76e6ee2ed","kbId":"1f5e06e0-a01f-455f-b109-6695bb1d95db","version":8,"seq":1,"text":"本文档由本轮 ship:qa 全新生成,与既往 QA 记录无关。","tokenCount":21,"section":"M4 QA 纯文本文档 > 第一节:背景"},{"id":"64afb585-6ed6-4ba9-8f11-c15d6fc01ca9","docId":"6fe92270-e55d-47d8-a50b-33c76e6ee2ed","kbId":"1f5e06e0-a01f-455f-b109-6695bb1d95db","version":8,"seq":2,"text":"上传后应经历 pending/queued -> processing -> ready 的状态流转,并产生若干带 version 字段的切片,tokenCount 应体现 CJK 感知估算。","tokenCount":46,"section":"M4 QA 纯文本文档 > 第二节:验证点"}],"total":3,"offset":0,"limit":20,"hasMore":false}
+HTTP:200
+=== E11: batch-delete with 300 ids (no documented cap) ===
+{"deletedCount":0}
+HTTP:201

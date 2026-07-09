@@ -1,0 +1,10 @@
+=== fire triggerParse(docx) then immediately PATCH chunkTemplate (race) ===
+{"id":"a61084e1-8b02-4e27-b1e2-ec850536c84c","kbId":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"qa-doc.docx","type":"word","size":1318,"chunksCount":1,"chunkVersion":6,"status":"queued","metadata":{"来源":"QA测试"},"error":null,"uploadedAt":"2026-07-09T01:28:59.815Z","updatedAt":"2026-07-09T01:55:12.168Z"}
+HTTP:202
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"并发改描述","chunkTemplate":"general","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":5,"chunksCount":11,"status":"building","activeVersion":6,"buildingVersion":7,"updatedAt":"2026-07-09T01:55:12.301Z"}
+HTTP:200
+=== attempt 2: fire triggerParse(md, 3 chunks=more embed latency) then PATCH immediately ===
+{"id":"d42484fe-38d9-41d6-a123-9de01d915e6f","kbId":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"qa-refund-qa.md","type":"markdown","size":377,"chunksCount":1,"chunkVersion":7,"status":"queued","metadata":{},"error":null,"uploadedAt":"2026-07-09T01:28:59.808Z","updatedAt":"2026-07-09T01:55:43.432Z"}
+HTTP:202
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"并发改描述","chunkTemplate":"qa","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":5,"chunksCount":9,"status":"building","activeVersion":7,"buildingVersion":8,"updatedAt":"2026-07-09T01:55:43.432Z"}
+HTTP:200

@@ -1,0 +1,82 @@
+=== AC3: PDF chunks ===
+{
+    "items": [
+        {
+            "id": "f3d5349e-177f-4aab-a25b-1b0c36ea6b38",
+            "docId": "5ea68c6b-6b23-4aba-a595-b4c5b7001e69",
+            "kbId": "1f5e06e0-a01f-455f-b109-6695bb1d95db",
+            "version": 1,
+            "seq": 0,
+            "text": "QA PDF Test Document\nSection: Background\nThis PDF was hand-built for M4 ingestion QA to verify\nthe pdf-parse code path end to end, not just txt/md.\nSection: Verification\nUpload should reach ready status with real chunks.",
+            "tokenCount": 55,
+            "section": ""
+        }
+    ],
+    "total": 1,
+    "offset": 0,
+    "limit": 20,
+    "hasMore": false
+}
+=== AC3: PDF lifecycle ===
+{
+    "documentId": "5ea68c6b-6b23-4aba-a595-b4c5b7001e69",
+    "stages": [
+        {
+            "stage": "upload",
+            "status": "done",
+            "endedAt": "2026-07-09T01:28:59.814Z",
+            "startedAt": "2026-07-09T01:28:59.814Z"
+        },
+        {
+            "stage": "ingest",
+            "status": "done",
+            "endedAt": "2026-07-09T01:29:20.993Z",
+            "startedAt": "2026-07-09T01:29:20.671Z"
+        },
+        {
+            "stage": "ready",
+            "status": "done",
+            "endedAt": "2026-07-09T01:29:20.995Z",
+            "startedAt": "2026-07-09T01:29:20.995Z"
+        }
+    ]
+}
+=== AC3: txt chunks (multi-chunk case) ===
+{
+    "items": [
+        {
+            "id": "4ba99f80-f618-407e-9da5-c83e00702c8d",
+            "docId": "6fe92270-e55d-47d8-a50b-33c76e6ee2ed",
+            "kbId": "1f5e06e0-a01f-455f-b109-6695bb1d95db",
+            "version": 1,
+            "seq": 0,
+            "text": "\u8fd9\u662f\u5b8c\u6574\u91cd\u8dd1 M4 QA \u7528\u7684\u7eaf\u6587\u672c\u6587\u6863,\u7528\u4e8e\u9a8c\u8bc1\u4e0a\u4f20-\u89e3\u6790-\u5207\u7247-\u5411\u91cf\u5316\u5168\u94fe\u8def\u3002",
+            "tokenCount": 32,
+            "section": "M4 QA \u7eaf\u6587\u672c\u6587\u6863"
+        },
+        {
+            "id": "a74e57db-5528-4eed-900f-d53d3108f344",
+            "docId": "6fe92270-e55d-47d8-a50b-33c76e6ee2ed",
+            "kbId": "1f5e06e0-a01f-455f-b109-6695bb1d95db",
+            "version": 1,
+            "seq": 1,
+            "text": "\u672c\u6587\u6863\u7531\u672c\u8f6e ship:qa \u5168\u65b0\u751f\u6210,\u4e0e\u65e2\u5f80 QA \u8bb0\u5f55\u65e0\u5173\u3002",
+            "tokenCount": 21,
+            "section": "M4 QA \u7eaf\u6587\u672c\u6587\u6863 > \u7b2c\u4e00\u8282:\u80cc\u666f"
+        },
+        {
+            "id": "591ac43c-af84-4c9c-878f-4ff6719ff172",
+            "docId": "6fe92270-e55d-47d8-a50b-33c76e6ee2ed",
+            "kbId": "1f5e06e0-a01f-455f-b109-6695bb1d95db",
+            "version": 1,
+            "seq": 2,
+            "text": "\u4e0a\u4f20\u540e\u5e94\u7ecf\u5386 pending/queued -> processing -> ready \u7684\u72b6\u6001\u6d41\u8f6c,\u5e76\u4ea7\u751f\u82e5\u5e72\u5e26 version \u5b57\u6bb5\u7684\u5207\u7247,tokenCount \u5e94\u4f53\u73b0 CJK \u611f\u77e5\u4f30\u7b97\u3002",
+            "tokenCount": 46,
+            "section": "M4 QA \u7eaf\u6587\u672c\u6587\u6863 > \u7b2c\u4e8c\u8282:\u9a8c\u8bc1\u70b9"
+        }
+    ],
+    "total": 3,
+    "offset": 0,
+    "limit": 20,
+    "hasMore": false
+}

@@ -1,0 +1,12 @@
+=== AC1a: create KB ===
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"完整重跑QA","chunkTemplate":"general","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":0,"chunksCount":0,"status":"ready","activeVersion":1,"buildingVersion":null,"updatedAt":"2026-07-09T01:28:49.778Z"}
+HTTP:201
+=== AC1b: duplicate name -> 409 ===
+{"message":"knowledge base named \"QA-FULL-0709\" already exists","error":"Conflict","statusCode":409}
+HTTP:409
+=== AC1c: missing chunkTemplate -> 400 ===
+{"statusCode":400,"message":"Validation failed","errors":[{"code":"invalid_value","values":["general","qa","custom"],"path":["chunkTemplate"],"message":"Invalid option: expected one of \"general\"|\"qa\"|\"custom\""}]}
+HTTP:400
+=== AC1d: nonexistent embeddingModelId -> ? ===
+{"message":"model 00000000-0000-0000-0000-000000000000 not found","error":"Not Found","statusCode":404}
+HTTP:404

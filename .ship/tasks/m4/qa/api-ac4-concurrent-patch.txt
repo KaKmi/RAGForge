@@ -1,0 +1,9 @@
+=== trigger rebuild (qa) ===
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"改描述看看","chunkTemplate":"qa","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":4,"chunksCount":6,"status":"building","activeVersion":3,"buildingVersion":4,"updatedAt":"2026-07-09T01:31:07.679Z"}
+HTTP:200
+=== immediately: desc-only PATCH while building (fired within ms) ===
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"并发改描述","chunkTemplate":"qa","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":4,"chunksCount":6,"status":"building","activeVersion":3,"buildingVersion":4,"updatedAt":"2026-07-09T01:31:07.730Z"}
+HTTP:200
+=== immediately: chunkTemplate PATCH while building (fired within ms) ===
+{"message":"knowledge base 1f5e06e0-a01f-455f-b109-6695bb1d95db 正在重建中，请等待完成后再修改分块模板","error":"Conflict","statusCode":409}
+HTTP:409

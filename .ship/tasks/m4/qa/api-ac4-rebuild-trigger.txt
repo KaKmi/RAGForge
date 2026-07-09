@@ -1,0 +1,12 @@
+=== AC4a: PATCH chunkTemplate=qa (trigger rebuild) ===
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"完整重跑QA","chunkTemplate":"qa","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":4,"chunksCount":6,"status":"building","activeVersion":1,"buildingVersion":2,"updatedAt":"2026-07-09T01:30:35.863Z"}
+HTTP:200
+=== AC4b: concurrent PATCH during rebuild -> 409 ===
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"改描述看看","chunkTemplate":"qa","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":4,"chunksCount":6,"status":"building","activeVersion":1,"buildingVersion":2,"updatedAt":"2026-07-09T01:30:35.911Z"}
+HTTP:200
+=== AC4c: chunks query during rebuild should still show v1 ===
+{"message":"Cannot GET /api/documents//chunks","error":"Not Found","statusCode":404}=== AC4b-retry: PATCH chunkTemplate again during building -> expect 409 ===
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"改描述看看","chunkTemplate":"general","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":4,"chunksCount":8,"status":"building","activeVersion":2,"buildingVersion":3,"updatedAt":"2026-07-09T01:30:55.534Z"}
+HTTP:200
+=== current KB state ===
+{"id":"1f5e06e0-a01f-455f-b109-6695bb1d95db","name":"QA-FULL-0709","desc":"改描述看看","chunkTemplate":"general","embeddingModelId":"80f294d7-b50d-4151-9ff2-039147d56362","docsCount":4,"chunksCount":8,"status":"building","activeVersion":2,"buildingVersion":3,"updatedAt":"2026-07-09T01:30:55.534Z"}
