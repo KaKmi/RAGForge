@@ -3,10 +3,29 @@ import { and, asc, eq, ilike, inArray, sql } from "drizzle-orm";
 import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
 import { chunks, type ChunkDraft, type ChunkRow } from "./schema";
+import { documents } from "../documents/schema";
 
 export interface ChunkPage {
   items: ChunkRow[];
   total: number;
+}
+
+export interface VectorCandidate {
+  chunkId: string;
+  docId: string;
+  docName: string;
+  text: string;
+  section: string;
+  vecScore: number;
+}
+
+export interface KeywordCandidate {
+  chunkId: string;
+  docId: string;
+  docName: string;
+  text: string;
+  section: string;
+  kwScore: number;
 }
 
 // deleteByVersion 分批大小：设计 007:62/132 要求"异步分批清理旧版切片"（大删不进切换事务，
@@ -119,5 +138,66 @@ export class ChunksRepository {
       if (deleted.length < DELETE_BATCH_SIZE) break;
     }
     return totalDeleted;
+  }
+
+  // 向量召回：pgvector <=> 是 cosine distance（HNSW 索引 vector_cosine_ops 已在迁移 0006 建好），
+  // 1 - distance 换算成 [0,1] 相似度分数（008 §数据流程图）。leftJoin documents 直接带出 docName，
+  // 不新增 retrieval→documents 依赖边（chunks 模块本就依赖 documents，schema.ts 已引用其表对象）。
+  async searchByVector(
+    kbId: string,
+    version: number,
+    embedding: number[],
+    limit: number,
+  ): Promise<VectorCandidate[]> {
+    const vecLiteral = `[${embedding.join(",")}]`;
+    const rows = await this.db
+      .select({
+        chunkId: chunks.id,
+        docId: chunks.docId,
+        docName: documents.name,
+        text: chunks.text,
+        section: chunks.section,
+        vecScore: sql<number>`1 - (${chunks.embedding} <=> ${vecLiteral}::vector)`,
+      })
+      .from(chunks)
+      .leftJoin(documents, eq(chunks.docId, documents.id))
+      .where(and(eq(chunks.kbId, kbId), eq(chunks.version, version)))
+      .orderBy(sql`${chunks.embedding} <=> ${vecLiteral}::vector`)
+      .limit(limit);
+    return rows.map((r) => ({ ...r, docName: r.docName ?? "", vecScore: Number(r.vecScore) }));
+  }
+
+  // 关键词召回：query 与索引侧共用 cjk_bigram_text（迁移 0008），bigram token 以 |（OR）连接成
+  // tsquery——避免任何单字差异导致零命中，ts_rank 天然按命中 bigram 数量区分相关度。
+  // ts_rank_cd(...,32) 内置归一化 rank/(rank+1) ∈ [0,1)，对 (文档,查询) 确定、不依赖候选池组成
+  // （008 §kwScore 归一化，拒绝候选池内 min-max）。
+  async searchByKeyword(
+    kbId: string,
+    version: number,
+    query: string,
+    limit: number,
+  ): Promise<KeywordCandidate[]> {
+    // 剥离标点：ASCII 的 ( ) & | ! : * 等是 tsquery 语法字符，经 bigram 透传后会让 to_tsquery
+    // 直接语法报错（实测 '退货(7天)!' 必炸），整路降级；而索引侧 to_tsvector('simple') 本来就把
+    // 标点当分隔符丢弃，查询侧剥掉保持两侧语义对齐。全剥空则无可查 token，短路返回。
+    const cleaned = query.replace(/[^\p{L}\p{N}\s]/gu, " ").trim();
+    if (!cleaned) return [];
+    const tsq = sql`to_tsquery('simple', regexp_replace(cjk_bigram_text(${cleaned}), '\\s+', ' | ', 'g'))`;
+    const rankExpr = sql<number>`ts_rank_cd(${chunks.tsv}, ${tsq}, 32)`;
+    const rows = await this.db
+      .select({
+        chunkId: chunks.id,
+        docId: chunks.docId,
+        docName: documents.name,
+        text: chunks.text,
+        section: chunks.section,
+        kwScore: rankExpr,
+      })
+      .from(chunks)
+      .leftJoin(documents, eq(chunks.docId, documents.id))
+      .where(and(eq(chunks.kbId, kbId), eq(chunks.version, version), sql`${chunks.tsv} @@ ${tsq}`))
+      .orderBy(sql`${rankExpr} DESC`)
+      .limit(limit);
+    return rows.map((r) => ({ ...r, docName: r.docName ?? "", kwScore: Number(r.kwScore) }));
   }
 }

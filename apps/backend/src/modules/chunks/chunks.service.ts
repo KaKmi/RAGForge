@@ -1,6 +1,10 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import type { Chunk, ChunkBatchDeleteResponse, ChunkListQuery, ChunkPageResponse } from "@codecrush/contracts";
-import { ChunksRepository } from "./chunks.repository";
+import {
+  ChunksRepository,
+  type KeywordCandidate,
+  type VectorCandidate,
+} from "./chunks.repository";
 import { DocumentsRepository } from "../documents/documents.repository";
 import type { ChunkRow } from "./schema";
 
@@ -38,6 +42,26 @@ export class ChunksService {
   async batchDelete(ids: string[]): Promise<ChunkBatchDeleteResponse> {
     const deletedCount = await this.chunksRepo.batchDelete(ids);
     return { deletedCount };
+  }
+
+  // 薄透传：retrieval 经此 barrel 调用，不直接注入 ChunksRepository（008 §模块边界——
+  // 即便 ChunksModule 的 exports 里两者都在，跨模块调用意图上走 service）。
+  async searchByVector(
+    kbId: string,
+    version: number,
+    embedding: number[],
+    limit: number,
+  ): Promise<VectorCandidate[]> {
+    return this.chunksRepo.searchByVector(kbId, version, embedding, limit);
+  }
+
+  async searchByKeyword(
+    kbId: string,
+    version: number,
+    query: string,
+    limit: number,
+  ): Promise<KeywordCandidate[]> {
+    return this.chunksRepo.searchByKeyword(kbId, version, query, limit);
   }
 
   private toChunk(row: ChunkRow): Chunk {
