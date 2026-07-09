@@ -32,6 +32,14 @@ import {
   TestModelResponseSchema,
 } from "@codecrush/contracts";
 import { AgentsModule } from "../src/modules/agents/agents.module";
+import { AgentsRepository } from "../src/modules/agents/agents.repository";
+import type { AgentListRow } from "../src/modules/agents/agents.repository";
+import type {
+  AgentConfigVersionRow,
+  AgentRow,
+  NewAgent,
+  NewAgentConfigVersion,
+} from "../src/modules/agents/schema";
 import { ChatModule } from "../src/modules/chat/chat.module";
 import { ChunksModule } from "../src/modules/chunks/chunks.module";
 import { ConversationsModule } from "../src/modules/conversations/conversations.module";
@@ -74,23 +82,6 @@ const PRINCIPAL = { sub: "u1", email: "demo@codecrush.local" };
 process.env.DATABASE_URL ??= "postgres://test:test@localhost:5432/skeleton_e2e_unused";
 process.env.JWT_SECRET ??= SECRET;
 process.env.MODEL_API_KEY_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString("base64");
-
-const validCreateAgent = {
-  name: "新助手",
-  desc: "测试用",
-  status: "draft" as const,
-  kbs: ["kb1"],
-  genModelId: "m1",
-  promptRewriteVerId: "pv1",
-  promptIntentVerId: "pv2",
-  promptReplyVerId: "pv3",
-  promptFallbackVerId: "pv4",
-  topK: 10,
-  topN: 3,
-  threshold: 0.25,
-  multi: false,
-  fallbackHuman: false,
-};
 
 // M6 PromptsRepository 内存实现（DB-free，对齐 skeleton.e2e 现状）
 const inMemoryPrompts: PromptRow[] = [];
@@ -240,6 +231,7 @@ const inMemoryKbs: KnowledgeBaseRow[] = [];
 const inMemoryKbsRepo: Partial<KnowledgeBasesRepository> = {
   find: async () => [...inMemoryKbs],
   findById: async (id: string) => inMemoryKbs.find((k) => k.id === id),
+  findByIds: async (ids: string[]) => inMemoryKbs.filter((k) => ids.includes(k.id)),
   findByName: async (name: string) => inMemoryKbs.find((k) => k.name === name),
   insert: async (row) => {
     const r = {
@@ -336,6 +328,115 @@ const inMemoryChunksRepo: Partial<ChunksRepository> = {
   deleteByVersion: async () => 0,
 } as Partial<ChunksRepository>;
 
+// —— M7 AgentsRepository 内存实现（DB-free，同上手写风格）——
+let agentSeq = 0;
+let agentVerSeq = 0;
+const inMemoryAgents: AgentRow[] = [];
+const inMemoryAgentVersions: AgentConfigVersionRow[] = [];
+const inMemoryAgentVersionKbs: Array<{ versionId: string; kbId: string }> = [];
+
+const toAgentListRow = (a: AgentRow): AgentListRow => {
+  const cur = a.currentVersionId
+    ? inMemoryAgentVersions.find((v) => v.id === a.currentVersionId)
+    : undefined;
+  return {
+    ...a,
+    currentVersionNumber: cur?.version ?? null,
+    currentVersionStatus: cur?.status ?? null,
+  };
+};
+const insertAgentVersion = (
+  row: NewAgentConfigVersion,
+  kbIds: string[],
+): AgentConfigVersionRow => {
+  const version = {
+    id: `av${++agentVerSeq}`,
+    status: "draft",
+    lightModelId: null,
+    rerankModelId: null,
+    nodeParams: {},
+    multiRecall: true,
+    vecWeight: null,
+    fallbackHuman: true,
+    evalStatus: "not_run",
+    evalRunAt: null,
+    evalPassRate: null,
+    evalSummary: null,
+    note: null,
+    createdAt: new Date(),
+    publishedBy: null,
+    publishedAt: null,
+    ...stripUndefined(row as Record<string, unknown>),
+  } as AgentConfigVersionRow;
+  inMemoryAgentVersions.push(version);
+  kbIds.forEach((kbId) => inMemoryAgentVersionKbs.push({ versionId: version.id, kbId }));
+  return version;
+};
+
+const inMemoryAgentsRepo: Partial<AgentsRepository> = {
+  findAgents: async () => inMemoryAgents.map(toAgentListRow),
+  findAgentById: async (id: string) => {
+    const a = inMemoryAgents.find((x) => x.id === id);
+    return a ? toAgentListRow(a) : undefined;
+  },
+  findAgentByName: async (name: string) => inMemoryAgents.find((x) => x.name === name),
+  findVersionById: async (id: string) => inMemoryAgentVersions.find((v) => v.id === id),
+  findVersions: async (agentId: string) =>
+    inMemoryAgentVersions.filter((v) => v.agentId === agentId),
+  findVersionKbIds: async (versionId: string) =>
+    inMemoryAgentVersionKbs.filter((k) => k.versionId === versionId).map((k) => k.kbId),
+  createAgentWithV1: async (agentRow: NewAgent, versionRow, kbIds: string[]) => {
+    const agent = {
+      id: `agent${++agentSeq}`,
+      desc: "",
+      enabled: true,
+      currentVersionId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...stripUndefined(agentRow as Record<string, unknown>),
+    } as AgentRow;
+    inMemoryAgents.push(agent);
+    const version = insertAgentVersion(
+      { ...versionRow, agentId: agent.id } as NewAgentConfigVersion,
+      kbIds,
+    );
+    agent.currentVersionId = version.id;
+    return { agent, version };
+  },
+  insertDraftVersion: async (versionRow: NewAgentConfigVersion, kbIds: string[]) =>
+    insertAgentVersion(versionRow, kbIds),
+  updateVersionEval: async (versionId, patch) => {
+    const v = inMemoryAgentVersions.find((x) => x.id === versionId);
+    if (!v) throw new Error(`version ${versionId} not found`);
+    Object.assign(v, patch);
+    return v;
+  },
+  updateAgentBase: async (id, patch) => {
+    const a = inMemoryAgents.find((x) => x.id === id);
+    if (!a) return undefined;
+    Object.assign(a, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
+    return a;
+  },
+  promote: async (agentId: string, versionId: string, actorEmail: string) => {
+    inMemoryAgentVersions
+      .filter((v) => v.agentId === agentId && v.status === "published")
+      .forEach((v) => {
+        v.status = "archived";
+      });
+    const target = inMemoryAgentVersions.find((v) => v.id === versionId);
+    if (!target) throw new Error(`version ${versionId} not found`);
+    target.status = "published";
+    target.publishedBy = actorEmail;
+    target.publishedAt = new Date();
+    const agent = inMemoryAgents.find((a) => a.id === agentId);
+    if (!agent) throw new Error(`agent ${agentId} not found`);
+    agent.currentVersionId = versionId;
+    agent.updatedBy = actorEmail;
+    agent.updatedAt = new Date();
+    return target;
+  },
+};
+
 const inMemoryBlobs = new Map<string, Buffer>();
 const fakeBlobStore = {
   put: async (key: string, data: Buffer) => void inMemoryBlobs.set(key, data),
@@ -390,6 +491,8 @@ describe("M2 domain skeleton", () => {
       .useValue(inMemoryDocsRepo)
       .overrideProvider(ChunksRepository)
       .useValue(inMemoryChunksRepo)
+      .overrideProvider(AgentsRepository)
+      .useValue(inMemoryAgentsRepo)
       .overrideProvider(BLOB_STORE)
       .useValue(fakeBlobStore)
       .overrideProvider(INGESTION_QUEUE)
@@ -876,35 +979,238 @@ describe("M2 domain skeleton", () => {
     });
   });
 
-  describe("agents (AC 10: 非法 body → 400)", () => {
+  describe("agents (M7 真实 CRUD + 版本化 + Eval stub + 发布回滚)", () => {
+    let agentModelId: string;
+    let agentKbId: string;
+    let promptVerIds: Record<"rewrite" | "intent" | "reply" | "fallback", string>;
+    let agentNameSeq = 0;
+
+    const nodeConfig = {
+      freedom: "balance" as const,
+      temperatureEnabled: true,
+      temperature: 0.5,
+      topPEnabled: false,
+      topP: 0.9,
+    };
+    const validCreateAgent = () => ({
+      name: `e2e助手-${++agentNameSeq}`,
+      desc: "e2e",
+      kbIds: [agentKbId],
+      genModelId: agentModelId,
+      promptRewriteVerId: promptVerIds.rewrite,
+      promptIntentVerId: promptVerIds.intent,
+      promptReplyVerId: promptVerIds.reply,
+      promptFallbackVerId: promptVerIds.fallback,
+      nodeParams: {
+        rewrite: nodeConfig,
+        intent: nodeConfig,
+        reply: nodeConfig,
+        fallback: nodeConfig,
+      },
+      topK: 10,
+      topN: 3,
+      threshold: 0.25,
+      multiRecall: false,
+      fallbackHuman: false,
+    });
+
+    // 自建 fixture（llm 模型 / kb / 4 节点 prompt 版本），不依赖其他 describe 的块级变量
+    beforeAll(async () => {
+      await ensureEmbeddingModel();
+      const modelRes = await request(app.getHttpServer())
+        .post("/api/models")
+        .set(auth())
+        .send({
+          type: "llm",
+          protocol: "openai_compat",
+          name: "agent-e2e-llm",
+          baseUrl: "https://api.example.com/v1",
+          apiKey: "sk-agente2e12345",
+        })
+        .expect(201);
+      agentModelId = modelRes.body.id;
+
+      const kbRes = await request(app.getHttpServer())
+        .post("/api/knowledge-bases")
+        .set(auth())
+        .send({
+          name: `agent-e2e-kb-${Date.now()}`,
+          desc: "",
+          chunkTemplate: "general",
+          embeddingModelId,
+        })
+        .expect(201);
+      agentKbId = kbRes.body.id;
+
+      const nodes = ["rewrite", "intent", "reply", "fallback"] as const;
+      const ids: Partial<Record<(typeof nodes)[number], string>> = {};
+      for (const node of nodes) {
+        const pRes = await request(app.getHttpServer())
+          .post("/api/prompts")
+          .set(auth())
+          .send({ name: `agent-e2e-${node}`, node, body: "内容 {x}" })
+          .expect(201);
+        const versions = await request(app.getHttpServer())
+          .get(`/api/prompts/${pRes.body.id}/versions`)
+          .set(auth())
+          .expect(200);
+        ids[node] = versions.body[0].id;
+      }
+      promptVerIds = ids as Record<(typeof nodes)[number], string>;
+    });
+
     it("GET / → 200 + schema", async () => {
       const res = await request(app.getHttpServer()).get("/api/agents").set(auth()).expect(200);
       for (const a of res.body) expect(() => AgentSchema.parse(a)).not.toThrow();
     });
-    it("POST / 合法 → 201", async () => {
+
+    it("POST / 合法 → 201，v1 evalStatus=exempt，status=active（008 决策 4）", async () => {
       const res = await request(app.getHttpServer())
         .post("/api/agents")
         .set(auth())
-        .send(validCreateAgent)
+        .send(validCreateAgent())
         .expect(201);
       expect(() => AgentSchema.parse(res.body)).not.toThrow();
+      expect(res.body.status).toBe("active");
+      expect(res.body.currentVersion.evalStatus).toBe("exempt");
+      expect(res.body.currentVersion.status).toBe("published");
+      expect(res.body.currentVersion.kbIds).toEqual([agentKbId]);
     });
+
+    it("POST / kbIds 指向不同 embedding 模型的知识库 → 400（后端一致性校验）", async () => {
+      const embed2 = await request(app.getHttpServer())
+        .post("/api/models")
+        .set(auth())
+        .send({
+          type: "embedding",
+          protocol: "openai_compat",
+          name: "agent-e2e-embed2",
+          baseUrl: "https://api.example.com/v1",
+          apiKey: "sk-embed2test123",
+        })
+        .expect(201);
+      const kb2 = await request(app.getHttpServer())
+        .post("/api/knowledge-bases")
+        .set(auth())
+        .send({
+          name: `agent-e2e-kb2-${Date.now()}`,
+          desc: "",
+          chunkTemplate: "general",
+          embeddingModelId: embed2.body.id,
+        })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post("/api/agents")
+        .set(auth())
+        .send({ ...validCreateAgent(), kbIds: [agentKbId, kb2.body.id] })
+        .expect(400);
+    });
+
     it("POST / 非法 body（threshold 越界）→ 400（ZodValidationPipe）", async () => {
       const res = await request(app.getHttpServer())
         .post("/api/agents")
         .set(auth())
-        .send({ ...validCreateAgent, threshold: 5 })
+        .send({ ...validCreateAgent(), threshold: 5 })
         .expect(400);
       expect(res.body.message).toBe("Validation failed");
       expect(Array.isArray(res.body.errors)).toBe(true);
     });
-    it("PATCH /api/agents/aftersale → 200", async () => {
-      const res = await request(app.getHttpServer())
-        .patch("/api/agents/aftersale")
+
+    it("PATCH 携带非 name/desc/enabled 字段 → 400（strictObject，008 决策 3）", async () => {
+      const created = await request(app.getHttpServer())
+        .post("/api/agents")
         .set(auth())
-        .send({ name: "售后助手-v2" })
+        .send(validCreateAgent())
+        .expect(201);
+      await request(app.getHttpServer())
+        .patch(`/api/agents/${created.body.id}`)
+        .set(auth())
+        .send({ topK: 99 })
+        .expect(400);
+    });
+
+    it("PATCH name/enabled → 200；enabled=false 时派生 status=archived", async () => {
+      const created = await request(app.getHttpServer())
+        .post("/api/agents")
+        .set(auth())
+        .send(validCreateAgent())
+        .expect(201);
+      const res = await request(app.getHttpServer())
+        .patch(`/api/agents/${created.body.id}`)
+        .set(auth())
+        .send({ name: `改名后-${agentNameSeq}`, enabled: false })
         .expect(200);
-      expect(res.body.name).toBe("售后助手-v2");
+      expect(res.body.name).toBe(`改名后-${agentNameSeq}`);
+      expect(res.body.status).toBe("archived");
+    });
+
+    it("配置版本全链路：draft(not_run) → publish 409 → eval-run → publish 200 → rollback v1", async () => {
+      const created = await request(app.getHttpServer())
+        .post("/api/agents")
+        .set(auth())
+        .send(validCreateAgent())
+        .expect(201);
+      const agentId = created.body.id;
+
+      const draft = await request(app.getHttpServer())
+        .post(`/api/agents/${agentId}/config-versions`)
+        .set(auth())
+        .send({ ...validCreateAgent(), topK: 30, note: "调大召回" })
+        .expect(201);
+      expect(draft.body.evalStatus).toBe("not_run");
+      expect(draft.body.version).toBe(2);
+
+      // Eval 门槛：未跑 Eval 直接发布 → 409
+      await request(app.getHttpServer())
+        .post(`/api/agents/${agentId}/config-versions/${draft.body.id}/publish`)
+        .set(auth())
+        .expect(409);
+
+      // Eval stub：立即 passed，evalPassRate 恒 null（不编造数字）
+      const evaled = await request(app.getHttpServer())
+        .post(`/api/agents/${agentId}/config-versions/${draft.body.id}/eval-run`)
+        .set(auth())
+        .expect(200);
+      expect(evaled.body.evalStatus).toBe("passed");
+      expect(evaled.body.evalPassRate).toBeNull();
+
+      await request(app.getHttpServer())
+        .post(`/api/agents/${agentId}/config-versions/${draft.body.id}/publish`)
+        .set(auth())
+        .expect(200);
+
+      // 发布后 v1 转 archived，可回滚；rollback 后 v1 重新 published
+      const versions = await request(app.getHttpServer())
+        .get(`/api/agents/${agentId}/config-versions`)
+        .set(auth())
+        .expect(200);
+      const v1 = versions.body.find((v: { version: number }) => v.version === 1);
+      expect(v1.status).toBe("archived");
+
+      const rolled = await request(app.getHttpServer())
+        .post(`/api/agents/${agentId}/config-versions/${v1.id}/rollback`)
+        .set(auth())
+        .expect(200);
+      expect(rolled.body.status).toBe("published");
+
+      // 对非 archived 版本回滚 → 409（v1 已是 published）
+      await request(app.getHttpServer())
+        .post(`/api/agents/${agentId}/config-versions/${v1.id}/rollback`)
+        .set(auth())
+        .expect(409);
+    });
+
+    it("引用不存在的 prompt version → 404；node 不匹配 → 400", async () => {
+      await request(app.getHttpServer())
+        .post("/api/agents")
+        .set(auth())
+        .send({ ...validCreateAgent(), promptRewriteVerId: "nope" })
+        .expect(404);
+      await request(app.getHttpServer())
+        .post("/api/agents")
+        .set(auth())
+        .send({ ...validCreateAgent(), promptRewriteVerId: promptVerIds.intent })
+        .expect(400);
     });
   });
 
