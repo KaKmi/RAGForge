@@ -11,5 +11,5 @@
 | design | 005 | draft | 用户/认证（M1） | M1 身份边界：users 叶子 + auth 横切、argon2id、JWT HS256、全局 default-deny guard；四条数据流图与失败模式。 | 2026-07-05 | [005](docs/design/005-user-auth.md) |
 | design | 006 | draft | M2 前后端页面骨架 | M2 把原型 15 屏 1:1 还原为 React+antd 路由化骨架 + NestJS 各域模块 skeleton + Zod 契约扩展 + OpenAPI 自动生成 + SSE 客户端骨架；mock 前端硬编码，真实逻辑 M3+ 按依赖填入。 | 2026-07-06 | [006](docs/design/006-m2-app-shell-skeleton.md) |
 | design | 007 | draft | M4 入库管线与知识库管理 | M4 设计：四阶段可插拔入库管线(解析→清洗→分块→向量化)、切片版本化蓝绿重建、BlobStore 本地卷、pg-boss 异步、切片删除制。 | 2026-07-08 | [007](docs/design/007-m4-ingestion-pipeline.md) |
-| design | 008 | draft | M7 Agent 配置与管理 | M7 设计：agents/agent_config_versions/agent_config_version_kbs 三表版本化模型、复用 M6 promote() 范式、Eval 门槛硬编码占位待 M11 替换。 | 2026-07-09 | [008](docs/design/008-m7-agent-management.md) |
+| design | 008 | current | M7 Agent 配置与管理 | M7 设计：agents/agent_config_versions/agent_config_version_kbs 三表版本化模型、复用 M6 promote() 范式、Eval 门槛硬编码占位待 M11 替换。 | 2026-07-09 | [008](docs/design/008-m7-agent-management.md) |
 

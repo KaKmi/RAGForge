@@ -3,7 +3,7 @@ title: "M7 Agent 配置与管理"
 description: "M7 设计：agents/agent_config_versions/agent_config_version_kbs 三表版本化模型、复用 M6 promote() 范式、Eval 门槛硬编码占位待 M11 替换。"
 category: "design"
 number: "008"
-status: draft
+status: current
 services: [backend, frontend]
 related: ["design/001", "design/002", "design/006", "design/007"]
 last_modified: "2026-07-09"
@@ -21,6 +21,8 @@ last_modified: "2026-07-09"
 4. Agent 创建时自动生成的首个配置版本（v1）豁免 Eval 门槛，直接上线。
 
 实现落地并对照代码校验后推进为 `current`。
+
+2026-07-09 更新：M7 实现已完成并对照代码校验通过，推进为 `current`。三表 schema（迁移 0008）/ `promote()` 事务 / Eval stub / 编辑收窄 / 后端一致性校验均按本文档落地；24 单测 + 59 e2e + 真实 Postgres 冒烟 + 浏览器全流程走查通过。实现期两处非设计级偏差记录于 `.ship/tasks/m7-agent-management/dev-ledger.md`（错误文案未含 embedding 模型名的有意简化；`GET /agents` 列表每行额外 2 次版本/kb 查询，管理台量级可接受，M8 复用时重估）。
 
 ## Summary
 
