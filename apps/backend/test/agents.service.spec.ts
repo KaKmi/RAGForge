@@ -236,6 +236,17 @@ describe("AgentsService.create", () => {
       service.create({ ...validReq, promptRewriteVerId: "nope" }, "u@x"),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
+
+  it("重复 kbIds 去重后落库（不撞 agent_config_version_kbs 复合主键）", async () => {
+    const repo = makeRepo();
+    const service = makeService({ repo });
+    await service.create({ ...validReq, kbIds: ["kb1", "kb1"] }, "u@x");
+    expect(repo.createAgentWithV1).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      ["kb1"], // 去重后只剩一个
+    );
+  });
 });
 
 describe("AgentsService.updateBase", () => {
@@ -253,6 +264,23 @@ describe("AgentsService.updateBase", () => {
     await expect(service.updateBase("nope", { name: "x" }, "u@x")).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+
+  it("改名撞其他 Agent 的唯一名 → 409（改成自己现名不冲突）", async () => {
+    const other = { ...agentRow, id: "a2", name: "占用名" };
+    const repo = makeRepo({
+      findAgentByName: jest.fn(async (name: string) => (name === "占用名" ? other : undefined)),
+    });
+    const service = makeService({ repo });
+    await expect(service.updateBase("a1", { name: "占用名" }, "u@x")).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    // 改成自己已有的名字（findAgentByName 返回自己）不应 409
+    const repoSelf = makeRepo({
+      findAgentByName: jest.fn(async () => ({ ...agentRow, id: "a1" })),
+    });
+    const serviceSelf = makeService({ repo: repoSelf });
+    await expect(serviceSelf.updateBase("a1", { name: "售后助手" }, "u@x")).resolves.toBeTruthy();
   });
 });
 

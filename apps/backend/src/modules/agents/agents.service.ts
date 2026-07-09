@@ -50,7 +50,7 @@ export class AgentsService {
     // 名称查重：service 层显式 409（对齐 knowledge-bases.service create 的既有模式）
     const existing = await this.repo.findAgentByName(req.name);
     if (existing) throw new ConflictException(`agent named "${req.name}" already exists`);
-    await this.validateConfigFields(req);
+    const kbIds = await this.validateConfigFields(req);
     const { agent, version } = await this.repo.createAgentWithV1(
       {
         name: req.name,
@@ -69,9 +69,9 @@ export class AgentsService {
         publishedBy: actorEmail,
         publishedAt: new Date(),
       },
-      req.kbIds,
+      kbIds,
     );
-    return this.toAgent(agent, version, req.kbIds);
+    return this.toAgent(agent, version, kbIds);
   }
 
   // 编辑收窄：仅 name/desc/enabled（008 决策 3）。契约层 strictObject 已拒绝未知键，
@@ -82,6 +82,13 @@ export class AgentsService {
     if (req.name !== undefined) patch.name = req.name;
     if (req.desc !== undefined) patch.desc = req.desc;
     if (req.enabled !== undefined) patch.enabled = req.enabled;
+    // 改名撞其他 Agent 的唯一名：预检转 409（对齐 create 路径，不让 unique violation 裸奔 500）
+    if (patch.name !== undefined) {
+      const sameName = await this.repo.findAgentByName(patch.name);
+      if (sameName && sameName.id !== id) {
+        throw new ConflictException(`agent named "${patch.name}" already exists`);
+      }
+    }
     const row = await this.repo.updateAgentBase(id, { ...patch, updatedBy: actorEmail });
     if (!row) throw new NotFoundException(`agent ${id} not found`);
     return this.toAgentFromListRow(await this.mustFindAgent(id));
@@ -100,7 +107,7 @@ export class AgentsService {
     actorEmail: string,
   ): Promise<AgentConfigVersion> {
     await this.mustFindAgent(agentId);
-    await this.validateConfigFields(req);
+    const kbIds = await this.validateConfigFields(req);
     const existing = await this.repo.findVersions(agentId);
     const nextVersion = existing.reduce((m, v) => Math.max(m, v.version), 0) + 1;
     const version = await this.repo.insertDraftVersion(
@@ -115,9 +122,9 @@ export class AgentsService {
         publishedBy: null,
         publishedAt: null,
       },
-      req.kbIds,
+      kbIds,
     );
-    return this.toVersionWithKbs(version, req.kbIds);
+    return this.toVersionWithKbs(version, kbIds);
   }
 
   // Eval stub（008 决策 2：硬编码通过，evalPassRate 恒 null——不编造数字）
@@ -159,11 +166,13 @@ export class AgentsService {
   }
 
   // === 校验（create 与 createVersion 共用）：knowledge base embedding 一致性（集合级、顺序无关，
-  // 008「知识库 Embedding 一致性后端校验」）+ 模型 type/enabled + Prompt node 归属 ===
-  private async validateConfigFields(req: ConfigFields): Promise<void> {
-    const kbs = await this.kbRepo.findByIds(req.kbIds);
+  // 008「知识库 Embedding 一致性后端校验」）+ 模型 type/enabled + Prompt node 归属。
+  // 返回去重后的 kbIds（重复 id 不去重会撞 agent_config_version_kbs 复合主键裸 500）===
+  private async validateConfigFields(req: ConfigFields): Promise<string[]> {
+    const kbIds = [...new Set(req.kbIds)];
+    const kbs = await this.kbRepo.findByIds(kbIds);
     const foundIds = new Set(kbs.map((k) => k.id));
-    const missing = req.kbIds.find((id) => !foundIds.has(id));
+    const missing = kbIds.find((id) => !foundIds.has(id));
     if (missing) throw new NotFoundException(`knowledge base ${missing} not found`);
     const distinctEmbed = new Set(kbs.map((k) => k.embeddingModelId));
     if (distinctEmbed.size > 1) {
@@ -191,6 +200,7 @@ export class AgentsService {
         );
       }
     }
+    return kbIds;
   }
 
   private async validateModelRef(
