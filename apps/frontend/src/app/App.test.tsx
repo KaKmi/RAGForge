@@ -81,14 +81,40 @@ it("renders traces list on /admin/traces when authenticated", async () => {
   expect(await screen.findByText("帮我把课退了")).toBeInTheDocument();
 });
 
-it("renders agents list on /admin/agents when authenticated", async () => {
+it("loads AgentsPage from real /api/agents on /admin/agents (M7)", async () => {
   localStorage.setItem("token", "fake-token");
+  // mock fetch：/api/agents 返空数组；引用数据（kb/models/prompts）同样返空。证明页面调真 API 而非本地 mock。
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _opts?: RequestInit) => {
+    const u = typeof input === "string" ? input : input.toString();
+    if (u.includes("/api/agents")) {
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response;
+    }
+    if (u.includes("/api/knowledge-bases") || u.includes("/api/models")) {
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response;
+    }
+    if (u.includes("/api/prompts")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [], total: 0, page: 1, pageSize: 100 }),
+      } as unknown as Response;
+    }
+    return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+  });
+  global.fetch = fetchMock as unknown as typeof fetch;
+
   render(
     <MemoryRouter initialEntries={["/admin/agents"]}>
       <App />
     </MemoryRouter>,
   );
-  expect(await screen.findByText("售后支持")).toBeInTheDocument();
+  // 空列表态出现 = 页面已挂载且消费了 API 响应（不再渲染 mocks/agents 的 AGENT_ROWS）
+  expect(await screen.findByText(/暂无 Agent/)).toBeInTheDocument();
+  // 关键断言：挂载时确实调用了 /api/agents（非本地 mock）
+  await waitFor(() => {
+    const calls = fetchMock.mock.calls.map(c => String(c[0]));
+    expect(calls.some(u => u.includes("/api/agents"))).toBe(true);
+  });
 });
 
 it("loads PromptsPage from real /api/prompts on /admin/prompts (M6)", async () => {
