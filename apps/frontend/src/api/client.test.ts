@@ -8,6 +8,9 @@ import {
   getDocumentLifecycle,
   getDocuments,
   getKnowledgeBases,
+  getProcessingProfiles,
+  getProcessingRuns,
+  rebuildKnowledgeBase,
   triggerParse,
   updateDocumentMetadata,
   updateKnowledgeBase,
@@ -66,6 +69,33 @@ const validDocument = {
   metadata: {},
   uploadedAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
+};
+
+const validProfile = {
+  id: "general-v1",
+  version: 1,
+  label: "通用文档",
+  description: "d",
+  supportedTypes: ["pdf", "word", "markdown", "text"] as const,
+  summary: "自动解析 · 基础清洗 · 标题结构分块",
+};
+
+const validRun = {
+  id: "run-1",
+  documentId: "d1",
+  targetVersion: 1,
+  profileId: "general-v1",
+  profileVersion: 1,
+  profileLabel: "通用文档",
+  parserEngine: "pdf-parse",
+  parserVersion: "2.4.5",
+  status: "succeeded" as const,
+  warnings: [],
+  metrics: { pages: 3 },
+  error: null,
+  startedAt: "2026-01-01T00:00:00.000Z",
+  endedAt: "2026-01-01T00:00:01.000Z",
+  createdAt: "2026-01-01T00:00:00.000Z",
 };
 
 beforeEach(() => {
@@ -138,6 +168,43 @@ describe("knowledge-bases", () => {
     mockFetch(new Response("err", { status: 500, statusText: "Internal Error" }));
     await expect(updateKnowledgeBase("kb1", { name: "New" })).rejects.toThrow(/500/);
   });
+
+  it("updateKnowledgeBase 传 processingProfile*", async () => {
+    const fetchMock = mockFetch(jsonResponse(validKb));
+    await updateKnowledgeBase("kb1", { processingProfileId: "faq-v1", processingProfileVersion: 1 });
+    const [, init] = callArgs(fetchMock);
+    expect(JSON.parse(init?.body as string)).toEqual({
+      processingProfileId: "faq-v1",
+      processingProfileVersion: 1,
+    });
+  });
+
+  it("rebuildKnowledgeBase POST /api/knowledge-bases/:id/rebuild 传 scope", async () => {
+    const fetchMock = mockFetch(jsonResponse(validKb));
+    await rebuildKnowledgeBase("kb1", { scope: "inherited" });
+    const [url, init] = callArgs(fetchMock);
+    expect(url).toBe("/api/knowledge-bases/kb1/rebuild");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({ scope: "inherited" });
+  });
+});
+
+describe("processing-profiles", () => {
+  it("getProcessingProfiles 拼 documentType query 并解析 Descriptor 数组", async () => {
+    const fetchMock = mockFetch(jsonResponse([validProfile]));
+    const out = await getProcessingProfiles("pdf");
+    const [url] = callArgs(fetchMock);
+    expect(url).toBe("/api/processing-profiles?documentType=pdf");
+    expect(out[0].id).toBe("general-v1");
+    expect(out[0].summary).toContain("自动解析");
+  });
+
+  it("getProcessingProfiles 无 documentType 时不带 query", async () => {
+    const fetchMock = mockFetch(jsonResponse([validProfile]));
+    await getProcessingProfiles();
+    const [url] = callArgs(fetchMock);
+    expect(url).toBe("/api/processing-profiles");
+  });
 });
 
 describe("documents", () => {
@@ -164,12 +231,48 @@ describe("documents", () => {
     expect(result).toEqual([validDocument]);
   });
 
-  it("triggerParse POST /api/documents/:id/parse", async () => {
+  it("triggerParse POST /api/documents/:id/parse（空 body 序列化为 {}）", async () => {
     const fetchMock = mockFetch(jsonResponse(validDocument));
     await triggerParse("d1");
     const [url, init] = callArgs(fetchMock);
     expect(url).toBe("/api/documents/d1/parse");
     expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({});
+  });
+
+  it("triggerParse 传 mode:'retry' body", async () => {
+    const fetchMock = mockFetch(jsonResponse(validDocument));
+    await triggerParse("d1", { mode: "retry" });
+    const [, init] = callArgs(fetchMock);
+    expect(JSON.parse(init?.body as string)).toEqual({ mode: "retry" });
+  });
+
+  it("triggerParse 传 profile ref body", async () => {
+    const fetchMock = mockFetch(jsonResponse(validDocument));
+    await triggerParse("d1", { profileId: "faq-v1", profileVersion: 1 });
+    const [, init] = callArgs(fetchMock);
+    expect(JSON.parse(init?.body as string)).toEqual({ profileId: "faq-v1", profileVersion: 1 });
+  });
+
+  it("uploadDocuments 带 profile 覆盖 → form 追加 profileId/profileVersion", async () => {
+    const fetchMock = mockFetch(jsonResponse([validDocument]));
+    const file = new File(["hello"], "a.pdf", { type: "application/pdf" });
+    await uploadDocuments("kb1", [file], {
+      autoParse: true,
+      profile: { profileId: "faq-v1", profileVersion: 1 },
+    });
+    const [, init] = callArgs(fetchMock);
+    const form = init?.body as FormData;
+    expect(form.get("profileId")).toBe("faq-v1");
+    expect(form.get("profileVersion")).toBe("1");
+  });
+
+  it("getProcessingRuns GET /api/documents/:id/processing-runs", async () => {
+    const fetchMock = mockFetch(jsonResponse([validRun]));
+    const runs = await getProcessingRuns("d1");
+    const [url] = callArgs(fetchMock);
+    expect(url).toBe("/api/documents/d1/processing-runs");
+    expect(runs[0].id).toBe("run-1");
   });
 
   it("getDocumentLifecycle GET /api/documents/:id/lifecycle", async () => {

@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
-import { Alert, Button, Empty, Form, Input, Modal, Segmented, Select, Spin } from "antd";
-import type { ChunkTemplate, KnowledgeBase, ModelProvider } from "@codecrush/contracts";
-import { createKnowledgeBase, getKnowledgeBases, getModels } from "../../api/client";
+import { Alert, Button, Empty, Form, Input, Modal, Select, Spin } from "antd";
+import type {
+  KnowledgeBase,
+  ModelProvider,
+  ProcessingProfileDescriptor,
+} from "@codecrush/contracts";
+import {
+  createKnowledgeBase,
+  getKnowledgeBases,
+  getModels,
+  getProcessingProfiles,
+} from "../../api/client";
 
 /** 知识库管理：卡片网格（对齐重设计原型）。点击卡片 / 「进入」跳文档页。M4 接真实 /api/knowledge-bases。 */
 
@@ -22,16 +31,6 @@ const kbCard: CSSProperties = {
 
 const linkBlue: CSSProperties = { color: "#1677ff", cursor: "pointer" };
 
-const CHUNK_OPTS: { value: ChunkTemplate; label: string; desc: string }[] = [
-  {
-    value: "general",
-    label: "通用",
-    desc: "按标题结构切分，适合 Markdown / TXT / 层级清晰的文档",
-  },
-  { value: "qa", label: "问答", desc: "识别问答对，一问一答作为一个切片，适合 FAQ 文档" },
-  { value: "custom", label: "定制", desc: "按指定规则清洗与切分，适合有特定格式要求的专属内容" },
-];
-
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** building/failed 才在元信息行渲染指示点；ready 常态不展示任何状态标签。 */
@@ -47,14 +46,14 @@ function statusIndicator(
 interface CreateForm {
   name: string;
   desc: string;
-  chunkTemplate: ChunkTemplate;
+  processingProfileId: string;
   embeddingModelId: string;
 }
 
 const emptyForm: CreateForm = {
   name: "",
   desc: "",
-  chunkTemplate: "general",
+  processingProfileId: "general-v1",
   embeddingModelId: "",
 };
 
@@ -65,9 +64,10 @@ export default function KnowledgeBasesPage() {
   const nav = useNavigate();
 
   const [form] = Form.useForm<CreateForm>();
-  const chunkTemplate = Form.useWatch("chunkTemplate", form) ?? "general";
+  const selectedProfileId = Form.useWatch("processingProfileId", form) ?? "general-v1";
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [profiles, setProfiles] = useState<ProcessingProfileDescriptor[]>([]);
   const [embeddingModels, setEmbeddingModels] = useState<ModelProvider[]>([]);
   const [embedErr, setEmbedErr] = useState("");
   const [submitErr, setSubmitErr] = useState("");
@@ -102,7 +102,11 @@ export default function KnowledgeBasesPage() {
     setSubmitErr("");
     setSaving(false);
     try {
-      const models = (await getModels()).filter((m) => m.type === "embedding" && m.enabled);
+      const [models, profileList] = await Promise.all([
+        getModels().then((ms) => ms.filter((m) => m.type === "embedding" && m.enabled)),
+        getProcessingProfiles(),
+      ]);
+      setProfiles(profileList);
       setEmbeddingModels(models);
       if (models.length === 0) {
         setEmbedErr("暂无可用的 Embedding 模型，请先在「模型接入」页启用一个");
@@ -129,13 +133,19 @@ export default function KnowledgeBasesPage() {
     } catch {
       return; // 校验未过，antd 已在字段上呈现错误
     }
+    const profile = profiles.find((p) => p.id === values.processingProfileId);
+    if (!profile) {
+      setSubmitErr("处理方案不可用，请重新选择");
+      return;
+    }
     setSaving(true);
     setSubmitErr("");
     try {
       await createKnowledgeBase({
         name: values.name.trim(),
         desc: values.desc.trim(),
-        chunkTemplate: values.chunkTemplate,
+        processingProfileId: profile.id,
+        processingProfileVersion: profile.version,
         embeddingModelId: values.embeddingModelId,
       });
       setCreateOpen(false);
@@ -377,8 +387,27 @@ export default function KnowledgeBasesPage() {
             <Input.TextArea rows={2} placeholder="这个知识库存放什么内容，供哪些 Agent 使用" />
           </Form.Item>
 
-          <Form.Item label="分块模板" name="chunkTemplate">
-            <Segmented options={CHUNK_OPTS.map((c) => ({ label: c.label, value: c.value }))} />
+          <Form.Item
+            label="文档处理方案"
+            name="processingProfileId"
+            rules={[{ required: true, message: "请选择处理方案" }]}
+          >
+            <Select
+              placeholder="选择这类文档如何解析、清洗、分块"
+              optionLabelProp="label"
+              options={profiles.map((p) => ({
+                value: p.id,
+                label: p.label,
+                title: p.summary,
+                option: (
+                  <div>
+                    <div>{p.label}</div>
+                    <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>{p.summary}</div>
+                  </div>
+                ),
+              }))}
+              optionRender={(opt) => opt.data.option}
+            />
           </Form.Item>
           <div
             style={{
@@ -389,7 +418,7 @@ export default function KnowledgeBasesPage() {
               lineHeight: 1.6,
             }}
           >
-            {CHUNK_OPTS.find((c) => c.value === chunkTemplate)?.desc}
+            {profiles.find((p) => p.id === selectedProfileId)?.description}
           </div>
 
           <Form.Item
