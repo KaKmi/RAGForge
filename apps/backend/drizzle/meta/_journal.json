@@ -64,13 +64,13 @@
       "when": 1783586749268,
       "tag": "0008_m5_chunks_tsv",
       "breakpoints": true
-    }
+    },
     {
-    "idx": 9,
-     "version": "7",
-     "when": 1783587772280,
-     "tag": "0008_mean_la_nuit",
-    "breakpoints": true
+      "idx": 9,
+      "version": "7",
+      "when": 1783587772280,
+      "tag": "0008_mean_la_nuit",
+      "breakpoints": true
     }
   ]
 }
