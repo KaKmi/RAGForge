@@ -488,7 +488,8 @@ export default function DocumentsPage() {
               message.success("已开始重建");
               await load();
             } catch (e) {
-              message.error(errMsg(e));
+              const msg = errMsg(e);
+              message.error(msg.includes("409") ? "知识库正在重建中，请稍候再试" : msg);
             }
           },
         });

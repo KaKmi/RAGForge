@@ -227,6 +227,7 @@ describe("documents", () => {
     expect(form).toBeInstanceOf(FormData);
     expect(form.get("files")).toBeInstanceOf(File);
     expect(form.get("autoParse")).toBe("true");
+    expect(form.get("profileId")).toBeNull(); // 无覆盖时不应附加 profile 字段
     expect((init?.headers as Headers).has("Content-Type")).toBe(false);
     expect(result).toEqual([validDocument]);
   });
