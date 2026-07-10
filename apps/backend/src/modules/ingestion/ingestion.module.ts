@@ -54,9 +54,30 @@ import { PROCESSING_PROFILES, ProfileRegistry } from "./profiles/profile-registr
     { provide: NORMALIZER_REGISTRY_TOKEN, useValue: NORMALIZER_REGISTRY },
     {
       provide: INGESTION_PIPELINE_PORT,
-      inject: [ModelsService, ChunksRepository, AppConfigService],
-      useFactory: (models: ModelsService, chunksRepo: ChunksRepository, config: AppConfigService) =>
-        new DefaultIngestionPipeline(models, chunksRepo, config.ingestionEmbedBatchSize),
+      inject: [
+        ModelsService,
+        ChunksRepository,
+        AppConfigService,
+        PARSER_REGISTRY_TOKEN,
+        CHUNKER_REGISTRY_TOKEN,
+        NORMALIZER_REGISTRY_TOKEN,
+      ],
+      useFactory: (
+        models: ModelsService,
+        chunksRepo: ChunksRepository,
+        config: AppConfigService,
+        parsers: typeof PARSER_REGISTRY,
+        chunkers: typeof CHUNKER_REGISTRY,
+        normalizers: typeof NORMALIZER_REGISTRY,
+      ) =>
+        new DefaultIngestionPipeline(
+          models,
+          chunksRepo,
+          config.ingestionEmbedBatchSize,
+          parsers,
+          chunkers,
+          normalizers,
+        ),
     },
   ],
   // KbRebuildService 导出供 Task 18 KnowledgeBasesService.update 改 chunkTemplate 时调用 startRebuild。

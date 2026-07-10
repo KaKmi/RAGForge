@@ -11,6 +11,10 @@ import { INGESTION_PIPELINE_PORT } from "./ingestion.constants";
 import type { IngestionPipelinePort } from "./ports/ingestion-pipeline.port";
 import { IngestionError } from "./pipeline/ingestion-error";
 import { INGEST_DOCUMENT_JOB } from "./ingestion-job.constants";
+import {
+  PROCESSING_PROFILES,
+  chunkTemplateToProfileRef,
+} from "./profiles/profile-registry";
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -83,11 +87,18 @@ export class IngestionService {
     try {
       const kb = await this.kbRepo.findById(doc.kbId);
       const blob = await this.blobStore.get(doc.blobKey);
+      const template = (kb?.chunkTemplate ?? "general") as ChunkTemplate;
+      const profileRef = chunkTemplateToProfileRef(template);
+      const profile = PROCESSING_PROFILES.find(
+        (candidate) =>
+          candidate.id === profileRef.profileId && candidate.version === profileRef.profileVersion,
+      );
+      if (!profile) throw new IngestionError("PROFILE_INVALID", `${template} 无兼容 Profile`);
       const result = await this.pipeline.run({
         documentId,
         kbId: doc.kbId,
         docType: doc.type as DocumentType,
-        chunkTemplate: (kb?.chunkTemplate ?? "general") as ChunkTemplate,
+        snapshot: structuredClone(profile),
         embeddingModelId: kb?.embeddingModelId ?? "",
         targetVersion,
         blob,
@@ -103,7 +114,7 @@ export class IngestionService {
       await this.docsRepo.update(documentId, {
         status: "ready",
         chunkVersion: targetVersion,
-        parsedText: result.parsedText,
+        parsedText: result.markdown ?? result.parsedText,
         error: null,
       });
       // 闭合起始处追加的 ingest/running 项（写 endedAt，UI 的耗时/进行中态才有终点），

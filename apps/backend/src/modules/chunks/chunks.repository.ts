@@ -106,6 +106,11 @@ export class ChunksRepository {
           tokenCount: d.tokenCount,
           section: d.section,
           embedding: d.embedding,
+          processingRunId: d.processingRunId,
+          contentType: d.contentType,
+          pageStart: d.pageStart,
+          pageEnd: d.pageEnd,
+          assetKey: d.assetKey,
         })),
       );
     });

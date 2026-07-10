@@ -1,5 +1,7 @@
 import { PDFParse } from "pdf-parse";
-import type { DocumentParserPort, ParseResult } from "../../ports/document-parser.port";
+import type { DocumentParserPort, ParseOutput } from "../../ports/document-parser.port";
+
+const PDF_PARSE_VERSION = "2.4.5";
 
 /**
  * pdf-parse 依赖为 ^2.4.5（major v2），API 与 @types/pdf-parse（v1 类型，默认导出函数）完全不同：
@@ -10,18 +12,16 @@ import type { DocumentParserPort, ParseResult } from "../../ports/document-parse
  * 无法用来判断"解析结果为空"。因此改用 `result.pages` 逐页正文拼接作为真实文本与判空依据。
  */
 export class PdfParser implements DocumentParserPort {
-  async parse(buffer: Buffer): Promise<ParseResult> {
+  async parse(buffer: Buffer): Promise<ParseOutput> {
     const parser = new PDFParse({ data: buffer });
     try {
       const result = await parser.getText();
-      const text = result.pages
-        .map((page) => page.text)
-        .join("\n")
-        .trim();
-      if (!text) {
-        throw new Error("PDF 解析结果为空文本（可能是扫描件/图片 PDF，暂不支持 OCR）");
-      }
-      return { text };
+      return {
+        engine: "pdf-parse",
+        engineVersion: PDF_PARSE_VERSION,
+        pages: result.pages.map((page, index) => ({ page: index + 1, text: page.text })),
+        warnings: [],
+      };
     } finally {
       await parser.destroy();
     }
