@@ -1,4 +1,4 @@
-import { ConflictException } from "@nestjs/common";
+import { BadRequestException, ConflictException } from "@nestjs/common";
 import { KbRebuildService } from "../src/modules/ingestion/kb-rebuild.service";
 import type { KnowledgeBasesRepository } from "../src/modules/knowledge-bases/knowledge-bases.repository";
 import type { DocumentsRepository } from "../src/modules/documents/documents.repository";
@@ -99,6 +99,37 @@ describe("KbRebuildService.startRebuild", () => {
       buildingVersion: 2,
       status: "building",
     });
+  });
+
+  it("重建循环内单文档 createRun 抛 400（Profile 版本已移除）→ 跳过继续，不中断整轮（review P2 回归）", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: null });
+    deps.docsRepo.findByKb.mockResolvedValue([
+      { id: "d1", profileOverrideId: null },
+      { id: "d2", profileOverrideId: null },
+      { id: "d3", profileOverrideId: null },
+    ]);
+    // d2 引用已从注册表移除的 Profile 版本 → createRun 抛 BadRequestException。
+    deps.ingestion.createRun
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new BadRequestException("[PROFILE_VERSION_UNAVAILABLE] 处理方案不可用"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(makeService(deps).startRebuild("kb1")).resolves.toBeUndefined();
+    expect(deps.ingestion.createRun).toHaveBeenCalledTimes(3);
+    expect(deps.ingestion.createRun).toHaveBeenCalledWith("d3");
+    expect(deps.kbRepo.updateVersions).toHaveBeenCalledWith("kb1", {
+      buildingVersion: 2,
+      status: "building",
+    });
+  });
+
+  it("重建循环内单文档 createRun 抛非预期错误（如 DB 故障）→ 照抛，不静默吞掉", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: null });
+    deps.docsRepo.findByKb.mockResolvedValue([{ id: "d1", profileOverrideId: null }]);
+    deps.ingestion.createRun.mockRejectedValueOnce(new Error("connection reset"));
+    await expect(makeService(deps).startRebuild("kb1")).rejects.toThrow(/connection reset/);
   });
 
   it("kb 已在 building 中时抛 ConflictException(409)，不重复发任务", async () => {

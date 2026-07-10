@@ -1,4 +1,10 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from "@nestjs/common";
 import { KnowledgeBasesRepository } from "../knowledge-bases/knowledge-bases.repository";
 import { DocumentsRepository } from "../documents/documents.repository";
 import { ChunksRepository } from "../chunks/chunks.repository";
@@ -63,8 +69,13 @@ export class KbRebuildService implements DocumentTerminalListener {
     );
     for (const doc of docs) {
       // flag 分流：开启走新 Run 路径（继承文档/ KB 默认 Profile）；关闭回退 legacy chunkTemplate 入队。
-      // 关键：createRun 会对「已有进行中 Run」的文档抛 409（legacy enqueue 幂等不抛）——必须逐文档兜住，
-      // 否则单个文档冲突会中断整轮循环，令后续文档永不入队、KB 永久卡在 building（review P1）。
+      // 关键：createRun 对个别文档会抛「本文档无法建 Run」类异常（legacy enqueue 幂等不抛）——必须逐文档兜住，
+      // 否则单个文档失败会中断整轮循环，令后续文档永不入队、KB 永久卡在 building（review P1/P2）：
+      //   - ConflictException：已有进行中 Run（复用其终态回调）；
+      //   - BadRequestException：文档/KB 引用的 Profile 版本已从注册表移除或类型不支持（版本生命周期）；
+      //   - NotFoundException：文档/KB 已被删除。
+      // 三者都是「该文档这次重建不了」，跳过继续；其余错误（DB/编程错误）照抛。跳过的文档仍在快照内，
+      // 其现有终态（或维持旧态直至切换）参与 onDocumentTerminal 判定，不阻塞切换。
       try {
         if (this.config.processingProfilesEnabled) {
           await this.ingestion.createRun(doc.id);
@@ -72,11 +83,13 @@ export class KbRebuildService implements DocumentTerminalListener {
           await this.ingestion.enqueue(doc.id, buildingVersion);
         }
       } catch (err) {
-        if (err instanceof ConflictException || err instanceof NotFoundException) {
-          // 已有进行中任务（复用其现有 Run 的终态回调）或文档已被删除：跳过该文档，不中断整轮重建。
-          // 该文档仍在 rebuildDocIds 快照内，其现有 Run 到达终态会照常触发 onDocumentTerminal 参与切换判定。
+        if (
+          err instanceof ConflictException ||
+          err instanceof BadRequestException ||
+          err instanceof NotFoundException
+        ) {
           this.logger.warn(
-            `重建跳过文档 doc=${doc.id}（${err instanceof ConflictException ? "已有进行中任务" : "文档已删除"}）`,
+            `重建跳过文档 doc=${doc.id}（${err instanceof Error ? err.message : String(err)}）`,
           );
         } else {
           throw err;
