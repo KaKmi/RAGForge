@@ -44,6 +44,10 @@ export const CreateKnowledgeBaseRequestSchema = z
   })
   .refine((v) => v.chunkTemplate !== undefined || v.processingProfileId !== undefined, {
     message: "chunkTemplate 与 processingProfile 至少提供其一",
+  })
+  // 与 update 对称：二者不可同时提交，避免 chunkTemplate 与 defaultProfile* 双写不一致（迁移窗口回滚安全）。
+  .refine((v) => !(v.chunkTemplate !== undefined && v.processingProfileId !== undefined), {
+    message: "chunkTemplate 与 processingProfile 不可同时提交",
   });
 export type CreateKnowledgeBaseRequest = z.infer<typeof CreateKnowledgeBaseRequestSchema>;
 

@@ -200,6 +200,22 @@ describe("KnowledgeBasesService 迁移窗口矩阵", () => {
     );
   });
 
+  it("create 同传 chunkTemplate+profile（绕过契约的非 HTTP 路径）→ chunkTemplate 由 profile 反写，不采信调用方", async () => {
+    const deps = makeDeps();
+    await makeSvc(deps).create({
+      name: "x",
+      desc: "",
+      chunkTemplate: "general",
+      processingProfileId: "faq-v1",
+      processingProfileVersion: 1,
+      embeddingModelId: "m1",
+    } as never);
+    // 纵深防御：即便同传，落库 chunkTemplate 也取 faq-v1 的 chunker（qa），与 defaultProfile* 一致。
+    expect(deps.repo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ chunkTemplate: "qa", defaultProfileId: "faq-v1", defaultProfileVersion: 1 }),
+    );
+  });
+
   it("create profile 未注册 → 400，不落库", async () => {
     const deps = makeDeps();
     await expect(

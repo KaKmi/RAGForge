@@ -52,7 +52,12 @@ export class KnowledgeBasesService {
         `[PROFILE_VERSION_UNAVAILABLE] 处理方案 ${ref.profileId}@${ref.profileVersion} 不可用`,
       );
     }
-    return { ref, chunkTemplate: (chunkTemplate ?? def.chunker.id) as ChunkTemplate };
+    // 显式给 profile 时 chunkTemplate 恒由方案的 chunker 反写（不采信调用方同传的 chunkTemplate），
+    // 保证 defaultProfile* 与 chunkTemplate 始终一致（契约已拒绝二者同传，此处为纵深防御）。
+    return {
+      ref,
+      chunkTemplate: (profileId ? def.chunker.id : (chunkTemplate ?? def.chunker.id)) as ChunkTemplate,
+    };
   }
 
   async list(): Promise<KnowledgeBase[]> {

@@ -98,6 +98,17 @@ describe("knowledge-bases 契约迁移窗口", () => {
       }).success,
     ).toBe(false);
   });
+  it("create 同时带 chunkTemplate 与 profile → 拒绝（与 update 对称，防双写不一致）", () => {
+    expect(
+      CreateKnowledgeBaseRequestSchema.safeParse({
+        name: "kb",
+        chunkTemplate: "general",
+        processingProfileId: "faq-v1",
+        processingProfileVersion: 1,
+        embeddingModelId: "m1",
+      }).success,
+    ).toBe(false);
+  });
   it("update 同时带 chunkTemplate 与 profile → 拒绝", () => {
     expect(
       UpdateKnowledgeBaseRequestSchema.safeParse({
