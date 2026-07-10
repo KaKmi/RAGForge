@@ -76,7 +76,9 @@ export class KnowledgeBasesService {
     const row = await this.repo.insert({
       name: req.name,
       desc: req.desc,
-      chunkTemplate: req.chunkTemplate,
+      // M4.1 迁移期占位：契约层已保证 chunkTemplate 或 processingProfile 至少其一，
+      // Task 7 用 profile 反查映射替换此块（profile-only 请求反写 chunkTemplate）。
+      chunkTemplate: req.chunkTemplate ?? "general",
       embeddingModelId: req.embeddingModelId,
     });
     return this.toKnowledgeBase(row);
@@ -159,6 +161,9 @@ export class KnowledgeBasesService {
       status: row.status as "ready" | "building" | "failed",
       activeVersion: row.activeVersion,
       buildingVersion: row.buildingVersion,
+      // M4.1：迁移期占位 null，Task 7 接线 default_profile_* 列后填真实值。
+      processingProfileId: null,
+      processingProfileVersion: null,
       updatedAt: row.updatedAt.toISOString(),
     };
   }

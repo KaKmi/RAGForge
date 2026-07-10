@@ -49,6 +49,8 @@ const validKb = {
   status: "ready" as const,
   activeVersion: 1,
   buildingVersion: null,
+  processingProfileId: null,
+  processingProfileVersion: null,
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 

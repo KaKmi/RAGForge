@@ -5,6 +5,7 @@ export * from "./auth";
 export * from "./models";
 export * from "./knowledge-bases";
 export * from "./documents";
+export * from "./processing-profiles";
 export * from "./chunks";
 export * from "./retrieval";
 export * from "./agents";
