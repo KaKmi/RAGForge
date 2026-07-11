@@ -18,11 +18,13 @@ import {
   MovePromptTagRequestSchema,
   PromptListQuerySchema,
   PromptNodeVersionsQuerySchema,
+  TryRunPromptRequestSchema,
   type PromptDetail,
   type PromptListResponse,
   type PromptNodeVersionCandidate,
   type PromptTag,
   type PromptVersion,
+  type TryRunResult,
 } from "@codecrush/contracts";
 import type { AuthenticatedUser } from "../../platform/security/authenticated-user";
 import { PromptsService } from "./prompts.service";
@@ -30,6 +32,7 @@ import { PromptsService } from "./prompts.service";
 class CreatePromptRequestDto extends createZodDto(CreatePromptRequestSchema) {}
 class CreatePromptVersionRequestDto extends createZodDto(CreatePromptVersionRequestSchema) {}
 class MovePromptTagRequestDto extends createZodDto(MovePromptTagRequestSchema) {}
+class TryRunPromptRequestDto extends createZodDto(TryRunPromptRequestSchema) {}
 
 // guard 已在 canActivate 里挂 user（jwt-auth.guard.ts:41），此处仅声明所需结构。
 type AuthedRequest = { user: AuthenticatedUser };
@@ -80,6 +83,17 @@ export class PromptsController {
     @Req() req: AuthedRequest,
   ): Promise<PromptVersion> {
     return this.promptsService.createVersion(id, body, req.user.email);
+  }
+
+  // 试运行（012 §6）：reply/fallback 真实调用；rewrite/intent unavailable；编译错误 422
+  @Post(":id/versions/:versionId/try-run")
+  @HttpCode(200)
+  tryRun(
+    @Param("id") id: string,
+    @Param("versionId") versionId: string,
+    @Body() body: TryRunPromptRequestDto,
+  ): Promise<TryRunResult> {
+    return this.promptsService.tryRun(id, versionId, body);
   }
 
   // 标签排他移动（production 与自定义同一路径，无门禁语义——012 Invariant 1）

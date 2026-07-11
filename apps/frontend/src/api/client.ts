@@ -79,6 +79,10 @@ import {
   type PromptNodeVersionListResponse,
   PromptTagListResponseSchema,
   type PromptTagListResponse,
+  TryRunPromptRequestSchema,
+  type TryRunPromptRequest,
+  TryRunResultSchema,
+  type TryRunResult,
   PromptVersionListResponseSchema,
   type PromptVersionListResponse,
   PromptVersionSchema,
@@ -452,6 +456,25 @@ export async function removePromptTag(promptId: string, name: string): Promise<v
     { method: "DELETE" },
   );
   if (!resp.ok) throw new Error(`remove tag failed: ${resp.status} ${resp.statusText}`);
+}
+
+// 试运行（012 §6）：非 2xx 透出服务端 message（422 编译错误 / 400 字段要求 / 502 provider 失败）
+export async function tryRunPromptVersion(
+  promptId: string,
+  versionId: string,
+  req: TryRunPromptRequest,
+): Promise<TryRunResult> {
+  const resp = await apiFetch(
+    `/api/prompts/${encodeURIComponent(promptId)}/versions/${encodeURIComponent(versionId)}/try-run`,
+    { method: "POST", body: JSON.stringify(TryRunPromptRequestSchema.parse(req)) },
+  );
+  if (!resp.ok) {
+    const j = (await resp.json().catch(() => undefined)) as { message?: unknown } | undefined;
+    throw new Error(
+      typeof j?.message === "string" ? j.message : `try-run failed: ${resp.status}`,
+    );
+  }
+  return TryRunResultSchema.parse(await resp.json());
 }
 
 // 删除 prompt（被应用配置引用时后端返 409。204 无响应体）

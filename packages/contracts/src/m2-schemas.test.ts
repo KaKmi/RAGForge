@@ -19,6 +19,9 @@ import {
   PaginatedResponseSchema,
   MovePromptTagRequestSchema,
   PromptDetailSchema,
+  TRY_RUN_CHAT_PROTOCOLS,
+  TryRunPromptRequestSchema,
+  TryRunResultSchema,
   PromptListQuerySchema,
   PromptListResponseSchema,
   PromptNodeVersionCandidateSchema,
@@ -498,5 +501,41 @@ describe("Compile result schemas (012)", () => {
     const r = { status: "has_warnings", issues: [] };
     expect(CompileResultSchema.parse(r)).toEqual(r);
     expect(() => CompileResultSchema.parse({ status: "ok" })).toThrow();
+  });
+});
+
+// 012 Story 7：try-run 请求与判别联合（text/unavailable/structured 预留）
+describe("Try-run schemas (012 Story 7)", () => {
+  it("请求：modelId 必填、temperature 0..2、testVars.query 必填字段", () => {
+    const parsed = TryRunPromptRequestSchema.parse({
+      modelId: "m1",
+      temperature: 1.5,
+      testVars: { query: "q", history: "h", retrievalContext: "c", reason: "r" },
+    });
+    expect(parsed.modelId).toBe("m1");
+    expect(() =>
+      TryRunPromptRequestSchema.parse({ modelId: "m1", temperature: 2.5, testVars: { query: "q" } }),
+    ).toThrow();
+    expect(() => TryRunPromptRequestSchema.parse({ testVars: { query: "q" } })).toThrow();
+    expect(() => TryRunPromptRequestSchema.parse({ modelId: "m1", testVars: {} })).toThrow();
+  });
+  it("结果联合按 mode 判别：text / unavailable / structured（预留）", () => {
+    expect(TryRunResultSchema.parse({ mode: "text", text: "回答" }).mode).toBe("text");
+    expect(
+      TryRunResultSchema.parse({ mode: "unavailable", reason: "pending_node_runtime" }).mode,
+    ).toBe("unavailable");
+    expect(
+      TryRunResultSchema.parse({
+        mode: "structured",
+        fields: { intent: "aftersale" },
+        validateSteps: [],
+        fallbackUsed: false,
+      }).mode,
+    ).toBe("structured");
+    expect(() => TryRunResultSchema.parse({ mode: "unavailable", reason: "nope" })).toThrow();
+    expect(() => TryRunResultSchema.parse({ mode: "text" })).toThrow();
+  });
+  it("支持矩阵常量恰为当前三种 LLM 协议", () => {
+    expect([...TRY_RUN_CHAT_PROTOCOLS].sort()).toEqual(["anthropic", "gemini", "openai_compat"]);
   });
 });

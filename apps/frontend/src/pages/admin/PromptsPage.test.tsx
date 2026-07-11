@@ -14,6 +14,8 @@ vi.mock("../../api/client", () => ({
   deletePrompt: vi.fn(),
   movePromptTag: vi.fn(),
   removePromptTag: vi.fn(),
+  getModels: vi.fn(),
+  tryRunPromptVersion: vi.fn(),
 }));
 
 const mocked = vi.mocked(client);
@@ -73,6 +75,17 @@ function renderRoutes(initial: string) {
   );
 }
 
+const llmModel = {
+  id: "m1",
+  type: "llm" as const,
+  protocol: "openai_compat" as const,
+  name: "deepseek-v3",
+  baseUrl: "https://api.example.com/v1",
+  apiKeyMasked: "sk-****",
+  params: {},
+  enabled: true,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocked.getPrompts.mockResolvedValue({
@@ -82,6 +95,7 @@ beforeEach(() => {
     pageSize: 10,
   });
   mocked.getPromptDetail.mockResolvedValue(makeDetail());
+  mocked.getModels.mockResolvedValue([llmModel]);
 });
 
 describe("Prompt 列表页（012）", () => {
@@ -206,11 +220,15 @@ describe("Prompt 详情 Playground（012）", () => {
     ).toHaveValue("基于 v2 修改");
   });
 
-  it("试运行区在能力接入前不展示可运行状态", async () => {
+  it("试运行面板：reply 节点展示参数/输入与运行按钮（query 为空时禁用）", async () => {
     renderRoutes("/admin/prompts/p1");
     expect(await screen.findByTestId("try-run-panel")).toBeInTheDocument();
-    expect(screen.getByText("试运行能力接入中（保存的版本可随时回来试）")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^运行/ })).not.toBeInTheDocument();
+    const runBtn = await screen.findByRole("button", { name: /运行 v2/ });
+    expect(runBtn).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText("用户问题（必填）"), {
+      target: { value: "怎么退货" },
+    });
+    expect(runBtn).toBeEnabled();
   });
 });
 
@@ -298,5 +316,92 @@ describe("Prompt 详情 · 标签面板（012 Story 6）", () => {
     await waitFor(() =>
       expect(mocked.getPromptDetail.mock.calls.length).toBeGreaterThan(before),
     );
+  });
+});
+
+describe("Prompt 详情 · 试运行（012 Story 7）", () => {
+  it("运行成功：mode:text 渲染模型输出", async () => {
+    mocked.tryRunPromptVersion.mockResolvedValue({ mode: "text", text: "模型的回答" });
+    renderRoutes("/admin/prompts/p1");
+    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+      target: { value: "怎么退货" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /运行 v2/ }));
+    expect(await screen.findByTestId("try-run-output")).toHaveTextContent("模型的回答");
+    expect(mocked.tryRunPromptVersion).toHaveBeenCalledWith(
+      "p1",
+      "pv2",
+      expect.objectContaining({
+        modelId: "m1",
+        testVars: expect.objectContaining({ query: "怎么退货" }),
+      }),
+    );
+  });
+
+  it("mode:unavailable 渲染占位说明，不显示运行结果", async () => {
+    mocked.tryRunPromptVersion.mockResolvedValue({
+      mode: "unavailable",
+      reason: "unsupported_protocol",
+    });
+    renderRoutes("/admin/prompts/p1");
+    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+      target: { value: "q" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /运行 v2/ }));
+    expect(await screen.findByText("本次试运行不可用")).toBeInTheDocument();
+    expect(screen.queryByTestId("try-run-output")).not.toBeInTheDocument();
+  });
+
+  it("失败：错误 Alert + 重试按钮可再次运行", async () => {
+    mocked.tryRunPromptVersion
+      .mockRejectedValueOnce(new Error("模型调用失败：HTTP 500"))
+      .mockResolvedValueOnce({ mode: "text", text: "重试成功" });
+    renderRoutes("/admin/prompts/p1");
+    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+      target: { value: "q" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /运行 v2/ }));
+    expect(await screen.findByText("试运行失败")).toBeInTheDocument();
+    expect(screen.getByText(/HTTP 500/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /重\s?试/ }));
+    expect(await screen.findByTestId("try-run-output")).toHaveTextContent("重试成功");
+  });
+
+  it("rewrite 节点：展示「结构化预览暂不可用」，无运行控件", async () => {
+    mocked.getPromptDetail.mockResolvedValue(
+      makeDetail({ node: "rewrite", versions: [makeVersion({ id: "pv1", body: "改写 {query}" })] }),
+    );
+    renderRoutes("/admin/prompts/p1");
+    expect(await screen.findByText("结构化预览暂不可用")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^运行/ })).not.toBeInTheDocument();
+  });
+
+  it("无兼容模型（协议不支持/无 llm）：警示且无运行控件", async () => {
+    mocked.getModels.mockResolvedValue([
+      { ...llmModel, protocol: "cohere" as never },
+      { ...llmModel, id: "m2", type: "embedding" as const },
+    ]);
+    renderRoutes("/admin/prompts/p1");
+    expect(await screen.findByText("没有可试运行的模型")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^运行/ })).not.toBeInTheDocument();
+  });
+
+  it("编译错误版本：提示不可试运行且无运行按钮", async () => {
+    mocked.getPromptDetail.mockResolvedValue(
+      makeDetail({
+        versions: [
+          makeVersion({
+            id: "pv2",
+            version: 2,
+            body: "{bad_x}",
+            compileStatus: "has_errors",
+            compileErrors: [{ code: "UNKNOWN_VARIABLE", severity: "error", message: "x" }],
+          }),
+        ],
+      }),
+    );
+    renderRoutes("/admin/prompts/p1");
+    expect(await screen.findByText("该版本存在编译错误，无法试运行")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^运行/ })).not.toBeInTheDocument();
   });
 });

@@ -24,12 +24,28 @@ export interface EmbedResult {
   vectors: number[][];
 }
 
+// 012 Story 7：文本 chat（试运行 reply/fallback 真实调用；011 落地后 node-runtime 复用）
+export interface ChatInput {
+  system: string;
+  user: string;
+}
+
+export interface ChatOptions {
+  /** 覆盖模型存量默认 temperature，仅影响本次调用 */
+  temperature?: number;
+}
+
+export interface ChatResult {
+  text: string;
+}
+
 export interface RerankResult {
   results: { index: number; score: number }[];
 }
 
 export interface ModelProviderPort {
   testConnection(config: ModelCallConfig): Promise<TestModelResult>;
+  chat(config: ModelCallConfig, input: ChatInput, opts?: ChatOptions): Promise<ChatResult>;
   embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult>;
   rerank(
     config: ModelCallConfig,

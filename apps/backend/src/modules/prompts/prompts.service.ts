@@ -1,13 +1,17 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import {
   compilePromptBody,
   extractVars,
   NODE_CONTRACT_VERSION,
+  renderTemplate,
+  TRY_RUN_CHAT_PROTOCOLS,
   type CreatePromptRequest,
   type CreatePromptVersionRequest,
   type Prompt,
@@ -18,7 +22,12 @@ import {
   type PromptNodeVersionCandidate,
   type PromptTag,
   type PromptVersion,
+  type TryRunPromptRequest,
+  type TryRunResult,
 } from "@codecrush/contracts";
+import { withSpan } from "@codecrush/otel";
+import { CODECRUSH_SPAN_KIND, GEN_AI, OTEL_OPERATIONS, RAG } from "@codecrush/otel-conventions";
+import { ModelsService } from "../models/models.service";
 import {
   PromptsRepository,
   type PromptListRow,
@@ -28,7 +37,10 @@ import type { PromptVersionRow } from "./schema";
 
 @Injectable()
 export class PromptsService {
-  constructor(private readonly repo: PromptsRepository) {}
+  constructor(
+    private readonly repo: PromptsRepository,
+    private readonly models: ModelsService,
+  ) {}
 
   async list(q: PromptListQuery): Promise<PromptListResponse> {
     const { items, total } = await this.repo.findPrompts(q);
@@ -187,6 +199,89 @@ export class PromptsService {
       compileStatus: r.compileStatus as PromptNodeVersionCandidate["compileStatus"],
       createdAt: r.createdAt.toISOString(),
     }));
+  }
+
+  // 012 §6 试运行（M6 阶段真实部分能力）：reply/fallback 走真实模型调用；
+  // rewrite/intent 明确 unavailable/pending_node_runtime（011 落地后升级 structured）。
+  // 绝不伪造结果（Invariant 4）；provider 错误映射为 HTTP 错误，不冒充 unavailable。
+  async tryRun(
+    promptId: string,
+    versionId: string,
+    req: TryRunPromptRequest,
+  ): Promise<TryRunResult> {
+    const prompt = await this.mustFindPrompt(promptId);
+    const version = await this.repo.findVersionById(versionId);
+    if (!version || version.promptId !== promptId) {
+      throw new NotFoundException(`version ${versionId} 不存在或不属于该 Prompt`);
+    }
+    // 存量编译错误 → 422，不调用任何 provider（drill 收口）
+    if (version.compileStatus === "has_errors") {
+      throw new UnprocessableEntityException("该版本存在编译错误，请修复并保存新版本后再试运行");
+    }
+    // 009 未落地：refApplicationId 非空即依赖门控，不调用模型
+    if (req.refApplicationId) {
+      return { mode: "unavailable", reason: "application_context_not_available" };
+    }
+    const node = prompt.node as PromptNode;
+    if (node === "rewrite" || node === "intent") {
+      return { mode: "unavailable", reason: "pending_node_runtime" };
+    }
+
+    // 字段要求（drill 收口）：reply 需 query（history/retrievalContext 缺省空串）；
+    // fallback 需 query + reason
+    if (!req.testVars.query.trim()) {
+      throw new BadRequestException("试运行需要 query");
+    }
+    if (node === "fallback" && !(req.testVars.reason ?? "").trim()) {
+      throw new BadRequestException("fallback 节点试运行需要 reason");
+    }
+
+    const model = await this.models.get(req.modelId); // 不存在 → 404
+    if (model.type !== "llm") {
+      throw new BadRequestException(`model ${req.modelId} 不是 llm 类型，无法试运行`);
+    }
+    if (!(TRY_RUN_CHAT_PROTOCOLS as readonly string[]).includes(model.protocol)) {
+      return { mode: "unavailable", reason: "unsupported_protocol" };
+    }
+
+    // 渲染不可变版本 body 为 system 指令（预览等于运行时：共享 renderTemplate）
+    const system = renderTemplate(version.body, {
+      query: req.testVars.query,
+      history: req.testVars.history ?? "",
+      retrievalContext: req.testVars.retrievalContext ?? "",
+      reason: req.testVars.reason ?? "",
+    });
+
+    try {
+      // best-effort span：rag.preview=true 与正式问答统计隔离（012 §Observability）；
+      // withSpan 为非阻塞记录，遥测故障不影响请求本身
+      const { text } = await withSpan(
+        "prompt.try_run",
+        {
+          attributes: {
+            [RAG.PREVIEW]: true,
+            [RAG.PROMPT_VERSION_ID]: versionId,
+            [GEN_AI.OPERATION_NAME]: OTEL_OPERATIONS.CHAT,
+            [GEN_AI.SYSTEM]: model.protocol,
+            [GEN_AI.REQUEST_MODEL]: model.deploymentId ?? model.name,
+            "codecrush.span.kind": CODECRUSH_SPAN_KIND.LLM,
+          },
+        },
+        () =>
+          this.models.chatText(
+            req.modelId,
+            { system, user: req.testVars.query },
+            { temperature: req.temperature },
+          ),
+      );
+      return { mode: "text", text };
+    } catch (e) {
+      // provider 超时/HTTP 失败 → 错误响应（可重试），不是能力不可用
+      if (e instanceof BadRequestException || e instanceof NotFoundException) throw e;
+      throw new BadGatewayException(
+        e instanceof Error ? `模型调用失败：${e.message}` : "模型调用失败",
+      );
+    }
   }
 
   // 012：删除仅依赖 FK 事实（应用配置 RESTRICT），不再有「已发布不可删」语义

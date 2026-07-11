@@ -1,12 +1,16 @@
 import { Injectable } from "@nestjs/common";
 import type { ModelProtocol, ModelType } from "@codecrush/contracts";
 import type {
+  ChatInput,
+  ChatOptions,
+  ChatResult,
   EmbedResult,
   ModelCallConfig,
   ModelProviderPort,
   RerankResult,
   TestModelResult,
 } from "../ports/model-provider.port";
+import { CHAT_BUILDERS } from "./chat-builders";
 import type { ProbeBuilder } from "./protocols/types";
 import {
   openaiCompatChatProbe,
@@ -31,6 +35,8 @@ export const EMBED_TIMEOUT_MS = 60_000;
 // 5s 是介于「测试连接」10s 探针与 chat 端 30s 熔断之间的工程估计，未经真实供应商实测校准
 // （008 Revisit：接入真实供应商后需要重新量）。
 export const RERANK_TIMEOUT_MS = 5_000;
+// chat 用于试运行（012 §6 同步等待），60s 兜住真实厂商长回复；011 runtime 复用时再按需分档
+export const CHAT_TIMEOUT_MS = 60_000;
 
 // (type, protocol) → 探针 builder 表：与契约 PROTOCOLS_BY_TYPE 的合法组合一一对应
 // （完整性由 protocol-dispatch.adapter.spec 断言）。新增协议 = 加 builder 文件 + 表项。
@@ -101,6 +107,48 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // 012 Story 7：文本 chat（试运行）。失败一律 throw（同 embed/rerank 语义），
+  // 消费方（prompts try-run）把 provider 错误映射为 HTTP 错误响应而非 unavailable。
+  async chat(config: ModelCallConfig, input: ChatInput, opts?: ChatOptions): Promise<ChatResult> {
+    const builder = CHAT_BUILDERS[config.protocol];
+    if (!builder) {
+      // 契约层 TRY_RUN_CHAT_PROTOCOLS 已收口，调用方按矩阵返回 unavailable，此分支防御新枚举
+      throw new Error(`unsupported protocol ${config.protocol} for chat`);
+    }
+    const req = builder(config, input, opts ?? {});
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+    let resp: Response;
+    try {
+      resp = await fetch(req.url, {
+        method: "POST",
+        headers: req.headers,
+        body: JSON.stringify(req.body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const message = controller.signal.aborted
+        ? `chat 请求超时（>${CHAT_TIMEOUT_MS}ms）`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+      throw new Error(redactSecret(message, config.apiKey));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) {
+      const json: unknown = await resp.json().catch(() => undefined);
+      throw new Error(redactSecret(upstreamError(resp.status, json), config.apiKey));
+    }
+    const json: unknown = await resp.json().catch(() => undefined);
+    const text = req.parseText(json);
+    // 200 但形状不符/空输出 → 稳定的 provider-response 错误（不静默返回空串）
+    if (text === undefined) {
+      throw new Error("chat 响应形状不符：未找到规范文本输出");
+    }
+    return { text };
   }
 
   async embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult> {

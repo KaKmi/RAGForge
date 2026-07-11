@@ -113,6 +113,32 @@ export class ModelsService {
     return this.doTest({ ...req });
   }
 
+  // 供 prompts 域试运行调用（012 §6）：按 modelId 查行、解密 key、调端口 chat()。
+  // 密钥解密不出 models 域；非 llm 类型直接拒绝（400）。
+  async chatText(
+    modelId: string,
+    input: { system: string; user: string },
+    opts?: { temperature?: number },
+  ): Promise<{ text: string }> {
+    const row = await this.mustFind(modelId);
+    if (row.type !== "llm") {
+      throw new BadRequestException(`model ${modelId} 不是 llm 类型，无法 chat`);
+    }
+    return await this.provider.chat(
+      {
+        type: row.type as ModelType,
+        protocol: row.protocol as ModelProtocol,
+        name: row.name,
+        baseUrl: row.baseUrl,
+        deploymentId: row.deploymentId ?? undefined,
+        params: row.params,
+        apiKey: this.enc.decrypt(row.apiKeyEnc),
+      },
+      input,
+      opts,
+    );
+  }
+
   // 供 ingestion 域调用：按 modelId 查行、解密 key、调端口 embed()。密钥解密不出 models 域。
   async embedTexts(modelId: string, texts: string[]): Promise<number[][]> {
     const row = await this.mustFind(modelId);

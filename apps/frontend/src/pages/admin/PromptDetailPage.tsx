@@ -4,9 +4,10 @@ import {
   Alert,
   Button,
   Drawer,
-  Empty,
   Input,
   Popconfirm,
+  Select,
+  Slider,
   Space,
   Spin,
   Tag,
@@ -16,15 +17,20 @@ import {
 import {
   compilePromptBody,
   NODE_CONTRACTS,
+  TRY_RUN_CHAT_PROTOCOLS,
   type CompileIssue,
+  type ModelProvider,
   type PromptDetail,
   type PromptVersion,
+  type TryRunResult,
 } from "@codecrush/contracts";
 import {
   createPromptVersion,
+  getModels,
   getPromptDetail,
   movePromptTag,
   removePromptTag,
+  tryRunPromptVersion,
 } from "../../api/client";
 import { NODE_LABEL, NODE_META } from "../../mocks/prompts";
 import { formatDateTime, tagColor } from "./PromptsPage";
@@ -68,6 +74,18 @@ export default function PromptDetailPage() {
   const [tagErr, setTagErr] = useState("");
   const [tagBusy, setTagBusy] = useState(false);
 
+  // 试运行（012 §6）：真实模型调用，仅 reply/fallback 开放；rewrite/intent 待 011
+  const [models, setModels] = useState<ModelProvider[]>([]);
+  const [tryModelId, setTryModelId] = useState<string>("");
+  const [tryTemp, setTryTemp] = useState(0.7);
+  const [tvQuery, setTvQuery] = useState("");
+  const [tvHistory, setTvHistory] = useState("");
+  const [tvRetrieval, setTvRetrieval] = useState("");
+  const [tvReason, setTvReason] = useState("");
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState<TryRunResult | null>(null);
+  const [runErr, setRunErr] = useState("");
+
   // 快速切换路由时的过期响应守卫（review P3）：旧 promptId 的响应回来晚了不覆盖当前页面
   const activePromptId = useRef(promptId);
   useEffect(() => {
@@ -102,6 +120,29 @@ export default function PromptDetailPage() {
     setLoading(true);
     void refresh(true);
   }, [refresh]);
+
+  // 可试运行模型 = 启用的 llm 且协议在支持矩阵内；其余不展示为可运行（Invariant 4）
+  useEffect(() => {
+    let active = true;
+    getModels()
+      .then((list) => {
+        if (!active) return;
+        const runnable = list.filter(
+          (m) =>
+            m.type === "llm" &&
+            m.enabled &&
+            (TRY_RUN_CHAT_PROTOCOLS as readonly string[]).includes(m.protocol),
+        );
+        setModels(runnable);
+        setTryModelId((prev) => prev || (runnable[0]?.id ?? ""));
+      })
+      .catch(() => {
+        if (active) setModels([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const node = detail?.node;
   const contract = node ? NODE_CONTRACTS[node] : null;
@@ -180,6 +221,30 @@ export default function PromptDetailPage() {
     setTagErr("");
     await moveTagToCurrent(name);
     setNewTag("");
+  };
+
+  const runTry = async () => {
+    if (!detail || !sourceVersion || !tryModelId) return;
+    setRunning(true);
+    setRunErr("");
+    setRunResult(null);
+    try {
+      const res = await tryRunPromptVersion(detail.id, sourceVersion.id, {
+        modelId: tryModelId,
+        temperature: tryTemp,
+        testVars: {
+          query: tvQuery,
+          history: tvHistory || undefined,
+          retrievalContext: tvRetrieval || undefined,
+          reason: tvReason || undefined,
+        },
+      });
+      setRunResult(res);
+    } catch (e) {
+      setRunErr(e instanceof Error ? e.message : "试运行失败");
+    } finally {
+      setRunning(false);
+    }
   };
 
   const loadVersion = (v: PromptVersion, opts?: { copyNote?: boolean }) => {
@@ -486,15 +551,154 @@ export default function PromptDetailPage() {
               · 只跑这一个节点
             </span>
           </div>
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={
-              <span style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>
-                试运行能力接入中（保存的版本可随时回来试）
-              </span>
-            }
-            style={{ margin: "48px 0" }}
-          />
+          {node === "rewrite" || node === "intent" ? (
+            // 011 未落地：结构化预览不可用，不展示可运行状态（Invariant 4，不伪造）
+            <Alert
+              type="info"
+              showIcon
+              message="结构化预览暂不可用"
+              description="该节点的试运行需要结构化校验（节点运行时），待 M8.0 上线后开放。"
+            />
+          ) : models.length === 0 ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="没有可试运行的模型"
+              description="需要一个已启用的 LLM 模型（openai_compat / anthropic / gemini 协议）。"
+            />
+          ) : (
+            <>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: 12, color: "rgba(0,0,0,.55)" }}>
+                  生成参数 · 仅影响本次试跑
+                </span>
+                <Select
+                  size="small"
+                  value={tryModelId}
+                  onChange={setTryModelId}
+                  options={models.map((m) => ({ value: m.id, label: m.name }))}
+                />
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 12, color: "rgba(0,0,0,.55)", flex: "none" }}>
+                    温度 {tryTemp}
+                  </span>
+                  <Slider
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={tryTemp}
+                    onChange={setTryTemp}
+                    style={{ flex: 1, margin: "0 6px" }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: 12, color: "rgba(0,0,0,.55)" }}>
+                  输入数据 · 这个节点要吃的字段
+                </span>
+                <Input.TextArea
+                  value={tvQuery}
+                  onChange={(e) => setTvQuery(e.target.value)}
+                  placeholder="用户问题（必填）"
+                  autoSize={{ minRows: 2, maxRows: 4 }}
+                />
+                <Input.TextArea
+                  value={tvHistory}
+                  onChange={(e) => setTvHistory(e.target.value)}
+                  placeholder="历史对话 · 可空"
+                  autoSize={{ minRows: 1, maxRows: 4 }}
+                />
+                {node === "reply" && (
+                  <Input.TextArea
+                    value={tvRetrieval}
+                    onChange={(e) => setTvRetrieval(e.target.value)}
+                    placeholder="检索到的内容 · 回复的依据，别手编"
+                    autoSize={{ minRows: 2, maxRows: 6 }}
+                  />
+                )}
+                {node === "fallback" && (
+                  <Input
+                    value={tvReason}
+                    onChange={(e) => setTvReason(e.target.value)}
+                    placeholder="兜底原因（必填），如：知识库未命中"
+                  />
+                )}
+              </div>
+
+              {sourceVersion?.compileStatus === "has_errors" ? (
+                <Alert
+                  type="error"
+                  showIcon
+                  message="该版本存在编译错误，无法试运行"
+                  description="修复正文并保存新版本后再试。"
+                />
+              ) : (
+                <Button
+                  type="primary"
+                  loading={running}
+                  disabled={
+                    !tvQuery.trim() || (node === "fallback" && !tvReason.trim()) || !tryModelId
+                  }
+                  onClick={() => void runTry()}
+                >
+                  运行 v{sourceVersion?.version}
+                </Button>
+              )}
+              {dirty && (
+                <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>
+                  正文有未保存修改——试运行使用已保存的 v{sourceVersion?.version}。
+                </div>
+              )}
+
+              {runErr && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message="试运行失败"
+                  description={runErr}
+                  action={
+                    <Button size="small" onClick={() => void runTry()}>
+                      重试
+                    </Button>
+                  }
+                />
+              )}
+              {runResult?.mode === "text" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <span style={{ fontSize: 12, color: "rgba(0,0,0,.55)" }}>模型输出</span>
+                  <div
+                    data-testid="try-run-output"
+                    style={{
+                      border: "1px solid #f0f0f0",
+                      borderRadius: 8,
+                      background: "#fafafa",
+                      padding: "10px 12px",
+                      fontSize: 13,
+                      lineHeight: 1.8,
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {runResult.text}
+                  </div>
+                </div>
+              )}
+              {runResult?.mode === "unavailable" && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="本次试运行不可用"
+                  description={
+                    runResult.reason === "application_context_not_available"
+                      ? "参照应用带出参数的能力待应用管理（009）上线。"
+                      : runResult.reason === "unsupported_protocol"
+                        ? "所选模型的协议暂不支持试运行。"
+                        : "该节点的结构化预览待 M8.0 上线。"
+                  }
+                />
+              )}
+            </>
+          )}
         </div>
       </div>
 

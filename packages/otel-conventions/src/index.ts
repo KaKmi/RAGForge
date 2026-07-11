@@ -22,6 +22,8 @@ export const RAG = {
   PROMPT_VERSION_ID: "rag.prompt.version_id",
   VEC_WEIGHT: "rag.retrieval.vec_weight",
   RERANK_THRESHOLD: "rag.rerank.threshold",
+  // 012 §Observability：试运行（预览）调用打标，与正式问答的成功率/延迟统计隔离
+  PREVIEW: "rag.preview",
 } as const;
 
 export const OTEL_OPERATIONS = {

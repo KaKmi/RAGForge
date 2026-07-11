@@ -315,6 +315,10 @@ const inMemoryModelsRepo = {
 };
 const fakeModelProviderPort = {
   testConnection: jest.fn(async () => ({ ok: true, latencyMs: 5, statusCode: 200 })),
+  // 012 Story 7 try-run 走到这里：回显 system/user，e2e 可断言渲染结果
+  chat: jest.fn(async (_config: unknown, input: { system: string; user: string }) => ({
+    text: `echo:${input.system}|${input.user}`,
+  })),
   // KnowledgeBasesService.create() 的 1024 维探针会走到这里
   embed: jest.fn(async (_config: unknown, texts: string[]) => ({
     vectors: texts.map(() => Array.from({ length: 1024 }, () => 0.01)),
@@ -1611,6 +1615,115 @@ describe("M2 domain skeleton", () => {
         .delete(`/api/prompts/${list.body.items[0].id}`)
         .set(auth())
         .expect(409);
+    });
+  });
+
+  describe("prompts try-run (012 Story 7)", () => {
+    let replyPromptId: string;
+    let replyVersionId: string;
+    let errorVersionId: string;
+    let rewritePromptId: string;
+    let rewriteVersionId: string;
+    let llmModelId: string;
+
+    beforeAll(async () => {
+      const model = await request(app.getHttpServer())
+        .post("/api/models")
+        .set(auth())
+        .send({
+          type: "llm",
+          protocol: "openai_compat",
+          name: "tryrun-e2e-llm",
+          baseUrl: "https://api.example.com/v1",
+          apiKey: "sk-tryrune2e12345",
+        })
+        .expect(201);
+      llmModelId = model.body.id;
+
+      const reply = await request(app.getHttpServer())
+        .post("/api/prompts")
+        .set(auth())
+        .send({ name: "tryrun-reply", node: "reply" })
+        .expect(201);
+      replyPromptId = reply.body.id;
+      const v2 = await request(app.getHttpServer())
+        .post(`/api/prompts/${replyPromptId}/versions`)
+        .set(auth())
+        .send({ body: "依据 {retrievalContext} 回答 {query}" })
+        .expect(201);
+      replyVersionId = v2.body.id;
+      const bad = await request(app.getHttpServer())
+        .post(`/api/prompts/${replyPromptId}/versions`)
+        .set(auth())
+        .send({ body: "坏字段 {unknown_field_x}" })
+        .expect(201);
+      errorVersionId = bad.body.id;
+
+      const rewrite = await request(app.getHttpServer())
+        .post("/api/prompts")
+        .set(auth())
+        .send({ name: "tryrun-rewrite", node: "rewrite" })
+        .expect(201);
+      rewritePromptId = rewrite.body.id;
+      rewriteVersionId = rewrite.body.versions[0].id;
+    });
+
+    it("reply 真实调用：渲染不可变 body 为 system + query 作 user → mode:text", async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/prompts/${replyPromptId}/versions/${replyVersionId}/try-run`)
+        .set(auth())
+        .send({
+          modelId: llmModelId,
+          temperature: 0.5,
+          testVars: { query: "怎么退货", retrievalContext: "第二条 七天无理由" },
+        })
+        .expect(200);
+      expect(res.body).toEqual({
+        mode: "text",
+        text: "echo:依据 第二条 七天无理由 回答 怎么退货|怎么退货",
+      });
+    });
+
+    it("rewrite 节点 → unavailable/pending_node_runtime（不伪造结构化结果）", async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/prompts/${rewritePromptId}/versions/${rewriteVersionId}/try-run`)
+        .set(auth())
+        .send({ modelId: llmModelId, testVars: { query: "q" } })
+        .expect(200);
+      expect(res.body).toEqual({ mode: "unavailable", reason: "pending_node_runtime" });
+    });
+
+    it("存量编译错误的版本 → 422，不调用 provider", async () => {
+      await request(app.getHttpServer())
+        .post(`/api/prompts/${replyPromptId}/versions/${errorVersionId}/try-run`)
+        .set(auth())
+        .send({ modelId: llmModelId, testVars: { query: "q" } })
+        .expect(422);
+    });
+
+    it("refApplicationId 非空 → unavailable/application_context_not_available（009 门控）", async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/prompts/${replyPromptId}/versions/${replyVersionId}/try-run`)
+        .set(auth())
+        .send({ modelId: llmModelId, testVars: { query: "q" }, refApplicationId: "app-x" })
+        .expect(200);
+      expect(res.body).toEqual({
+        mode: "unavailable",
+        reason: "application_context_not_available",
+      });
+    });
+
+    it("temperature 越界（>2）→ 400；版本不属于该 Prompt → 404", async () => {
+      await request(app.getHttpServer())
+        .post(`/api/prompts/${replyPromptId}/versions/${replyVersionId}/try-run`)
+        .set(auth())
+        .send({ modelId: llmModelId, temperature: 3, testVars: { query: "q" } })
+        .expect(400);
+      await request(app.getHttpServer())
+        .post(`/api/prompts/${replyPromptId}/versions/${rewriteVersionId}/try-run`)
+        .set(auth())
+        .send({ modelId: llmModelId, testVars: { query: "q" } })
+        .expect(404);
     });
   });
 

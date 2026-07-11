@@ -41,6 +41,10 @@ const versionRow: PromptVersionRow = {
   createdAt: now,
 };
 
+// tryRun 之外的用例不触达 ModelsService——空壳即可（tryRun 专测见 prompts.tryrun.spec.ts）
+import { ModelsService } from "../src/modules/models/models.service";
+const fakeModels = {} as unknown as ModelsService;
+
 function makeRepo(
   overrides: Partial<Record<keyof PromptsRepository, jest.Mock>> = {},
 ): PromptsRepository {
@@ -72,7 +76,7 @@ describe("PromptsService · createPrompt（事务空 v1）", () => {
       createPromptWithV1,
       findVersions: jest.fn(async () => [{ ...versionRow, body: "" }]),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const res = await service.createPrompt({ name: "n", node: "reply" }, "actor@x");
     expect(createPromptWithV1).toHaveBeenCalledWith(
       { name: "n", node: "reply", updatedBy: "actor@x" },
@@ -94,7 +98,7 @@ describe("PromptsService · createPrompt（事务空 v1）", () => {
     const repo = makeRepo({
       createPromptWithV1: jest.fn().mockRejectedValue({ code: "23505" }),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await expect(service.createPrompt({ name: "n", node: "reply" }, "a@x")).rejects.toBeInstanceOf(
       ConflictException,
     );
@@ -108,7 +112,7 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
       findVersions: jest.fn(async () => [versionRow]),
       insertVersion,
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const res = await service.createVersion("p1", { body: "{oops_unknown}" }, "actor@x");
     const inserted = insertVersion.mock.calls[0][0];
     expect(inserted.compileStatus).toBe("has_errors");
@@ -125,7 +129,7 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
       ]),
       insertVersion,
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const res = await service.createVersion("p1", { body: "" }, "actor@x");
     expect(insertVersion.mock.calls[0][0].version).toBe(4);
     expect(insertVersion.mock.calls[0][0].compileStatus).toBe("ok");
@@ -138,7 +142,7 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
       findVersions: jest.fn(async () => [versionRow]),
       insertVersion,
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await service.createVersion("p1", { body: "b {query}" }, "actor@x");
     expect(insertVersion.mock.calls[0][1]).toBe("actor@x");
   });
@@ -150,7 +154,7 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
       findVersions: jest.fn(async () => [versionRow]),
       insertVersion,
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await service.createVersion("p1", { body: "b", sourceVersionId: "pv1" }, "actor@x");
     expect(insertVersion.mock.calls[0][0].contractVersion).toBe(7);
   });
@@ -159,7 +163,7 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
     const repo = makeRepo({
       findVersionById: jest.fn(async () => ({ ...versionRow, promptId: "other" })),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await expect(
       service.createVersion("p1", { body: "b", sourceVersionId: "pvX" }, "a@x"),
     ).rejects.toBeInstanceOf(BadRequestException);
@@ -174,7 +178,7 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
         .mockRejectedValueOnce(wrapped)
         .mockResolvedValueOnce({ ...versionRow, version: 2 }),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const res = await service.createVersion("p1", { body: "b" }, "actor@x");
     expect(repo.insertVersion).toHaveBeenCalledTimes(2);
     expect(res.version).toBe(2);
@@ -185,7 +189,7 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
       findVersions: jest.fn(async () => [versionRow]),
       insertVersion: jest.fn().mockRejectedValue({ code: "23505" }),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await expect(service.createVersion("p1", { body: "b" }, "a@x")).rejects.toBeInstanceOf(
       ConflictException,
     );
@@ -195,7 +199,7 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
       findVersions: jest.fn(async () => []),
       insertVersion: jest.fn().mockRejectedValue(new Error("boom")),
     });
-    const service2 = new PromptsService(repo2);
+    const service2 = new PromptsService(repo2, fakeModels);
     await expect(service2.createVersion("p1", { body: "b" }, "a@x")).rejects.toThrow("boom");
     expect(repo2.insertVersion).toHaveBeenCalledTimes(1);
   });
@@ -219,7 +223,7 @@ describe("PromptsService · 详情与版本列表", () => {
         versionCount: 2,
       })),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const res = await service.getDetail("p1");
     expect(res.latestVersion).toBe(2);
     expect(res.tags).toEqual(["production"]);
@@ -231,7 +235,7 @@ describe("PromptsService · 详情与版本列表", () => {
 
   it("getDetail 不存在 → NotFoundException", async () => {
     const repo = makeRepo({ findPromptById: jest.fn(async () => undefined) });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await expect(service.getDetail("nope")).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -245,7 +249,7 @@ describe("PromptsService · 详情与版本列表", () => {
         },
       ]),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const list = await service.listVersions("p1");
     expect(list[0].compileStatus).toBe("has_errors");
     expect(list[0].compileErrors[0].code).toBe("UNKNOWN_VARIABLE");
@@ -266,7 +270,7 @@ describe("PromptsService · list（最新版本摘要 + 批量标签）", () => 
       })),
       findTagsByVersionIds,
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const res = await service.list({ page: 1, pageSize: 10 });
     expect(findTagsByVersionIds).toHaveBeenCalledWith(["pv9"]);
     expect(res.items[0].latestVersion).toBe(7);
@@ -286,7 +290,7 @@ describe("PromptsService · 标签移动/摘除", () => {
         { name: "production", versionId: "pv1", version: 1 },
       ]),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const res = await service.moveTag("p1", "production", "pv1", "actor@x");
     expect(upsertTag).toHaveBeenCalledWith("p1", "pv1", "production", "actor@x");
     expect(res).toEqual([{ name: "production", versionId: "pv1", version: 1 }]);
@@ -298,7 +302,7 @@ describe("PromptsService · 标签移动/摘除", () => {
       findVersionById: jest.fn(async () => ({ ...versionRow, promptId: "other" })),
       upsertTag,
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await expect(service.moveTag("p1", "t", "pv1", "a@x")).rejects.toBeInstanceOf(
       NotFoundException,
     );
@@ -310,7 +314,7 @@ describe("PromptsService · 标签移动/摘除", () => {
       findVersionById: jest.fn(async () => versionRow),
       upsertTag: jest.fn().mockRejectedValue({ code: "23503" }),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await expect(service.moveTag("p1", "t", "pv1", "a@x")).rejects.toBeInstanceOf(
       NotFoundException,
     );
@@ -319,12 +323,12 @@ describe("PromptsService · 标签移动/摘除", () => {
   it("removeTag：入参归一小写后删除；0 行 → NotFoundException", async () => {
     const deleteTag = jest.fn(async () => 1);
     const repo = makeRepo({ deleteTag });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await service.removeTag("p1", "PRODUCTION");
     expect(deleteTag).toHaveBeenCalledWith("p1", "production");
 
     const repo2 = makeRepo({ deleteTag: jest.fn(async () => 0) });
-    const service2 = new PromptsService(repo2);
+    const service2 = new PromptsService(repo2, fakeModels);
     await expect(service2.removeTag("p1", "nope")).rejects.toBeInstanceOf(NotFoundException);
   });
 });
@@ -352,7 +356,7 @@ describe("PromptsService · 节点全版本候选", () => {
       ]),
       findTagsByVersionIds: jest.fn(async () => [{ promptVersionId: "pv2", name: "production" }]),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     const res = await service.nodeVersionCandidates("reply");
     expect(res).toHaveLength(2);
     expect(res[0].tags).toEqual(["production"]);
@@ -371,26 +375,26 @@ describe("PromptsService · 删除与跨域元数据", () => {
         throw fkError;
       }),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     await expect(service.delete("p1")).rejects.toBeInstanceOf(ConflictException);
   });
 
   it("delete：不存在 → 404；非 FK 错误原样抛", async () => {
     const repo = makeRepo({ findPromptById: jest.fn(async () => undefined) });
-    await expect(new PromptsService(repo).delete("p1")).rejects.toBeInstanceOf(NotFoundException);
+    await expect(new PromptsService(repo, fakeModels).delete("p1")).rejects.toBeInstanceOf(NotFoundException);
 
     const repo2 = makeRepo({
       deletePrompt: jest.fn(async () => {
         throw new Error("boom");
       }),
     });
-    await expect(new PromptsService(repo2).delete("p1")).rejects.toThrow("boom");
+    await expect(new PromptsService(repo2, fakeModels).delete("p1")).rejects.toThrow("boom");
   });
 
   it("delete：无「已发布不可删」语义——正常删除直达 repo", async () => {
     const deletePrompt = jest.fn(async () => undefined);
     const repo = makeRepo({ deletePrompt });
-    await new PromptsService(repo).delete("p1");
+    await new PromptsService(repo, fakeModels).delete("p1");
     expect(deletePrompt).toHaveBeenCalledWith("p1");
   });
 
@@ -400,7 +404,7 @@ describe("PromptsService · 删除与跨域元数据", () => {
         id === "pv1" ? { ...versionRow, version: 5 } : undefined,
       ),
     });
-    const service = new PromptsService(repo);
+    const service = new PromptsService(repo, fakeModels);
     expect(await service.getVersionMeta("pv1")).toEqual({
       promptId: "p1",
       node: "reply",

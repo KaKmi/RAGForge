@@ -132,3 +132,47 @@ export type PromptNodeVersionCandidate = z.infer<typeof PromptNodeVersionCandida
 
 export const PromptNodeVersionListResponseSchema = z.array(PromptNodeVersionCandidateSchema);
 export type PromptNodeVersionListResponse = z.infer<typeof PromptNodeVersionListResponseSchema>;
+
+// —— 试运行（012 §6，分阶段能力契约）——
+// M6 阶段：reply/fallback 走真实模型调用返回 text；rewrite/intent 返回
+// unavailable/pending_node_runtime（011 落地后升级 structured，联合形状预留不再破坏性变更）。
+// 支持协议矩阵（drill 收口）：当前全部三种 LLM 协议；其余协议返回 unavailable/unsupported_protocol。
+export const TRY_RUN_CHAT_PROTOCOLS = ["openai_compat", "anthropic", "gemini"] as const;
+
+export const TryRunTestVarsSchema = z.object({
+  query: z.string(),
+  history: z.string().optional(),
+  retrievalContext: z.string().optional(),
+  reason: z.string().optional(),
+});
+export type TryRunTestVars = z.infer<typeof TryRunTestVarsSchema>;
+
+export const TryRunPromptRequestSchema = z.object({
+  modelId: z.string().min(1),
+  /** 覆盖模型存量默认值，仅影响本次试跑 */
+  temperature: z.number().min(0).max(2).optional(),
+  testVars: TryRunTestVarsSchema,
+  /** 012 阶段依赖门控：非空即返回 unavailable/application_context_not_available（009 落地后启用） */
+  refApplicationId: z.string().optional(),
+});
+export type TryRunPromptRequest = z.infer<typeof TryRunPromptRequestSchema>;
+
+export const TryRunUnavailableReasonSchema = z.enum([
+  "pending_node_runtime",
+  "unsupported_protocol",
+  "application_context_not_available",
+]);
+export type TryRunUnavailableReason = z.infer<typeof TryRunUnavailableReasonSchema>;
+
+export const TryRunResultSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("text"), text: z.string() }),
+  z.object({ mode: z.literal("unavailable"), reason: TryRunUnavailableReasonSchema }),
+  // 011 落地后启用：结构化字段 + 校验步骤 + 是否触发 fallback
+  z.object({
+    mode: z.literal("structured"),
+    fields: z.record(z.string(), z.unknown()),
+    validateSteps: z.array(z.unknown()),
+    fallbackUsed: z.boolean(),
+  }),
+]);
+export type TryRunResult = z.infer<typeof TryRunResultSchema>;
