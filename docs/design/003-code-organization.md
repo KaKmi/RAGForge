@@ -124,6 +124,14 @@ rag-service/
 - `apps/backend/src/modules/node-runtime/executor/`：调用 `ModelProviderPort` structured output、归一化、Zod/动态校验、修复与 Fallback。
 - `node-runtime` 不依赖 `prompts`、`applications`、`chat`、knowledge-bases 或 retrieval；调用方传入固定 PromptVersion body、modelId、modelParams、samples 和中性 RuntimeContext，避免循环依赖。
 - `prompts` 继续是 persistence 叶子；Prompt 页面直接调用 node-runtime preview API，后端 prompts 模块不反向依赖执行层。
+  2026-07-11（M8.0 落地）：实现阶段发现按此约束需要新端点 + 前端改调用路径，
+  与 012 已实现并过 QA 的 try-run 端点（`POST /api/prompts/:id/versions/:version/
+  try-run`，为避免二次破坏性改动而设计了 tagged union 响应形状）冲突，用户拍板
+  （`/ship:design` AskUserQuestion）改为窄范围例外：`prompts.service.tryRun()`
+  内部依赖 `NodeRuntimeService`（`prompts → node-runtime`），仅限单节点执行转发，
+  不做 repository/数据查询访问，不产生依赖环（node-runtime 仍不反向依赖
+  prompts，上一条约束不变）。理由与决策记录见
+  `.ship/tasks/m80-node-runtime/plan/spec.md` Investigation Findings。
 - `prompt_versions.contract_version` 固定 Contract；`@codecrush/contracts` 只承载公共字段/输出 DTO、编译错误与预览 API schema，不承载固定 System、Fallback 函数或模型运行时。
 
 ### 模块依赖分层(代码/运行时 import 依赖，`A → B` = A 依赖 B)
@@ -154,6 +162,7 @@ rag-service/
 - `documents` → `knowledge-bases`、`storage`、`queue`
 - `knowledge-bases` → `models`
 - `models` / `prompts` / `chunks` → 无域依赖(叶子),仅 `persistence`
+  （`prompts` 例外：见上方 M8.0 补充说明，`prompts → node-runtime` 的窄范围转发依赖）
 - `auth` → `users`、`config`(横切:全局 guard,别的模块不 import 它;@Public()/principal 类型在 platform/security)
 - `users` → `persistence`(叶子;user 实体归属地,供 auth 校验凭据、未来 conversations.user_id 外键引用)
 - `traces` → `chunks`(读正文) + ClickHouse 读客户端;**与 `chat` 零代码依赖**

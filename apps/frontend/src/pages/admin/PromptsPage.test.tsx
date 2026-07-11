@@ -367,13 +367,46 @@ describe("Prompt 详情 · 试运行（012 Story 7）", () => {
     expect(await screen.findByTestId("try-run-output")).toHaveTextContent("重试成功");
   });
 
-  it("rewrite 节点：展示「结构化预览暂不可用」，无运行控件", async () => {
+  it("mode:'structured' 渲染结构化字段与校验步骤（不再显示暂不可用，M8.0）", async () => {
+    mocked.tryRunPromptVersion.mockResolvedValue({
+      mode: "structured",
+      fields: { rewrittenQuery: "改写后的问题", keywords: ["退款"] },
+      validateSteps: [
+        { step: "input", ok: true },
+        { step: "output_schema", ok: true },
+      ],
+      fallbackUsed: false,
+    });
+    renderRoutes("/admin/prompts/p1");
+    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+      target: { value: "怎么退货" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /运行 v2/ }));
+    const output = await screen.findByTestId("try-run-output");
+    expect(output).toHaveTextContent("rewrittenQuery");
+    expect(output).toHaveTextContent("改写后的问题");
+    expect(screen.getByText("output_schema")).toBeInTheDocument();
+    expect(screen.queryByText("本次试运行不可用")).not.toBeInTheDocument();
+  });
+
+  it("rewrite 节点：闸门拆除后展示真实运行控件与结构化结果（替换旧「暂不可用」用例，M8.0）", async () => {
     mocked.getPromptDetail.mockResolvedValue(
       makeDetail({ node: "rewrite", versions: [makeVersion({ id: "pv1", body: "改写 {query}" })] }),
     );
+    mocked.tryRunPromptVersion.mockResolvedValue({
+      mode: "structured",
+      fields: { rewrittenQuery: "改写后的问题", keywords: [] },
+      validateSteps: [{ step: "input", ok: true }],
+      fallbackUsed: false,
+    });
     renderRoutes("/admin/prompts/p1");
-    expect(await screen.findByText("结构化预览暂不可用")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^运行/ })).not.toBeInTheDocument();
+    // 闸门拆除前这条会直接失败：找不到「用户问题」输入框，只有「结构化预览暂不可用」
+    expect(screen.queryByText("结构化预览暂不可用")).not.toBeInTheDocument();
+    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+      target: { value: "怎么退货" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^运行/ }));
+    expect(await screen.findByTestId("try-run-output")).toHaveTextContent("改写后的问题");
   });
 
   it("无兼容模型（协议不支持/无 llm）：警示且无运行控件", async () => {

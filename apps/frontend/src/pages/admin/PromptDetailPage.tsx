@@ -74,7 +74,8 @@ export default function PromptDetailPage() {
   const [tagErr, setTagErr] = useState("");
   const [tagBusy, setTagBusy] = useState(false);
 
-  // 试运行（012 §6）：真实模型调用，仅 reply/fallback 开放；rewrite/intent 待 011
+  // 试运行（012 §6 + M8.0）：四节点均真实调用——reply/fallback 走 mode:'text'，
+  // rewrite/intent 走 mode:'structured'，均经统一 NodeRuntime 执行路径
   const [models, setModels] = useState<ModelProvider[]>([]);
   const [tryModelId, setTryModelId] = useState<string>("");
   const [tryTemp, setTryTemp] = useState(0.7);
@@ -551,15 +552,7 @@ export default function PromptDetailPage() {
               · 只跑这一个节点
             </span>
           </div>
-          {node === "rewrite" || node === "intent" ? (
-            // 011 未落地：结构化预览不可用，不展示可运行状态（Invariant 4，不伪造）
-            <Alert
-              type="info"
-              showIcon
-              message="结构化预览暂不可用"
-              description="该节点的试运行需要结构化校验（节点运行时），待 M8.0 上线后开放。"
-            />
-          ) : models.length === 0 ? (
+          {models.length === 0 ? (
             <Alert
               type="warning"
               showIcon
@@ -693,9 +686,51 @@ export default function PromptDetailPage() {
                       ? "参照应用带出参数的能力待应用管理（009）上线。"
                       : runResult.reason === "unsupported_protocol"
                         ? "所选模型的协议暂不支持试运行。"
-                        : "该节点的结构化预览待 M8.0 上线。"
+                        : "该节点暂时无法试运行，请稍后重试或联系管理员。"
                   }
                 />
+              )}
+              {runResult?.mode === "structured" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <span style={{ fontSize: 12, color: "rgba(0,0,0,.55)" }}>结构化字段</span>
+                  <div
+                    data-testid="try-run-output"
+                    style={{
+                      border: "1px solid #f0f0f0",
+                      borderRadius: 6,
+                      padding: 12,
+                      background: "#fafafa",
+                    }}
+                  >
+                    {Object.entries(runResult.fields).map(([k, v]) => (
+                      <div key={k} style={{ marginBottom: 4 }}>
+                        <span style={{ color: "rgba(0,0,0,.45)" }}>{k}：</span>
+                        <span>{typeof v === "string" ? v : JSON.stringify(v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <span style={{ fontSize: 12, color: "rgba(0,0,0,.55)" }}>校验步骤</span>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {runResult.validateSteps.map((s, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          fontSize: 12,
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          background: s.ok ? "#f6ffed" : "#fff2f0",
+                          color: s.ok ? "#52c41a" : "#ff4d4f",
+                          border: `1px solid ${s.ok ? "#b7eb8f" : "#ffccc7"}`,
+                        }}
+                      >
+                        {s.step}
+                      </span>
+                    ))}
+                  </div>
+                  {runResult.fallbackUsed && (
+                    <Alert type="warning" showIcon message="本次结果为 Fallback 降级输出，未通过模型结构化校验" />
+                  )}
+                </div>
               )}
             </>
           )}
