@@ -7,7 +7,7 @@ const NAV_LABELS = [
   "模型接入",
   "知识库",
   "Prompt 管理",
-  "Agent 管理",
+  "应用管理",
   "检索测试",
   "Trace 追踪",
   "知识缺口",
@@ -58,6 +58,8 @@ it("renders admin sider with brand, grouped nav (10 items + 3 group headers) whe
   for (const group of NAV_GROUPS) {
     expect(screen.getByText(group)).toBeInTheDocument();
   }
+  // M7a：导航入口由「Agent 管理」替换为「应用管理」（旧 /admin/agents 仅保留可直达）
+  expect(screen.queryByText("Agent 管理")).not.toBeInTheDocument();
 });
 
 it("renders GapsPage shell on /admin/gaps (数据飞轮壳页)", async () => {
