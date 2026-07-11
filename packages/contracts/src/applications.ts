@@ -115,6 +115,7 @@ export const UpdateApplicationRequestSchema = z.strictObject({
 export type UpdateApplicationRequest = z.infer<typeof UpdateApplicationRequestSchema>;
 
 export const PromptUsageQuerySchema = z.strictObject({ promptId: z.string().min(1) });
+export type PromptUsageQuery = z.infer<typeof PromptUsageQuerySchema>;
 export const PromptUsageEntrySchema = z.strictObject({
   promptVersionId: z.string().min(1),
   promptVersion: z.number().int().positive(),
