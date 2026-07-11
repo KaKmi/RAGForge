@@ -27,6 +27,10 @@ describe("REWRITE_CONTRACT", () => {
   it("inputSchema 拒绝空 query", () => {
     expect(REWRITE_CONTRACT.inputSchema.safeParse({ query: "", history: "" }).success).toBe(false);
   });
+  it("reservedDataSchema 接受调用方传入的共享 RuntimeContext 多余字段（如 preview），不因非 .strict() 拒绝（review round 2）", () => {
+    const check = REWRITE_CONTRACT.reservedDataSchema.safeParse({ preview: true });
+    expect(check.success).toBe(true);
+  });
 });
 
 // review round 1：原测试用 toEqual 对比硬编码字面量，测不出"复用同一份表 vs
@@ -88,6 +92,9 @@ describe("REPLY_CONTRACT / FALLBACK_CONTRACT", () => {
   it("fallback 节点 runtimeMode 是 stream 且标记 last:true", () => {
     expect(FALLBACK_CONTRACT.runtimeMode).toBe("stream");
     expect(FALLBACK_CONTRACT.last).toBe(true);
+  });
+  it("fallback 节点 reservedDataSchema 同样接受共享 RuntimeContext 多余字段（review round 2）", () => {
+    expect(FALLBACK_CONTRACT.reservedDataSchema.safeParse({ preview: true }).success).toBe(true);
   });
 });
 

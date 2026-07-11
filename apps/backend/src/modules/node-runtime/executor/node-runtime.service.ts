@@ -12,7 +12,7 @@ import { normalizeStructuredOutput } from "./normalize";
 import type { RuntimeContext } from "../compiler/runtime-context";
 
 export interface ValidateStep {
-  step: "input" | "output_schema" | "extra_validate" | "repair" | "fallback";
+  step: "input" | "reserved" | "output_schema" | "extra_validate" | "repair" | "fallback";
   ok: boolean;
   issues?: string[];
 }
@@ -113,7 +113,7 @@ export class NodeRuntimeService {
 
     const reservedCheck = contract.reservedDataSchema.safeParse(reserved);
     steps.push({
-      step: "input",
+      step: "reserved",
       ok: reservedCheck.success,
       issues: reservedCheck.success ? undefined : reservedCheck.error.issues.map((i) => i.message),
     });

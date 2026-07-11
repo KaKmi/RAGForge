@@ -104,6 +104,29 @@ describe("NodeRuntimeService.executeStructured · reservedDataSchema 校验（re
     expect(res.output).toEqual({ intent: "unknown", routeIds: [], confidence: 0 });
     expect(chat).not.toHaveBeenCalled();
   });
+
+  it("rewrite 节点：reserved 携带共享 RuntimeContext 的额外字段（如 preview）不应被拒绝——真实模型必须被调用（review round 2 回归）", async () => {
+    const chat = jest.fn(async () => ({ content: '{"rewrittenQuery":"改写后","keywords":[]}' }));
+    const svc = makeService(chat);
+    const res = await svc.executeStructured(
+      "rewrite", 1, "{query}", "m1", { query: "q", history: "" }, { preview: true } as never,
+    );
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(res.fallbackUsed).toBe(false);
+    expect(res.output).toEqual({ rewrittenQuery: "改写后", keywords: [] });
+  });
+
+  it("input 校验失败与 reserved 校验失败在 validateSteps 里标记为不同的 step（review round 2）", async () => {
+    const chat = jest.fn();
+    const svc = makeService(chat);
+    const badInput = await svc.executeStructured("rewrite", 1, "{query}", "m1", { query: "", history: "" }, {});
+    expect(badInput.validateSteps.find((s) => !s.ok)?.step).toBe("input");
+
+    const badReserved = await svc.executeStructured(
+      "intent", 1, "{query}", "m1", { query: "q", history: "" }, {} as never,
+    );
+    expect(badReserved.validateSteps.find((s) => !s.ok)?.step).toBe("reserved");
+  });
 });
 
 describe("NodeRuntimeService.executeStructured · validateSteps 区分失败阶段（review round 1）", () => {

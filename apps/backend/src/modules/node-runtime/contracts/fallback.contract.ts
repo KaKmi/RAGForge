@@ -23,7 +23,9 @@ export const FALLBACK_CONTRACT: NodeContract<
   runtimeMode: "stream",
   last: true,
   inputSchema: InputSchema,
-  reservedDataSchema: z.object({}).strict(),
+  // review round 2：非 .strict()——同 rewrite.contract.ts 理由，调用方传入的是
+  // 共享 RuntimeContext，多余 key 应被安静 strip 而非拒绝整个调用。
+  reservedDataSchema: z.object({}),
   outputSchema: OutputSchema,
   templateFields: NODE_CONTRACTS.fallback.templateFields,
   systemInstructions:

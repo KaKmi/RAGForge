@@ -24,7 +24,11 @@ export const REWRITE_CONTRACT: NodeContract<
   runtimeMode: "structured",
   structuredMode: "json_schema",
   inputSchema: InputSchema,
-  reservedDataSchema: z.object({}).strict(),
+  // review round 2：非 .strict()——调用方传入的是共享 RuntimeContext（可能带
+  // preview/其它节点用的字段），本节点没有专属保留字段不代表 reserved 参数本身
+  // 必须是空对象；.strict() 会拒绝任何多余 key，导致真实模型调用被静默短路进
+  // fallback。Zod 默认 strip 模式会安静丢弃多余 key，语义正确。
+  reservedDataSchema: z.object({}),
   outputSchema: OutputSchema,
   templateFields: NODE_CONTRACTS.rewrite.templateFields,
   systemInstructions:
