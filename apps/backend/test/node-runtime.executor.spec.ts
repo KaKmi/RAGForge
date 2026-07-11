@@ -250,6 +250,43 @@ describe("NodeRuntimeService.streamText · reply/fallback", () => {
     expect(res.fallbackUsed).toBe(true);
     expect(res.text.length).toBeGreaterThan(0);
   });
+
+  it("reply：inputSchema 校验失败（缺必填字段）→ 直接 fallback，不调用 chatStream（review P2）", async () => {
+    const chatStream = jest.fn();
+    const svc = makeService(jest.fn(), chatStream);
+    const res = await svc.streamText(
+      "reply", 1, "{query}", "m1",
+      { query: "" } as never,
+      { citations: [] },
+    );
+    expect(chatStream).not.toHaveBeenCalled();
+    expect(res.fallbackUsed).toBe(true);
+    expect(res.text.length).toBeGreaterThan(0);
+  });
+
+  it("reply：input 为 null（越过 TS 类型的运行时调用方）→ 优雅降级 fallback，不抛未捕获异常（review P2）", async () => {
+    const chatStream = jest.fn();
+    const svc = makeService(jest.fn(), chatStream);
+    const res = await svc.streamText(
+      "reply", 1, "{query}", "m1",
+      null as never,
+      { citations: [] },
+    );
+    expect(chatStream).not.toHaveBeenCalled();
+    expect(res.fallbackUsed).toBe(true);
+  });
+
+  it("reply：reservedDataSchema 校验失败 → 直接 fallback，不调用 chatStream（review P2）", async () => {
+    const chatStream = jest.fn();
+    const svc = makeService(jest.fn(), chatStream);
+    const res = await svc.streamText(
+      "reply", 1, "{query}", "m1",
+      { query: "q", history: "", retrievalContext: "" },
+      { citations: "not-an-array" } as never,
+    );
+    expect(chatStream).not.toHaveBeenCalled();
+    expect(res.fallbackUsed).toBe(true);
+  });
 });
 
 describe("NodeRuntimeService.compileAndSample", () => {
@@ -315,5 +352,59 @@ describe("NodeRuntimeService.compileAndSample", () => {
     });
     expect(res.results).toHaveLength(1);
     expect(res.results[0].ok).toBe(true);
+  });
+
+  it("单样例基础设施失败（如未知模型 ID）不应中断整批——其余样例仍返回结果（review P2）", async () => {
+    const chat = jest.fn(async () => ({ content: '{"rewrittenQuery":"x","keywords":[]}' }));
+    const models = {
+      chat,
+      chatStream: jest.fn(),
+      get: jest.fn(async (id: string) => {
+        if (id === "bad-model") throw new Error("模型不存在");
+        return { id, protocol: "openai_compat", type: "llm" };
+      }),
+    } as unknown as ModelsService;
+    const svc = new NodeRuntimeService(models);
+    const res = await svc.compileAndSample({
+      node: "rewrite",
+      contractVersion: 1,
+      promptVersionId: "pv1",
+      promptBody: "{query}",
+      modelId: "bad-model",
+      modelParams: { temperature: 0.9, topP: 1 },
+      samples: [
+        { input: { query: "q1", history: "" }, runtimeContext: {} },
+        { input: { query: "q2", history: "" }, runtimeContext: {} },
+      ],
+    });
+    expect(res.ok).toBe(false);
+    expect(res.results).toHaveLength(2);
+    expect(res.results[0].ok).toBe(false);
+    expect(res.results[0].issues[0]).toMatchObject({ code: "INTERNAL_ERROR" });
+    expect(res.results[1].ok).toBe(false);
+  });
+
+  it("null 样例 input（越过 TS 类型的运行时调用方）不应抛未捕获异常中断整批（review P2）", async () => {
+    const chat = jest.fn(async () => ({ content: '{"rewrittenQuery":"x","keywords":[]}' }));
+    const svc = makeService(chat);
+    const res = await svc.compileAndSample({
+      node: "rewrite",
+      contractVersion: 1,
+      promptVersionId: "pv1",
+      promptBody: "{query}",
+      modelId: "m1",
+      modelParams: { temperature: 0.9, topP: 1 },
+      samples: [
+        { input: null, runtimeContext: {} },
+        { input: { query: "q2", history: "" }, runtimeContext: {} },
+      ],
+    });
+    expect(res.results).toHaveLength(2);
+    // rewrite 契约的 fallback(input) 本身会访问 input.query（对 null 抛 TypeError）——
+    // 这层未捕获异常被 compileAndSample 新增的 try/catch 隔离转成 INTERNAL_ERROR，
+    // 关键断言是：第二个样例的结果没有因第一个样例异常而丢失。
+    expect(res.results[0].ok).toBe(false);
+    expect(res.results[0].issues[0]).toMatchObject({ code: "INTERNAL_ERROR" });
+    expect(res.results[1].ok).toBe(true);
   });
 });

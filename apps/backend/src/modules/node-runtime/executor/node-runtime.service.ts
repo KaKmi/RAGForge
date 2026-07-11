@@ -246,6 +246,17 @@ export class NodeRuntimeService {
       return { text: contract.fallback(input, reserved).text, fallbackUsed: true };
     }
 
+    // review P2：streamText 此前对 input/reserved 零校验，直接把调用方的原始值传进
+    // assembleMessages()（Object.entries(input) 遇 null/undefined 抛未捕获 TypeError）。
+    // 与 executeStructured 对齐，同样两步校验失败即优雅降级为 fallback，不调用模型。
+    const inputCheck = contract.inputSchema.safeParse(input);
+    const reservedCheck = contract.reservedDataSchema.safeParse(reserved);
+    if (!inputCheck.success || !reservedCheck.success) {
+      return { text: contract.fallback(input, reserved).text, fallbackUsed: true };
+    }
+    const validInput = inputCheck.data;
+    const validReserved = reservedCheck.data;
+
     const model = await this.resolveModel(modelId);
 
     return withSpan(
@@ -261,7 +272,7 @@ export class NodeRuntimeService {
         },
       },
       async (span) => {
-        const messages = assembleMessages({ contract, promptBody, input, reserved });
+        const messages = assembleMessages({ contract, promptBody, input: validInput, reserved: validReserved });
         let text = "";
         try {
           const stream = await this.models.chatStream(modelId, messages, { temperature: opts?.temperature });
@@ -280,7 +291,7 @@ export class NodeRuntimeService {
         }
         if (text.length === 0) {
           span.setAttribute(RAG.FALLBACK_USED, true);
-          return { text: contract.fallback(input, reserved).text, fallbackUsed: true };
+          return { text: contract.fallback(validInput, validReserved).text, fallbackUsed: true };
         }
         span.setAttribute(RAG.FALLBACK_USED, false);
         return { text, fallbackUsed: false };
@@ -293,31 +304,44 @@ export class NodeRuntimeService {
     const results: NodeSampleResult["results"] = [];
     for (let i = 0; i < request.samples.length; i++) {
       const sample = request.samples[i];
-      if (request.node === "reply" || request.node === "fallback") {
-        const r = await this.streamText(
-          request.node,
-          request.contractVersion,
-          request.promptBody,
-          request.modelId,
-          sample.input as Record<string, unknown>,
-          sample.runtimeContext,
-          opts,
-        );
-        results.push({ sampleIndex: i, ok: !r.fallbackUsed, fallbackUsed: r.fallbackUsed, issues: [] });
-      } else {
-        const r = await this.executeStructured(
-          request.node,
-          request.contractVersion,
-          request.promptBody,
-          request.modelId,
-          sample.input as Record<string, unknown>,
-          sample.runtimeContext,
-          opts,
-        );
-        const issues = r.validateSteps.flatMap((s) =>
-          (s.issues ?? []).map((message) => ({ code: s.step.toUpperCase(), message })),
-        );
-        results.push({ sampleIndex: i, ok: !r.fallbackUsed, fallbackUsed: r.fallbackUsed, issues });
+      try {
+        if (request.node === "reply" || request.node === "fallback") {
+          const r = await this.streamText(
+            request.node,
+            request.contractVersion,
+            request.promptBody,
+            request.modelId,
+            sample.input as Record<string, unknown>,
+            sample.runtimeContext,
+            opts,
+          );
+          results.push({ sampleIndex: i, ok: !r.fallbackUsed, fallbackUsed: r.fallbackUsed, issues: [] });
+        } else {
+          const r = await this.executeStructured(
+            request.node,
+            request.contractVersion,
+            request.promptBody,
+            request.modelId,
+            sample.input as Record<string, unknown>,
+            sample.runtimeContext,
+            opts,
+          );
+          const issues = r.validateSteps.flatMap((s) =>
+            (s.issues ?? []).map((message) => ({ code: s.step.toUpperCase(), message })),
+          );
+          results.push({ sampleIndex: i, ok: !r.fallbackUsed, fallbackUsed: r.fallbackUsed, issues });
+        }
+      } catch (err) {
+        // review P2：单样例的基础设施失败（模型不存在/网络异常等，非业务校验失败）此前
+        // 未被捕获，会直接抛出中断整个批次，丢弃已聚合的其他样例结果。NodeSampleResult
+        // 的设计契约是"每个样例独立"，此处补齐隔离，让调用方拿到"21/22 通过，1 个失败：
+        // <原因>"而不是整批 unhandled rejection。
+        results.push({
+          sampleIndex: i,
+          ok: false,
+          fallbackUsed: false,
+          issues: [{ code: "INTERNAL_ERROR", message: err instanceof Error ? err.message : String(err) }],
+        });
       }
     }
     return { ok: results.every((r) => r.ok), results };
