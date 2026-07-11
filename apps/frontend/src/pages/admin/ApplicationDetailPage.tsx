@@ -297,11 +297,11 @@ export default function ApplicationDetailPage() {
     }
   };
 
-  const runChatTest = async () => {
-    if (!detail || !basedOnVersionId) return;
+  const runChatTest = async (versionId: string) => {
+    if (!detail || !versionId) return;
     setChatBusy(true);
     try {
-      const result = await tryApplicationVersionChat(detail.id, basedOnVersionId);
+      const result = await tryApplicationVersionChat(detail.id, versionId);
       setChatUnavailable(result.mode === "unavailable");
     } catch {
       setChatUnavailable(false);
@@ -703,7 +703,7 @@ export default function ApplicationDetailPage() {
           {/* 对话测试骨架 */}
           <div style={{ ...cardStyle, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: "rgba(0,0,0,.8)" }}>对话测试</div>
-            <Button block loading={chatBusy} onClick={() => void runChatTest()}>
+            <Button block loading={chatBusy} onClick={() => void runChatTest(basedOnVersionId)}>
               运行对话测试
             </Button>
             {chatUnavailable && (
@@ -766,7 +766,7 @@ export default function ApplicationDetailPage() {
                     onClick={() => {
                       loadVersionIntoEditor(v);
                       setHistoryOpen(false);
-                      void runChatTest();
+                      void runChatTest(v.id);
                     }}
                   >
                     对话测试
