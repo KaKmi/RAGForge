@@ -5,8 +5,18 @@ import type { KnowledgeBasesRepository } from "../src/modules/knowledge-bases/kn
 import type { ChunksRepository } from "../src/modules/chunks/chunks.repository";
 import type { BlobStore } from "../src/platform/storage/blob-store.port";
 import type { IngestionService } from "../src/modules/ingestion/ingestion.service";
+import { ProcessingRunsRepository } from "../src/modules/ingestion/processing-runs.repository";
+import {
+  PROCESSING_PROFILES,
+  ProfileRegistry,
+} from "../src/modules/ingestion/profiles/profile-registry";
+import type { AppConfigService } from "../src/platform/config/config.service";
 
-function makeDeps() {
+// 合法 magic bytes 的测试文件头（pdf=%PDF-、docx=PK zip）；markdown/text 任意文本。
+const PDF_BYTES = Buffer.from("%PDF-1.4\n%test");
+const DOCX_BYTES = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]);
+
+function makeDeps(processingProfilesEnabled = false) {
   const repo = {
     findByKb: jest.fn(async () => []),
     findById: jest.fn(),
@@ -16,6 +26,8 @@ function makeDeps() {
       metadata: {},
       lifecycle: [],
       chunkVersion: null,
+      profileOverrideId: null,
+      profileOverrideVersion: null,
       uploadedAt: new Date(),
       updatedAt: new Date(),
       ...row,
@@ -32,13 +44,17 @@ function makeDeps() {
     get: jest.fn(async () => Buffer.from("x")),
     delete: jest.fn(),
   };
-  const ingestion = { enqueue: jest.fn() };
+  const ingestion = { enqueue: jest.fn(), createRun: jest.fn() };
   const chunksRepo = {
     countByDocs: jest.fn(
       async () => [] as Array<{ docId: string; version: number; count: number }>,
     ),
   };
-  return { repo, kbRepo, blobStore, ingestion, chunksRepo };
+  const runsRepo = { findByDocument: jest.fn(async () => [] as unknown[]) };
+  const registry = new ProfileRegistry(structuredClone(PROCESSING_PROFILES));
+  // 默认 flag=false（legacy enqueue 路径）；flag=true 的 createRun 分流由专门用例覆盖。
+  const config = { processingProfilesEnabled } as unknown as AppConfigService;
+  return { repo, kbRepo, blobStore, ingestion, chunksRepo, runsRepo, registry, config };
 }
 
 function makeService(deps: ReturnType<typeof makeDeps>): DocumentsService {
@@ -48,6 +64,9 @@ function makeService(deps: ReturnType<typeof makeDeps>): DocumentsService {
     deps.chunksRepo as unknown as ChunksRepository,
     deps.blobStore,
     deps.ingestion as unknown as IngestionService,
+    deps.config,
+    deps.runsRepo as unknown as ProcessingRunsRepository,
+    deps.registry,
   );
 }
 
@@ -56,7 +75,7 @@ describe("DocumentsService.upload", () => {
     const deps = makeDeps();
     const svc = makeService(deps);
     const files = [
-      { originalname: "a.pdf", buffer: Buffer.from("x"), size: 3, mimetype: "application/pdf" },
+      { originalname: "a.pdf", buffer: PDF_BYTES, size: 3, mimetype: "application/pdf" },
     ];
     const docs = await svc.upload("kb1", files as never, { autoParse: true });
     expect(deps.blobStore.put).toHaveBeenCalledWith(
@@ -72,7 +91,7 @@ describe("DocumentsService.upload", () => {
     deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: 2 });
     const svc = makeService(deps);
     const files = [
-      { originalname: "a.pdf", buffer: Buffer.from("x"), size: 3, mimetype: "application/pdf" },
+      { originalname: "a.pdf", buffer: PDF_BYTES, size: 3, mimetype: "application/pdf" },
     ];
     await svc.upload("kb1", files as never, { autoParse: true });
     expect(deps.ingestion.enqueue).toHaveBeenCalledWith("d1", 2);
@@ -109,8 +128,8 @@ describe("DocumentsService.upload", () => {
     const deps = makeDeps();
     const svc = makeService(deps);
     const files = [
-      { originalname: "a.pdf", buffer: Buffer.from("x"), size: 1, mimetype: "application/pdf" },
-      { originalname: "b.docx", buffer: Buffer.from("y"), size: 1, mimetype: "application/msword" },
+      { originalname: "a.pdf", buffer: PDF_BYTES, size: 1, mimetype: "application/pdf" },
+      { originalname: "b.docx", buffer: DOCX_BYTES, size: 1, mimetype: "application/msword" },
     ];
     const docs = await svc.upload("kb1", files as never, { autoParse: false });
     expect(deps.blobStore.put).toHaveBeenCalledTimes(2);
@@ -122,7 +141,7 @@ describe("DocumentsService.upload", () => {
     deps.kbRepo.findById.mockResolvedValue(undefined);
     const svc = makeService(deps);
     const files = [
-      { originalname: "a.pdf", buffer: Buffer.from("x"), size: 1, mimetype: "application/pdf" },
+      { originalname: "a.pdf", buffer: PDF_BYTES, size: 1, mimetype: "application/pdf" },
     ];
     await expect(svc.upload("gone", files as never, { autoParse: false })).rejects.toThrow(
       NotFoundException,
@@ -135,7 +154,7 @@ describe("DocumentsService.upload", () => {
     const deps = makeDeps();
     const svc = makeService(deps);
     const files = [
-      { originalname: "good.pdf", buffer: Buffer.from("x"), size: 1, mimetype: "application/pdf" },
+      { originalname: "good.pdf", buffer: PDF_BYTES, size: 1, mimetype: "application/pdf" },
       {
         originalname: "bad.exe",
         buffer: Buffer.from("x"),
@@ -323,5 +342,138 @@ describe("DocumentsService 文件名编码与切片计数（QA 回归）", () =>
     expect(deps.chunksRepo.countByDocs).toHaveBeenCalledWith(["d1"]); // 未解析的 d2 不参与查询
     expect(docs.find((d) => d.id === "d1")?.chunksCount).toBe(7);
     expect(docs.find((d) => d.id === "d2")?.chunksCount).toBe(0);
+  });
+});
+
+describe("DocumentsService M4.1 Profile 覆盖 / magic bytes / Run 历史", () => {
+  it("upload 带合法 profile 覆盖 → 每个文档行写 profileOverride*，autoParse 经 createRun 入队", async () => {
+    const deps = makeDeps(true); // flag=true → createRun 分流
+    const svc = makeService(deps);
+    const files = [{ originalname: "a.pdf", buffer: PDF_BYTES, size: 1, mimetype: "application/pdf" }];
+    await svc.upload("kb1", files as never, { autoParse: true, profileId: "faq-v1", profileVersion: 1 });
+    expect(deps.repo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ profileOverrideId: "faq-v1", profileOverrideVersion: 1 }),
+    );
+    expect(deps.ingestion.createRun).toHaveBeenCalledWith("d1");
+    expect(deps.ingestion.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("upload 带未注册 profile → 400，整批无副作用", async () => {
+    const deps = makeDeps();
+    const svc = makeService(deps);
+    const files = [{ originalname: "a.pdf", buffer: PDF_BYTES, size: 1, mimetype: "application/pdf" }];
+    await expect(
+      svc.upload("kb1", files as never, { autoParse: true, profileId: "ghost", profileVersion: 9 }),
+    ).rejects.toThrow(BadRequestException);
+    expect(deps.blobStore.put).not.toHaveBeenCalled();
+    expect(deps.repo.insert).not.toHaveBeenCalled();
+  });
+
+  it("upload 半个 profile ref（只有 profileId）→ 400", async () => {
+    const deps = makeDeps();
+    const svc = makeService(deps);
+    const files = [{ originalname: "a.pdf", buffer: PDF_BYTES, size: 1, mimetype: "application/pdf" }];
+    await expect(
+      svc.upload("kb1", files as never, { autoParse: false, profileId: "faq-v1" }),
+    ).rejects.toThrow(BadRequestException);
+    expect(deps.repo.insert).not.toHaveBeenCalled();
+  });
+
+  it("magic bytes：.pdf 非 %PDF- 开头 → 400 整批拒绝", async () => {
+    const deps = makeDeps();
+    const svc = makeService(deps);
+    const files = [
+      { originalname: "fake.pdf", buffer: Buffer.from("<html>"), size: 6, mimetype: "application/pdf" },
+    ];
+    await expect(svc.upload("kb1", files as never, { autoParse: false })).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(deps.repo.insert).not.toHaveBeenCalled();
+  });
+
+  it("magic bytes：.docx 非 PK 头 → 400；.md/.txt 不查（任意文本合法）", async () => {
+    const deps = makeDeps();
+    const svc = makeService(deps);
+    await expect(
+      svc.upload(
+        "kb1",
+        [{ originalname: "fake.docx", buffer: Buffer.from("not zip"), size: 7, mimetype: "application/msword" }] as never,
+        { autoParse: false },
+      ),
+    ).rejects.toThrow(BadRequestException);
+    // markdown/text 任意内容放行
+    const ok = await svc.upload(
+      "kb1",
+      [{ originalname: "n.md", buffer: Buffer.from("anything"), size: 8, mimetype: "text/markdown" }] as never,
+      { autoParse: false },
+    );
+    expect(ok).toHaveLength(1);
+  });
+
+  it("triggerParse（flag=true）空 body → createRun 无 profileRef/retry", async () => {
+    const deps = makeDeps(true);
+    deps.repo.findById.mockResolvedValue({ id: "d1", kbId: "kb1", status: "ready", metadata: {}, lifecycle: [], chunkVersion: 1, uploadedAt: new Date(), updatedAt: new Date() });
+    await makeService(deps).triggerParse("d1", {});
+    expect(deps.ingestion.createRun).toHaveBeenCalledWith("d1", { retry: false, profileRef: undefined });
+  });
+
+  it("triggerParse（flag=true）带 ref → opts.profileRef；mode:'retry' → opts.retry=true", async () => {
+    const deps = makeDeps(true);
+    deps.repo.findById.mockResolvedValue({ id: "d1", kbId: "kb1", status: "failed", metadata: {}, lifecycle: [], chunkVersion: null, uploadedAt: new Date(), updatedAt: new Date() });
+    const svc = makeService(deps);
+    await svc.triggerParse("d1", { profileId: "faq-v1", profileVersion: 1 });
+    expect(deps.ingestion.createRun).toHaveBeenCalledWith("d1", {
+      retry: false,
+      profileRef: { profileId: "faq-v1", profileVersion: 1 },
+    });
+    await svc.triggerParse("d1", { mode: "retry" });
+    expect(deps.ingestion.createRun).toHaveBeenCalledWith("d1", { retry: true, profileRef: undefined });
+  });
+
+  it("getContent 返回 { text, markdown }，二者同值", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue({ id: "d1", parsedText: "# 标题\n正文" } as never);
+    const res = await makeService(deps).getContent("d1");
+    expect(res).toEqual({ documentId: "d1", text: "# 标题\n正文", markdown: "# 标题\n正文" });
+  });
+
+  it("listRuns 返回按 repo 顺序的 Run DTO（ISO 时间串，profileLabel 取自 snapshot.label）", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue({ id: "d1" } as never);
+    const created = new Date("2026-07-10T10:00:00.000Z");
+    deps.runsRepo.findByDocument.mockResolvedValue([
+      {
+        id: "run-1",
+        documentId: "d1",
+        targetVersion: 2,
+        profileId: "faq-v1",
+        profileVersion: 1,
+        profileSnapshot: { label: "FAQ 问答" },
+        parserEngine: "pdf-parse",
+        parserVersion: "2.4.5",
+        status: "succeeded",
+        warnings: [],
+        metrics: { pages: 3 },
+        error: null,
+        startedAt: created,
+        endedAt: created,
+        createdAt: created,
+      },
+    ] as never);
+    const runs = await makeService(deps).listRuns("d1");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: "run-1",
+      profileLabel: "FAQ 问答",
+      status: "succeeded",
+      createdAt: "2026-07-10T10:00:00.000Z",
+      startedAt: "2026-07-10T10:00:00.000Z",
+    });
+  });
+
+  it("listRuns 文档不存在 → 404", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(undefined);
+    await expect(makeService(deps).listRuns("gone")).rejects.toThrow(NotFoundException);
   });
 });

@@ -4,13 +4,15 @@
 
 | Category | # | Status | Name | Description | Last Modified | Path |
 |----------|---|--------|------|-------------|---------------|------|
-| design | 001 | draft | CodeCrushBot RAG 平台架构 | 通用 RAG 平台的系统架构：NestJS 薄编排 + Postgres/pgvector + OTel→Collector→ClickHouse 可观测，本地优先、阿里云就绪。 | 2026-07-08 | [001](docs/design/001-rag-platform-architecture.md) |
-| design | 002 | draft | RAG 平台实现路线图（模块级） | 按依赖排序的模块级实现路线图：地基→可观测→用户/骨架→可配置域→问答/追踪，逐波用 /ship:design 拆细 spec。 | 2026-07-08 | [002](docs/design/002-implementation-roadmap.md) |
-| design | 003 | draft | 代码组织与工程架构（M0） | monorepo 布局、NestJS 模块边界与依赖规则、端口/适配器、Zod 契约、Drizzle/ClickHouse 分工、docker-compose 与约定。 | 2026-07-05 | [003](docs/design/003-code-organization.md) |
+| design | 001 | draft | CodeCrushBot RAG 平台架构 | 通用 RAG 平台的系统架构：NestJS 薄编排 + Postgres/pgvector + OTel→Collector→ClickHouse 可观测，本地优先、阿里云就绪。 | 2026-07-10 | [001](docs/design/001-rag-platform-architecture.md) |
+| design | 002 | draft | RAG 平台实现路线图（模块级） | 按依赖排序的模块级实现路线图：地基→可观测→用户/骨架→可配置域→问答/追踪，逐波用 /ship:design 拆细 spec。 | 2026-07-10 | [002](docs/design/002-implementation-roadmap.md) |
+| design | 003 | draft | 代码组织与工程架构（M0） | monorepo 布局、NestJS 模块边界与依赖规则、端口/适配器、Zod 契约、Drizzle/ClickHouse 分工、docker-compose 与约定。 | 2026-07-10 | [003](docs/design/003-code-organization.md) |
 | design | 004 | draft | 轻量级 Trace 可观测（自研 Langfuse 式） | 自研轻量 Langfuse：Session>Trace>Observation 模型、OTLP 结束即写、大 payload offload、首期以 VIEW 读模型跑通功能，后续按需演进物化层；本版聚焦 RAG 节点。 | 2026-07-05 | [004](docs/design/004-trace-observability.md) |
 | design | 005 | draft | 用户/认证（M1） | M1 身份边界：users 叶子 + auth 横切、argon2id、JWT HS256、全局 default-deny guard；四条数据流图与失败模式。 | 2026-07-05 | [005](docs/design/005-user-auth.md) |
 | design | 006 | draft | M2 前后端页面骨架 | M2 把原型 15 屏 1:1 还原为 React+antd 路由化骨架 + NestJS 各域模块 skeleton + Zod 契约扩展 + OpenAPI 自动生成 + SSE 客户端骨架；mock 前端硬编码，真实逻辑 M3+ 按依赖填入。 | 2026-07-06 | [006](docs/design/006-m2-app-shell-skeleton.md) |
-| design | 007 | draft | M4 入库管线与知识库管理 | M4 设计：四阶段可插拔入库管线(解析→清洗→分块→向量化)、切片版本化蓝绿重建、BlobStore 本地卷、pg-boss 异步、切片删除制。 | 2026-07-08 | [007](docs/design/007-m4-ingestion-pipeline.md) |
+| design | 007 | draft | M4 入库管线与知识库管理 | M4 设计：四阶段可插拔入库管线(解析→清洗→分块→向量化)、切片版本化蓝绿重建、BlobStore 本地卷、pg-boss 异步、切片删除制。 | 2026-07-10 | [007](docs/design/007-m4-ingestion-pipeline.md) |
 | design | 008 | draft | M5 检索 | M5 设计：RetrieverPort 真实实现（pgvector 向量召回 + tsvector 关键词召回 + 加权融合 + 可选 rerank）与检索测试台。 | 2026-07-09 | [008](docs/design/008-m5-retrieval.md) |
-| design | 009 | current | M7 Agent 配置与管理 | M7 设计：agents/agent_config_versions/agent_config_version_kbs 三表版本化模型、复用 M6 promote() 范式、Eval 门槛硬编码占位待 M11 替换。 | 2026-07-09 | [009](docs/design/008-m7-agent-management.md) |
+| design | 008 | current | M7 Agent 配置与管理 | M7 设计：agents/agent_config_versions/agent_config_version_kbs 三表版本化模型、复用 M6 promote() 范式、Eval 门槛硬编码占位待 M11 替换。 | 2026-07-09 | [008](docs/design/008-m7-agent-management.md) |
+| design | 010 | draft | 文档处理 Profile 与结构化入库管线 | 用版本化 Profile 编排解析、清洗与分块，统一输出可溯源 Markdown，并支持 PDF 版面解析与 OCR。 | 2026-07-10 | [010](docs/design/010-document-processing-profiles.md) |
+| design | 011 | draft | Prompt 组装与 LLM 节点契约 | 固定 NodeContract，允许管理员编辑策略 Prompt，并以编译、激活门禁和运行时校验阻止非法输出进入编排。 | 2026-07-10 | [011](docs/design/011-prompt-assembly-node-contracts.md) |
 

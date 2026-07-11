@@ -107,6 +107,8 @@ const validKb = {
   status: "ready" as const,
   activeVersion: 1,
   buildingVersion: null,
+  processingProfileId: "general-v1",
+  processingProfileVersion: 1,
   updatedAt: "2026-07-08T00:00:00.000Z",
 };
 

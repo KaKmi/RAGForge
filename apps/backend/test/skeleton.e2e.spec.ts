@@ -72,6 +72,7 @@ import type { KnowledgeBaseRow } from "../src/modules/knowledge-bases/schema";
 import { DocumentsRepository } from "../src/modules/documents/documents.repository";
 import type { DocumentRow } from "../src/modules/documents/schema";
 import { ChunksRepository } from "../src/modules/chunks/chunks.repository";
+import { ProcessingRunsRepository } from "../src/modules/ingestion/processing-runs.repository";
 
 const SECRET = "test-secret-at-least-32-characters-long!!";
 const PRINCIPAL = { sub: "u1", email: "demo@codecrush.local" };
@@ -345,6 +346,28 @@ const inMemoryChunksRepo: Partial<ChunksRepository> = {
   searchByKeyword: async () => [],
 } as Partial<ChunksRepository>;
 
+// —— M4.1 ProcessingRunsRepository 内存实现（e2e 只验证接线与端点 smoke，无真库）——
+const inMemoryProcessingRuns = new Map<string, Record<string, unknown>>();
+let processingRunSeq = 0;
+const inMemoryProcessingRunsRepo: Partial<ProcessingRunsRepository> = {
+  insert: (async (row: Record<string, unknown>) => {
+    const id = `run-e2e-${++processingRunSeq}`;
+    const full = { id, status: "queued", createdAt: new Date(), startedAt: null, ...row };
+    inMemoryProcessingRuns.set(id, full);
+    return full;
+  }) as ProcessingRunsRepository["insert"],
+  findById: (async (id: string) => inMemoryProcessingRuns.get(id)) as ProcessingRunsRepository["findById"],
+  findByDocument: (async (docId: string) =>
+    [...inMemoryProcessingRuns.values()].filter(
+      (r) => r.documentId === docId,
+    )) as ProcessingRunsRepository["findByDocument"],
+  update: (async (id: string, patch: Record<string, unknown>) => {
+    const row = inMemoryProcessingRuns.get(id);
+    if (row) inMemoryProcessingRuns.set(id, { ...row, ...patch });
+    return inMemoryProcessingRuns.get(id);
+  }) as ProcessingRunsRepository["update"],
+};
+
 // —— M7 AgentsRepository 内存实现（DB-free，同上手写风格）——
 let agentSeq = 0;
 let agentVerSeq = 0;
@@ -508,6 +531,8 @@ describe("M2 domain skeleton", () => {
       .useValue(inMemoryDocsRepo)
       .overrideProvider(ChunksRepository)
       .useValue(inMemoryChunksRepo)
+      .overrideProvider(ProcessingRunsRepository)
+      .useValue(inMemoryProcessingRunsRepo)
       .overrideProvider(AgentsRepository)
       .useValue(inMemoryAgentsRepo)
       .overrideProvider(BLOB_STORE)
@@ -834,7 +859,7 @@ describe("M2 domain skeleton", () => {
         .expect(404);
     });
 
-    it("POST multipart（autoParse 默认开）→ 201 + queued + 幂等入队 opts", async () => {
+    it("POST multipart（autoParse 默认开，Profile 特性开）→ 201 + queued + 建 Run 超集入队", async () => {
       fakeQueue.publish.mockClear();
       const res = await request(app.getHttpServer())
         .post(`/api/knowledge-bases/${kbId}/documents`)
@@ -843,11 +868,18 @@ describe("M2 domain skeleton", () => {
         .expect(201);
       expect(res.body[0].status).toBe("queued");
       const doc = res.body[0];
+      // Profile 特性开启（默认）→ 走 createRun：payload 携带 processingRunId，singletonKey=runId（去重按 Run）。
       expect(fakeQueue.publish).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ documentId: doc.id }),
-        expect.objectContaining({ singletonKey: doc.id, retryLimit: 1 }),
+        expect.objectContaining({ documentId: doc.id, processingRunId: expect.any(String) }),
+        expect.objectContaining({ retryLimit: 1 }),
       );
+      const [, payload, opts] = fakeQueue.publish.mock.calls[0] as [
+        string,
+        { processingRunId: string },
+        { singletonKey: string },
+      ];
+      expect(opts.singletonKey).toBe(payload.processingRunId);
     });
 
     it("GET /documents?kbId= → 200 + schema", async () => {
@@ -859,14 +891,19 @@ describe("M2 domain skeleton", () => {
       for (const d of res.body) expect(() => DocumentSchema.parse(d)).not.toThrow();
     });
 
-    it("POST /documents/:id/parse → 202，触发入队；不存在 → 404", async () => {
+    it("POST /documents/:id/parse（空 body = 用当前方案重解析）→ 202，触发入队；不存在 → 404", async () => {
       fakeQueue.publish.mockClear();
       await request(app.getHttpServer())
         .post(`/api/documents/${docId}/parse`)
         .set(auth())
+        .send({})
         .expect(202);
       expect(fakeQueue.publish).toHaveBeenCalled();
-      await request(app.getHttpServer()).post("/api/documents/nope/parse").set(auth()).expect(404);
+      await request(app.getHttpServer())
+        .post("/api/documents/nope/parse")
+        .set(auth())
+        .send({})
+        .expect(404);
     });
 
     it("GET /documents/:id/lifecycle → 200 + schema（含 upload 完成项）", async () => {
@@ -887,13 +924,41 @@ describe("M2 domain skeleton", () => {
       expect(res.body.metadata.author).toBe("qa");
     });
 
-    it("GET /documents/:id/content → 200（未解析时 text 为空串）", async () => {
+    it("GET /documents/:id/content → 200（未解析时 text/markdown 为空串）", async () => {
       const res = await request(app.getHttpServer())
         .get(`/api/documents/${docId}/content`)
         .set(auth())
         .expect(200);
       expect(res.body.documentId).toBe(docId);
       expect(res.body.text).toBe("");
+      expect(res.body.markdown).toBe("");
+    });
+
+    it("GET /documents/:id/processing-runs → 200 数组；不存在文档 → 404", async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/documents/${docId}/processing-runs`)
+        .set(auth())
+        .expect(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      await request(app.getHttpServer())
+        .get("/api/documents/00000000-0000-0000-0000-000000000000/processing-runs")
+        .set(auth())
+        .expect(404);
+    });
+
+    it("GET /api/processing-profiles → 200 且方案数 ≥3（含 documentType 过滤）", async () => {
+      const res = await request(app.getHttpServer())
+        .get("/api/processing-profiles")
+        .set(auth())
+        .expect(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.length).toBeGreaterThanOrEqual(3);
+      expect(res.body[0]).toHaveProperty("label");
+      expect(res.body[0]).toHaveProperty("summary");
+      await request(app.getHttpServer())
+        .get("/api/processing-profiles?documentType=pdf")
+        .set(auth())
+        .expect(200);
     });
 
     it("DELETE /documents/:id → 204（blob 同删），再 GET lifecycle → 404", async () => {

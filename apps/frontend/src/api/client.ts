@@ -33,8 +33,17 @@ import {
   type DocumentListResponse,
   DocumentSchema,
   type Document,
+  type DocumentType,
   HealthResponseSchema,
   type HealthResponse,
+  ParseDocumentRequestSchema,
+  type ParseDocumentRequest,
+  ProcessingProfileListResponseSchema,
+  type ProcessingProfileDescriptor,
+  ProcessingRunListResponseSchema,
+  type ProcessingRun,
+  RebuildKnowledgeBaseRequestSchema,
+  type RebuildKnowledgeBaseRequest,
   KnowledgeBaseListResponseSchema,
   type KnowledgeBaseListResponse,
   KnowledgeBaseSchema,
@@ -256,6 +265,28 @@ export async function updateKnowledgeBase(
   return KnowledgeBaseSchema.parse(await resp.json());
 }
 
+// 显式重建（应用新默认方案到已有文档）：scope='inherited' 只重建继承默认的文档。202 返回 building 态 KB。
+export async function rebuildKnowledgeBase(
+  id: string,
+  req: RebuildKnowledgeBaseRequest,
+): Promise<KnowledgeBase> {
+  const resp = await apiFetch(`/api/knowledge-bases/${encodeURIComponent(id)}/rebuild`, {
+    method: "POST",
+    body: JSON.stringify(RebuildKnowledgeBaseRequestSchema.parse(req)),
+  });
+  if (!resp.ok) throw new Error(`rebuild failed: ${resp.status} ${resp.statusText}`);
+  return KnowledgeBaseSchema.parse(await resp.json());
+}
+
+// 处理方案目录（只读）：知识库/上传/重解析选择方案用。documentType 过滤仅返回支持该类型的方案。
+export const getProcessingProfiles = (
+  documentType?: DocumentType,
+): Promise<ProcessingProfileDescriptor[]> =>
+  getJson(
+    `/api/processing-profiles${documentType ? `?documentType=${encodeURIComponent(documentType)}` : ""}`,
+    ProcessingProfileListResponseSchema,
+  );
+
 // documents — 上传挂在知识库资源下；其余操作扁平挂在 /api/documents/:id 下
 export const getDocuments = (kbId: string): Promise<DocumentListResponse> =>
   getJson(`/api/documents?kbId=${encodeURIComponent(kbId)}`, DocumentListResponseSchema);
@@ -263,11 +294,15 @@ export const getDocuments = (kbId: string): Promise<DocumentListResponse> =>
 export async function uploadDocuments(
   kbId: string,
   files: File[],
-  opts: { autoParse: boolean },
+  opts: { autoParse: boolean; profile?: { profileId: string; profileVersion: number } },
 ): Promise<Document[]> {
   const form = new FormData();
   for (const f of files) form.append("files", f, f.name);
   form.append("autoParse", String(opts.autoParse));
+  if (opts.profile) {
+    form.append("profileId", opts.profile.profileId);
+    form.append("profileVersion", String(opts.profile.profileVersion));
+  }
   const resp = await apiFetch(`/api/knowledge-bases/${encodeURIComponent(kbId)}/documents`, {
     method: "POST",
     body: form,
@@ -277,13 +312,26 @@ export async function uploadDocuments(
   return (json as unknown[]).map((d) => DocumentSchema.parse(d));
 }
 
-export async function triggerParse(docId: string): Promise<Document> {
+// 空 body = 用当前有效方案重解析；{mode:"retry"} = 服务端复用最近失败 Run 快照；
+// {profileId,profileVersion} = 显式换方案（服务端写回文档 override）。
+export async function triggerParse(
+  docId: string,
+  req: ParseDocumentRequest = {},
+): Promise<Document> {
   const resp = await apiFetch(`/api/documents/${encodeURIComponent(docId)}/parse`, {
     method: "POST",
+    body: JSON.stringify(ParseDocumentRequestSchema.parse(req)),
   });
   if (!resp.ok) throw new Error(`parse trigger failed: ${resp.status} ${resp.statusText}`);
   return DocumentSchema.parse(await resp.json());
 }
+
+// 文档处理历史（Run 列表，createdAt desc）：生命周期抽屉「处理历史」区块用。
+export const getProcessingRuns = (docId: string): Promise<ProcessingRun[]> =>
+  getJson(
+    `/api/documents/${encodeURIComponent(docId)}/processing-runs`,
+    ProcessingRunListResponseSchema,
+  );
 
 export const getDocumentLifecycle = (docId: string): Promise<DocumentLifecycleResponse> =>
   getJson(`/api/documents/${encodeURIComponent(docId)}/lifecycle`, DocumentLifecycleResponseSchema);

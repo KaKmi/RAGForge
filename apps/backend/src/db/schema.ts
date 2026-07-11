@@ -11,5 +11,6 @@ export * from "../modules/prompts/schema";
 export * from "../modules/models/schema";
 export * from "../modules/knowledge-bases/schema";
 export * from "../modules/documents/schema";
+export * from "../modules/ingestion/schema";
 export * from "../modules/chunks/schema";
 export * from "../modules/agents/schema";

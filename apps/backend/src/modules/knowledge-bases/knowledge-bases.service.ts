@@ -1,19 +1,25 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
 import type {
+  ChunkTemplate,
   CreateKnowledgeBaseRequest,
   KnowledgeBase,
+  ProcessingProfileRef,
   UpdateKnowledgeBaseRequest,
 } from "@codecrush/contracts";
 import { KnowledgeBasesRepository } from "./knowledge-bases.repository";
 import { DocumentsRepository } from "../documents/documents.repository";
 import { ChunksRepository } from "../chunks/chunks.repository";
 import { ModelsService } from "../models/models.service";
-import { KbRebuildService } from "../ingestion/kb-rebuild.service";
+import { KbRebuildService, type RebuildScope } from "../ingestion/kb-rebuild.service";
+import { PROFILE_REGISTRY } from "../ingestion/ingestion.constants";
+import type { ProfileRegistry } from "../ingestion/profiles/profile-registry";
+import { chunkTemplateToProfileRef } from "../ingestion/profiles/profile-registry";
 import type { KnowledgeBaseRow } from "./schema";
 
 // 平台统一向量维度：探针在创建时强校验（010 全局约束）。
@@ -27,7 +33,32 @@ export class KnowledgeBasesService {
     private readonly chunksRepo: ChunksRepository,
     private readonly models: ModelsService,
     private readonly kbRebuild: KbRebuildService,
+    @Inject(PROFILE_REGISTRY) private readonly registry: ProfileRegistry,
   ) {}
+
+  // 迁移窗口解析：新前端送 processingProfile*，旧前端送 chunkTemplate；返回校验过的 ref + 反查的 chunkTemplate。
+  // 二者互斥/成对由契约层保证；此处 registry 校验存在性（未注册 → 400）。
+  private resolveProfile(
+    profileId: string | undefined,
+    profileVersion: number | undefined,
+    chunkTemplate: ChunkTemplate | undefined,
+  ): { ref: ProcessingProfileRef; chunkTemplate: ChunkTemplate } {
+    const ref: ProcessingProfileRef = profileId
+      ? { profileId, profileVersion: profileVersion! }
+      : chunkTemplateToProfileRef(chunkTemplate!);
+    const def = this.registry.get(ref.profileId, ref.profileVersion);
+    if (!def) {
+      throw new BadRequestException(
+        `[PROFILE_VERSION_UNAVAILABLE] 处理方案 ${ref.profileId}@${ref.profileVersion} 不可用`,
+      );
+    }
+    // 显式给 profile 时 chunkTemplate 恒由方案的 chunker 反写（不采信调用方同传的 chunkTemplate），
+    // 保证 defaultProfile* 与 chunkTemplate 始终一致（契约已拒绝二者同传，此处为纵深防御）。
+    return {
+      ref,
+      chunkTemplate: (profileId ? def.chunker.id : (chunkTemplate ?? def.chunker.id)) as ChunkTemplate,
+    };
+  }
 
   async list(): Promise<KnowledgeBase[]> {
     const rows = await this.repo.find();
@@ -73,10 +104,18 @@ export class KnowledgeBasesService {
     // 同时显式校验维度，兜住返回非 1024 维但未抛错的实现。
     await this.probeEmbeddingDimension(req.embeddingModelId);
 
+    // 迁移窗口：profile 或 chunkTemplate 至少其一（契约层保证）→ 双写 defaultProfile* + chunkTemplate。
+    const { ref, chunkTemplate } = this.resolveProfile(
+      req.processingProfileId,
+      req.processingProfileVersion,
+      req.chunkTemplate,
+    );
     const row = await this.repo.insert({
       name: req.name,
       desc: req.desc,
-      chunkTemplate: req.chunkTemplate,
+      chunkTemplate,
+      defaultProfileId: ref.profileId,
+      defaultProfileVersion: ref.profileVersion,
       embeddingModelId: req.embeddingModelId,
     });
     return this.toKnowledgeBase(row);
@@ -89,28 +128,67 @@ export class KnowledgeBasesService {
     }
 
     const existing = await this.mustFind(id);
+
+    // 新前端改默认 Profile：更新 defaultProfile* + 反写 chunkTemplate，但【不】触发重建
+    // （010 §选择5：改默认只影响未来 Run；应用到旧文档走显式 rebuild 端点）。
+    if (req.processingProfileId !== undefined) {
+      const changingProfile =
+        req.processingProfileId !== existing.defaultProfileId ||
+        req.processingProfileVersion !== existing.defaultProfileVersion;
+      if (changingProfile && existing.buildingVersion !== null) {
+        throw new ConflictException(`knowledge base ${id} 正在重建中，请等待完成后再修改处理方案`);
+      }
+      const { ref, chunkTemplate } = this.resolveProfile(
+        req.processingProfileId,
+        req.processingProfileVersion,
+        undefined,
+      );
+      const row = await this.repo.update(id, {
+        name: req.name,
+        desc: req.desc,
+        chunkTemplate,
+        defaultProfileId: ref.profileId,
+        defaultProfileVersion: ref.profileVersion,
+      });
+      if (!row) throw new NotFoundException(`knowledge base ${id} not found`);
+      return this.withCounts(row);
+    }
+
+    // 旧前端只改 chunkTemplate：双写 defaultProfile*（反查映射）+ 变更时自动全库重建（保留旧行为）。
     const changingTemplate =
       req.chunkTemplate !== undefined && req.chunkTemplate !== existing.chunkTemplate;
-
-    // 重建中再次改分块模板 → 409（buildingVersion 非空即在建）。
     if (changingTemplate && existing.buildingVersion !== null) {
       throw new ConflictException(`knowledge base ${id} 正在重建中，请等待完成后再修改分块模板`);
     }
 
+    const templatePatch =
+      req.chunkTemplate !== undefined
+        ? {
+            chunkTemplate: req.chunkTemplate,
+            defaultProfileId: chunkTemplateToProfileRef(req.chunkTemplate).profileId,
+            defaultProfileVersion: chunkTemplateToProfileRef(req.chunkTemplate).profileVersion,
+          }
+        : {};
     const row = await this.repo.update(id, {
       name: req.name,
       desc: req.desc,
-      chunkTemplate: req.chunkTemplate,
+      ...templatePatch,
     });
     if (!row) throw new NotFoundException(`knowledge base ${id} not found`);
 
-    // 改模板 → 触发异步蓝绿重建（startRebuild 只入队，不阻塞 HTTP），
-    // 重建将 kb 置 building；重新读取以返回 building 态。
+    // 改模板 → 触发异步蓝绿重建（startRebuild 只入队，不阻塞 HTTP），重建将 kb 置 building。
     if (changingTemplate) {
-      await this.kbRebuild.startRebuild(id);
+      await this.kbRebuild.startRebuild(id, "all");
       return this.withCounts(await this.mustFind(id));
     }
     return this.withCounts(row);
+  }
+
+  // 显式重建端点：把 KB 下（范围内）文档以新版本重新入库。scope='inherited' 只重建继承默认方案的文档。
+  async rebuild(id: string, scope: RebuildScope): Promise<KnowledgeBase> {
+    await this.mustFind(id);
+    await this.kbRebuild.startRebuild(id, scope);
+    return this.withCounts(await this.mustFind(id));
   }
 
   private async probeEmbeddingDimension(modelId: string): Promise<void> {
@@ -159,6 +237,8 @@ export class KnowledgeBasesService {
       status: row.status as "ready" | "building" | "failed",
       activeVersion: row.activeVersion,
       buildingVersion: row.buildingVersion,
+      processingProfileId: row.defaultProfileId,
+      processingProfileVersion: row.defaultProfileVersion,
       updatedAt: row.updatedAt.toISOString(),
     };
   }

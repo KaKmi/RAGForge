@@ -45,4 +45,7 @@ export class AppConfigService {
   get ingestionEmbedBatchSize(): number {
     return this.config.get("INGESTION_EMBED_BATCH_SIZE", { infer: true });
   }
+  get processingProfilesEnabled(): boolean {
+    return this.config.get("PROCESSING_PROFILES_ENABLED", { infer: true });
+  }
 }

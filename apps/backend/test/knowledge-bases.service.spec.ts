@@ -5,6 +5,10 @@ import type { DocumentsRepository } from "../src/modules/documents/documents.rep
 import type { ChunksRepository } from "../src/modules/chunks/chunks.repository";
 import type { ModelsService } from "../src/modules/models/models.service";
 import type { KbRebuildService } from "../src/modules/ingestion/kb-rebuild.service";
+import {
+  PROCESSING_PROFILES,
+  ProfileRegistry,
+} from "../src/modules/ingestion/profiles/profile-registry";
 import type { KnowledgeBaseRow } from "../src/modules/knowledge-bases/schema";
 
 function baseRow(overrides: Partial<KnowledgeBaseRow> = {}): KnowledgeBaseRow {
@@ -13,6 +17,8 @@ function baseRow(overrides: Partial<KnowledgeBaseRow> = {}): KnowledgeBaseRow {
     name: "kb",
     desc: "",
     chunkTemplate: "general",
+    defaultProfileId: "general-v1",
+    defaultProfileVersion: 1,
     embeddingModelId: "m1",
     status: "ready",
     activeVersion: 1,
@@ -46,7 +52,8 @@ function makeDeps() {
       async () => [] as Array<{ kbId: string; version: number; count: number }>,
     ),
   };
-  return { repo, models, kbRebuild, docsRepo, chunksRepo };
+  const registry = new ProfileRegistry(structuredClone(PROCESSING_PROFILES));
+  return { repo, models, kbRebuild, docsRepo, chunksRepo, registry };
 }
 
 function makeSvc(deps: ReturnType<typeof makeDeps>): KnowledgeBasesService {
@@ -56,6 +63,7 @@ function makeSvc(deps: ReturnType<typeof makeDeps>): KnowledgeBasesService {
     deps.chunksRepo as unknown as ChunksRepository,
     deps.models as unknown as ModelsService,
     deps.kbRebuild as unknown as KbRebuildService,
+    deps.registry,
   );
 }
 
@@ -120,12 +128,16 @@ describe("KnowledgeBasesService.update", () => {
     );
   });
 
-  it("改 chunkTemplate 触发 KbRebuildService.startRebuild", async () => {
+  it("改 chunkTemplate 触发 KbRebuildService.startRebuild(id,'all') + 双写 defaultProfile*", async () => {
     const deps = makeDeps();
     deps.repo.findById.mockResolvedValue(baseRow({ chunkTemplate: "general" }));
     deps.repo.update.mockResolvedValue(baseRow({ chunkTemplate: "qa" }));
     await makeSvc(deps).update("kb1", { chunkTemplate: "qa" });
-    expect(deps.kbRebuild.startRebuild).toHaveBeenCalledWith("kb1");
+    expect(deps.repo.update).toHaveBeenCalledWith(
+      "kb1",
+      expect.objectContaining({ chunkTemplate: "qa", defaultProfileId: "faq-v1", defaultProfileVersion: 1 }),
+    );
+    expect(deps.kbRebuild.startRebuild).toHaveBeenCalledWith("kb1", "all");
   });
 
   it("重建中再次改 chunkTemplate → 409，不再触发重建", async () => {
@@ -154,6 +166,100 @@ describe("KnowledgeBasesService.update", () => {
     deps.repo.update.mockResolvedValue(baseRow({ chunkTemplate: "general" }));
     await makeSvc(deps).update("kb1", { chunkTemplate: "general" });
     expect(deps.kbRebuild.startRebuild).not.toHaveBeenCalled();
+  });
+});
+
+describe("KnowledgeBasesService 迁移窗口矩阵", () => {
+  it("create 带 profile → 落 defaultProfile* 且反写 chunkTemplate=profile.chunker.id", async () => {
+    const deps = makeDeps();
+    await makeSvc(deps).create({
+      name: "x",
+      desc: "",
+      processingProfileId: "faq-v1",
+      processingProfileVersion: 1,
+      embeddingModelId: "m1",
+    } as never);
+    expect(deps.repo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultProfileId: "faq-v1",
+        defaultProfileVersion: 1,
+        chunkTemplate: "qa", // faq-v1.chunker.id
+      }),
+    );
+  });
+
+  it("create 只带 chunkTemplate（旧前端）→ 反查映射落 defaultProfile*（general→general-v1）", async () => {
+    const deps = makeDeps();
+    await makeSvc(deps).create({ name: "x", desc: "", chunkTemplate: "general", embeddingModelId: "m1" } as never);
+    expect(deps.repo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chunkTemplate: "general",
+        defaultProfileId: "general-v1",
+        defaultProfileVersion: 1,
+      }),
+    );
+  });
+
+  it("create 同传 chunkTemplate+profile（绕过契约的非 HTTP 路径）→ chunkTemplate 由 profile 反写，不采信调用方", async () => {
+    const deps = makeDeps();
+    await makeSvc(deps).create({
+      name: "x",
+      desc: "",
+      chunkTemplate: "general",
+      processingProfileId: "faq-v1",
+      processingProfileVersion: 1,
+      embeddingModelId: "m1",
+    } as never);
+    // 纵深防御：即便同传，落库 chunkTemplate 也取 faq-v1 的 chunker（qa），与 defaultProfile* 一致。
+    expect(deps.repo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ chunkTemplate: "qa", defaultProfileId: "faq-v1", defaultProfileVersion: 1 }),
+    );
+  });
+
+  it("create profile 未注册 → 400，不落库", async () => {
+    const deps = makeDeps();
+    await expect(
+      makeSvc(deps).create({
+        name: "x",
+        desc: "",
+        processingProfileId: "ghost",
+        processingProfileVersion: 9,
+        embeddingModelId: "m1",
+      } as never),
+    ).rejects.toThrow(BadRequestException);
+    expect(deps.repo.insert).not.toHaveBeenCalled();
+  });
+
+  it("PATCH 带 profile 且变更 → 更新 defaultProfile* + 反写 chunkTemplate，不调用 startRebuild", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(
+      baseRow({ defaultProfileId: "general-v1", defaultProfileVersion: 1, chunkTemplate: "general" }),
+    );
+    deps.repo.update.mockResolvedValue(baseRow({ chunkTemplate: "qa" }));
+    await makeSvc(deps).update("kb1", { processingProfileId: "faq-v1", processingProfileVersion: 1 } as never);
+    expect(deps.repo.update).toHaveBeenCalledWith(
+      "kb1",
+      expect.objectContaining({ defaultProfileId: "faq-v1", defaultProfileVersion: 1, chunkTemplate: "qa" }),
+    );
+    expect(deps.kbRebuild.startRebuild).not.toHaveBeenCalled();
+  });
+
+  it("PATCH 带 profile 但 KB 正在 building → 409", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(
+      baseRow({ defaultProfileId: "general-v1", defaultProfileVersion: 1, buildingVersion: 2, status: "building" }),
+    );
+    await expect(
+      makeSvc(deps).update("kb1", { processingProfileId: "faq-v1", processingProfileVersion: 1 } as never),
+    ).rejects.toThrow(ConflictException);
+    expect(deps.repo.update).not.toHaveBeenCalled();
+  });
+
+  it("rebuild(id, scope) → 透传 KbRebuildService.startRebuild(id, scope)", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(baseRow());
+    await makeSvc(deps).rebuild("kb1", "inherited");
+    expect(deps.kbRebuild.startRebuild).toHaveBeenCalledWith("kb1", "inherited");
   });
 });
 

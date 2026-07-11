@@ -22,6 +22,8 @@ export const documents = pgTable("documents", {
   metadata: jsonb("metadata").notNull().default({}).$type<Record<string, string>>(),
   status: text("status").notNull().default("pending"), // pending|queued|processing|failed|ready
   chunkVersion: integer("chunk_version"),
+  profileOverrideId: text("profile_override_id"),
+  profileOverrideVersion: integer("profile_override_version"),
   lifecycle: jsonb("lifecycle").notNull().default([]).$type<LifecycleStageRow[]>(),
   error: text("error"),
   uploadedAt: timestamp("uploaded_at").notNull().defaultNow(),

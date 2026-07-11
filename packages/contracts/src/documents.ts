@@ -25,6 +25,9 @@ export const DocumentSchema = z.object({
   chunkVersion: z.number().int().positive().nullable(),
   status: DocumentStatusSchema,
   metadata: z.record(z.string(), z.string()).default({}),
+  // 文档级 Profile 覆盖（M4.1）；为空继承知识库默认。
+  profileOverrideId: z.string().nullable().optional(),
+  profileOverrideVersion: z.number().int().positive().nullable().optional(),
   error: z.string().nullable().optional(),
   uploadedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -48,6 +51,8 @@ export type UpdateDocumentMetadataRequest = z.infer<typeof UpdateDocumentMetadat
 export const DocumentContentResponseSchema = z.object({
   documentId: z.string().min(1),
   text: z.string(),
+  // Canonical Markdown（M4.1）；迁移期与 text 同值，保留 text 兼容字段。
+  markdown: z.string().optional(),
 });
 export type DocumentContentResponse = z.infer<typeof DocumentContentResponseSchema>;
 

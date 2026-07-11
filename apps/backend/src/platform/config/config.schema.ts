@@ -15,5 +15,11 @@ export const envSchema = z.object({
   MODEL_API_KEY_ENCRYPTION_KEY: z.string().min(44),
   BLOB_STORE_PATH: z.string().default("./.data/blobs"),
   INGESTION_EMBED_BATCH_SIZE: z.coerce.number().int().positive().default(10),
+  // M4.1 文档处理 Profile 特性开关：默认开；置 "false" 回退 legacy chunkTemplate 入库路径
+  // （不建 Run、payload 无 processingRunId），供灰度/回滚。
+  PROCESSING_PROFILES_ENABLED: z
+    .string()
+    .default("true")
+    .transform((v) => v !== "false"),
 });
 export type Env = z.infer<typeof envSchema>;

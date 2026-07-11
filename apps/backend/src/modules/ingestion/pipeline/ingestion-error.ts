@@ -2,14 +2,24 @@
 // 前端原样展示即可读；代码可供后续检索/告警/重试策略按类归因。
 export type IngestionErrorCode =
   | "PARSE_FAILED" // 解析阶段失败（损坏文件、扫描件空文本等）
+  | "PARSE_EMPTY"
+  | "CLEAN_SUSPICIOUS"
+  | "CANONICAL_TOO_LARGE"
   | "CHUNK_EMPTY" // 分块后没有任何切片（内容为空/全空白）
+  | "CHUNK_OVERSIZED"
+  | "PROFILE_INVALID"
   | "EMBED_FAILED" // 向量化调用失败（上游模型服务错误）
   | "STORE_FAILED" // 切片入库（事务替换）失败
   | "INGEST_FAILED"; // 未归类的管线失败（兜底）
 
 const FRIENDLY: Record<IngestionErrorCode, string> = {
   PARSE_FAILED: "文档解析失败",
+  PARSE_EMPTY: "文档解析结果为空",
+  CLEAN_SUSPICIOUS: "清洗后正文异常减少",
+  CANONICAL_TOO_LARGE: "规范化文档超过处理上限",
   CHUNK_EMPTY: "解析结果为空，未产生任何切片",
+  CHUNK_OVERSIZED: "单个切片超过 token 上限",
+  PROFILE_INVALID: "处理方案引用了不可用组件",
   EMBED_FAILED: "向量化失败",
   STORE_FAILED: "切片入库失败",
   INGEST_FAILED: "入库处理失败",

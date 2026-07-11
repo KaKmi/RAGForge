@@ -13,10 +13,16 @@ import {
 } from "@nestjs/common";
 import { FilesInterceptor } from "@nestjs/platform-express";
 import { createZodDto } from "nestjs-zod";
-import { UpdateDocumentMetadataRequestSchema, type Document } from "@codecrush/contracts";
+import {
+  ParseDocumentRequestSchema,
+  UpdateDocumentMetadataRequestSchema,
+  type Document,
+  type ProcessingRun,
+} from "@codecrush/contracts";
 import { DocumentsService, type UploadedFileLike } from "./documents.service";
 
 class UpdateDocumentMetadataRequestDto extends createZodDto(UpdateDocumentMetadataRequestSchema) {}
+class ParseDocumentRequestDto extends createZodDto(ParseDocumentRequestSchema) {}
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB（Global Constraints）
 const MAX_FILES = 100;
@@ -40,15 +46,27 @@ export class DocumentsController {
     @Param("kbId") kbId: string,
     @UploadedFiles() files: UploadedFileLike[],
     @Body("autoParse") autoParse?: string,
+    @Body("profileId") profileId?: string,
+    @Body("profileVersion") profileVersion?: string,
   ): Promise<Document[]> {
-    // multipart 表单字段全是字符串；"false" 是字符串真值，需显式比较
-    return this.documentsService.upload(kbId, files, { autoParse: autoParse !== "false" });
+    // multipart 表单字段全是字符串；"false" 是字符串真值，需显式比较。
+    // profileVersion 字符串 → 数字（service 做成对校验）。
+    return this.documentsService.upload(kbId, files, {
+      autoParse: autoParse !== "false",
+      profileId: profileId || undefined,
+      profileVersion: profileVersion !== undefined ? Number(profileVersion) : undefined,
+    });
   }
 
   @Post("documents/:id/parse")
   @HttpCode(202)
-  parse(@Param("id") id: string): Promise<Document> {
-    return this.documentsService.triggerParse(id);
+  parse(@Param("id") id: string, @Body() body: ParseDocumentRequestDto): Promise<Document> {
+    return this.documentsService.triggerParse(id, body);
+  }
+
+  @Get("documents/:id/processing-runs")
+  listRuns(@Param("id") id: string): Promise<ProcessingRun[]> {
+    return this.documentsService.listRuns(id);
   }
 
   @Get("documents/:id/lifecycle")

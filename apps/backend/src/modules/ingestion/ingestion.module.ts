@@ -10,8 +10,20 @@ import { StorageModule } from "../../platform/storage/storage.module";
 import { IngestionService, DOCUMENT_TERMINAL_LISTENER } from "./ingestion.service";
 import { IngestionProcessor } from "./ingestion.processor";
 import { KbRebuildService } from "./kb-rebuild.service";
+import { ProcessingRunsRepository } from "./processing-runs.repository";
+import { ProcessingProfilesController } from "./processing-profiles.controller";
 import { DefaultIngestionPipeline } from "./default-ingestion-pipeline";
-import { INGESTION_PIPELINE_PORT } from "./ingestion.constants";
+import {
+  CHUNKER_REGISTRY_TOKEN,
+  INGESTION_PIPELINE_PORT,
+  NORMALIZER_REGISTRY_TOKEN,
+  PARSER_REGISTRY_TOKEN,
+  PROFILE_REGISTRY,
+} from "./ingestion.constants";
+import { CHUNKER_REGISTRY } from "./adapters/chunkers/chunker-registry";
+import { NORMALIZER_REGISTRY } from "./adapters/normalizers/normalizer-registry";
+import { PARSER_REGISTRY } from "./adapters/parsers/parser-registry";
+import { PROCESSING_PROFILES, ProfileRegistry } from "./profiles/profile-registry";
 
 // 依赖装配说明：
 // - QueueModule / StorageModule 是 @Global 但此前无消费方、未被任何模块 import（token 尚未注册）；
@@ -22,6 +34,7 @@ import { INGESTION_PIPELINE_PORT } from "./ingestion.constants";
 // - ModelsService 只能经 ModelsModule 导出的端口拿到，故 import ModelsModule。
 @Module({
   imports: [ModelsModule, QueueModule, StorageModule],
+  controllers: [ProcessingProfilesController],
   providers: [
     IngestionService,
     IngestionProcessor,
@@ -32,14 +45,48 @@ import { INGESTION_PIPELINE_PORT } from "./ingestion.constants";
     DocumentsRepository,
     KnowledgeBasesRepository,
     ChunksRepository,
+    ProcessingRunsRepository,
+    {
+      provide: PROFILE_REGISTRY,
+      useValue: new ProfileRegistry(PROCESSING_PROFILES, {
+        chunkers: Object.keys(CHUNKER_REGISTRY),
+        normalizers: Object.keys(NORMALIZER_REGISTRY),
+      }),
+    },
+    { provide: PARSER_REGISTRY_TOKEN, useValue: PARSER_REGISTRY },
+    { provide: CHUNKER_REGISTRY_TOKEN, useValue: CHUNKER_REGISTRY },
+    { provide: NORMALIZER_REGISTRY_TOKEN, useValue: NORMALIZER_REGISTRY },
     {
       provide: INGESTION_PIPELINE_PORT,
-      inject: [ModelsService, ChunksRepository, AppConfigService],
-      useFactory: (models: ModelsService, chunksRepo: ChunksRepository, config: AppConfigService) =>
-        new DefaultIngestionPipeline(models, chunksRepo, config.ingestionEmbedBatchSize),
+      inject: [
+        ModelsService,
+        ChunksRepository,
+        AppConfigService,
+        PARSER_REGISTRY_TOKEN,
+        CHUNKER_REGISTRY_TOKEN,
+        NORMALIZER_REGISTRY_TOKEN,
+      ],
+      useFactory: (
+        models: ModelsService,
+        chunksRepo: ChunksRepository,
+        config: AppConfigService,
+        parsers: typeof PARSER_REGISTRY,
+        chunkers: typeof CHUNKER_REGISTRY,
+        normalizers: typeof NORMALIZER_REGISTRY,
+      ) =>
+        new DefaultIngestionPipeline(
+          models,
+          chunksRepo,
+          config.ingestionEmbedBatchSize,
+          parsers,
+          chunkers,
+          normalizers,
+        ),
     },
   ],
-  // KbRebuildService 导出供 Task 18 KnowledgeBasesService.update 改 chunkTemplate 时调用 startRebuild。
-  exports: [IngestionService, KbRebuildService],
+  // KbRebuildService 导出供 KnowledgeBasesService.update 改 chunkTemplate/默认 Profile 时调用 startRebuild。
+  // ProcessingRunsRepository 导出供 DocumentsModule 读文档处理历史（listRuns）。
+  // PROFILE_REGISTRY 导出供 KnowledgeBasesService/DocumentsService 校验 Profile ref。
+  exports: [IngestionService, KbRebuildService, ProcessingRunsRepository, PROFILE_REGISTRY],
 })
 export class IngestionModule {}

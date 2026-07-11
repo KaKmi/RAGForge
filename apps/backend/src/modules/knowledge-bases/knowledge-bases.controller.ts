@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Param, Patch, Post } from "@nestjs/com
 import { createZodDto } from "nestjs-zod";
 import {
   CreateKnowledgeBaseRequestSchema,
+  RebuildKnowledgeBaseRequestSchema,
   UpdateKnowledgeBaseRequestSchema,
   type KnowledgeBase,
 } from "@codecrush/contracts";
@@ -9,6 +10,7 @@ import { KnowledgeBasesService } from "./knowledge-bases.service";
 
 class CreateKnowledgeBaseRequestDto extends createZodDto(CreateKnowledgeBaseRequestSchema) {}
 class UpdateKnowledgeBaseRequestDto extends createZodDto(UpdateKnowledgeBaseRequestSchema) {}
+class RebuildKnowledgeBaseRequestDto extends createZodDto(RebuildKnowledgeBaseRequestSchema) {}
 
 @Controller("knowledge-bases")
 export class KnowledgeBasesController {
@@ -36,5 +38,14 @@ export class KnowledgeBasesController {
     @Body() body: UpdateKnowledgeBaseRequestDto,
   ): Promise<KnowledgeBase> {
     return this.knowledgeBasesService.update(id, body);
+  }
+
+  @Post(":id/rebuild")
+  @HttpCode(202)
+  rebuild(
+    @Param("id") id: string,
+    @Body() body: RebuildKnowledgeBaseRequestDto,
+  ): Promise<KnowledgeBase> {
+    return this.knowledgeBasesService.rebuild(id, body.scope);
   }
 }

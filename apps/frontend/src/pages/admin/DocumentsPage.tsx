@@ -26,6 +26,8 @@ import type {
   DocumentStatus,
   KnowledgeBase,
   ModelProvider,
+  ProcessingProfileDescriptor,
+  ProcessingRun,
 } from "@codecrush/contracts";
 import {
   deleteDocument,
@@ -33,6 +35,9 @@ import {
   getDocuments,
   getKnowledgeBases,
   getModels,
+  getProcessingProfiles,
+  getProcessingRuns,
+  rebuildKnowledgeBase,
   triggerParse,
   updateDocumentMetadata,
   updateKnowledgeBase,
@@ -121,12 +126,21 @@ const strong: CSSProperties = { color: "rgba(0,0,0,.7)", fontWeight: 500 };
 const hintText: CSSProperties = { fontSize: 12, color: "rgba(0,0,0,.4)", lineHeight: 1.6 };
 const fieldLabel: CSSProperties = { fontSize: 13, color: "rgba(0,0,0,.65)" };
 
-/** 分块模板选项（对齐 KnowledgeBasesPage 创建表单，此处用于编辑）。 */
-const CHUNK_TEMPLATE_OPTS: { value: ChunkTemplate; label: string; desc: string }[] = [
-  { value: "general", label: "通用", desc: "按标题结构切分，适合 Markdown / TXT / 层级清晰的文档" },
-  { value: "qa", label: "问答", desc: "识别问答对，一问一答作为一个切片，适合 FAQ 文档" },
-  { value: "custom", label: "定制", desc: "按指定规则清洗与切分，适合有特定格式要求的专属内容" },
-];
+/** chunkTemplate → 默认 profileId 反查（与后端 chunkTemplateToProfileRef 同映射），
+ *  用于 KB 未回填 processingProfileId 时的兜底初始化。 */
+const PROFILE_FALLBACK: Record<ChunkTemplate, string> = {
+  general: "general-v1",
+  qa: "faq-v1",
+  custom: "course-wechat-v1",
+};
+
+/** Run 状态展示映射。 */
+const RUN_STATUS_VIEW: Record<ProcessingRun["status"], { label: string; color: string }> = {
+  queued: { label: "排队中", color: "default" },
+  running: { label: "处理中", color: "processing" },
+  succeeded: { label: "成功", color: "success" },
+  failed: { label: "失败", color: "error" },
+};
 
 /** 知识库状态标签（对齐 KnowledgeBasesPage.statusView）。 */
 function kbStatusTag(k: KnowledgeBase): { label: string; color: string } {
@@ -219,11 +233,15 @@ export default function DocumentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  // 文档处理方案目录（创建/上传/编辑/重解析共用）
+  const [profiles, setProfiles] = useState<ProcessingProfileDescriptor[]>([]);
+
   // 上传抽屉
   const [uploadOpen, setUploadOpen] = useState(false);
   const [autoParse, setAutoParse] = useState(true); // 007 拍板默认开，不沿用旧原型默认关
   const [folderMode, setFolderMode] = useState(false);
   const [pickedFiles, setPickedFiles] = useState<File[]>([]);
+  const [uploadProfileId, setUploadProfileId] = useState<string | null>(null); // null=继承 KB 默认
   const [uploadErr, setUploadErr] = useState("");
   const [uploading, setUploading] = useState(false);
 
@@ -231,9 +249,19 @@ export default function DocumentsPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDesc, setEditDesc] = useState("");
-  const [editChunkTemplate, setEditChunkTemplate] = useState<ChunkTemplate>("general");
+  const [editProfileId, setEditProfileId] = useState<string>("general-v1");
   const [editErr, setEditErr] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+
+  // 重新解析 Modal
+  const [reparseDoc, setReparseDoc] = useState<Document | null>(null);
+  const [reparseMode, setReparseMode] = useState<"current" | "switch">("current");
+  const [reparseProfileId, setReparseProfileId] = useState<string>("general-v1");
+  const [reparseSaving, setReparseSaving] = useState(false);
+
+  // 生命周期抽屉的「处理历史」
+  const [runs, setRuns] = useState<ProcessingRun[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
 
   // 元数据 Modal
   const [metaDoc, setMetaDoc] = useState<Document | null>(null);
@@ -271,6 +299,13 @@ export default function DocumentsPage() {
       .catch(() => setModels([]));
   }, []);
 
+  // 处理方案目录：创建/上传/编辑/重解析共用，静态拉一次即可
+  useEffect(() => {
+    getProcessingProfiles()
+      .then(setProfiles)
+      .catch(() => setProfiles([]));
+  }, []);
+
   const embeddingModelName = kb
     ? (models.find((m) => m.id === kb.embeddingModelId)?.name ?? kb.embeddingModelId)
     : "";
@@ -303,6 +338,18 @@ export default function DocumentsPage() {
       .finally(() => {
         if (!cancelled) setLifecycleLoading(false);
       });
+    // 并行拉处理历史（Run 列表）；失败静默（历史缺失不阻塞生命周期主视图）。
+    setRunsLoading(true);
+    getProcessingRuns(lifecycleDocId)
+      .then((res) => {
+        if (!cancelled) setRuns(res);
+      })
+      .catch(() => {
+        if (!cancelled) setRuns([]);
+      })
+      .finally(() => {
+        if (!cancelled) setRunsLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -319,6 +366,7 @@ export default function DocumentsPage() {
     setPickedFiles([]);
     setAutoParse(true);
     setFolderMode(false);
+    setUploadProfileId(null);
     setUploadErr("");
     setUploading(false);
     setUploadOpen(true);
@@ -363,7 +411,15 @@ export default function DocumentsPage() {
     setUploading(true);
     setUploadErr("");
     try {
-      await uploadDocuments(kbId, pickedFiles, { autoParse });
+      const overrideProfile = uploadProfileId
+        ? profiles.find((p) => p.id === uploadProfileId)
+        : undefined;
+      await uploadDocuments(kbId, pickedFiles, {
+        autoParse,
+        profile: overrideProfile
+          ? { profileId: overrideProfile.id, profileVersion: overrideProfile.version }
+          : undefined,
+      });
       setUploadOpen(false);
       setPickedFiles([]);
       message.success("上传成功");
@@ -375,8 +431,9 @@ export default function DocumentsPage() {
     }
   };
 
-  const chunkLabel =
-    CHUNK_TEMPLATE_OPTS.find((c) => c.value === kb?.chunkTemplate)?.label ?? "通用";
+  // KB 当前默认方案的展示名（上传抽屉「继承」项与摘要条用）。
+  const kbProfileId = kb ? (kb.processingProfileId ?? PROFILE_FALLBACK[kb.chunkTemplate]) : null;
+  const kbProfileLabel = profiles.find((p) => p.id === kbProfileId)?.label ?? "通用文档";
 
   // ---- KB 编辑（name / desc / chunkTemplate） ----
 
@@ -384,7 +441,7 @@ export default function DocumentsPage() {
     if (!kb) return;
     setEditName(kb.name);
     setEditDesc(kb.desc);
-    setEditChunkTemplate(kb.chunkTemplate);
+    setEditProfileId(kb.processingProfileId ?? PROFILE_FALLBACK[kb.chunkTemplate]);
     setEditErr("");
     setEditSaving(false);
     setEditOpen(true);
@@ -397,18 +454,46 @@ export default function DocumentsPage() {
       setEditErr("请填写知识库名称");
       return;
     }
-    const chunkTemplateChanged = editChunkTemplate !== kb.chunkTemplate;
+    const currentProfileId = kb.processingProfileId ?? PROFILE_FALLBACK[kb.chunkTemplate];
+    const profileChanged = editProfileId !== currentProfileId;
+    const profile = profiles.find((p) => p.id === editProfileId);
+    if (profileChanged && !profile) {
+      setEditErr("处理方案不可用，请重新选择");
+      return;
+    }
     setEditSaving(true);
     setEditErr("");
     try {
       await updateKnowledgeBase(kbId, {
         name,
         desc: editDesc,
-        ...(chunkTemplateChanged ? { chunkTemplate: editChunkTemplate } : {}),
+        ...(profileChanged && profile
+          ? { processingProfileId: profile.id, processingProfileVersion: profile.version }
+          : {}),
       });
       setEditOpen(false);
       message.success("已保存");
       await load();
+      // 改默认方案只影响未来 Run；询问是否把新方案应用到已有文档（触发继承重建）。
+      if (profileChanged) {
+        Modal.confirm({
+          title: "将新方案应用到已有文档？",
+          content:
+            "默认方案已更新，仅影响之后处理的文档。如需用新方案重建已有文档，请确认（将触发全库蓝绿重建，期间旧结果仍可检索，完成后自动切换）。",
+          okText: "应用到已有文档",
+          cancelText: "暂不",
+          onOk: async () => {
+            try {
+              await rebuildKnowledgeBase(kbId, { scope: "inherited" });
+              message.success("已开始重建");
+              await load();
+            } catch (e) {
+              const msg = errMsg(e);
+              message.error(msg.includes("409") ? "知识库正在重建中，请稍候再试" : msg);
+            }
+          },
+        });
+      }
     } catch (e) {
       const msg = errMsg(e);
       setEditErr(msg.includes("409") ? "知识库正在重建中，请稍候再试" : msg);
@@ -419,12 +504,48 @@ export default function DocumentsPage() {
 
   // ---- 文档操作 ----
 
+  // 重试：服务端 mode:'retry' 复用最近失败 Run 的快照，前端零前置查询。
   const retryParse = async (docId: string) => {
     try {
-      await triggerParse(docId);
+      await triggerParse(docId, { mode: "retry" });
       await load();
     } catch (e) {
-      setError(errMsg(e));
+      const msg = errMsg(e);
+      if (msg.includes("409")) message.warning("该文档已有处理任务进行中");
+      else setError(msg);
+    }
+  };
+
+  const openReparse = (doc: Document) => {
+    setReparseDoc(doc);
+    setReparseMode("current");
+    setReparseProfileId(kbProfileId ?? "general-v1");
+    setReparseSaving(false);
+  };
+
+  const submitReparse = async () => {
+    if (!reparseDoc || reparseSaving) return;
+    const profile =
+      reparseMode === "switch" ? profiles.find((p) => p.id === reparseProfileId) : undefined;
+    if (reparseMode === "switch" && !profile) {
+      message.error("处理方案不可用，请重新选择");
+      return;
+    }
+    setReparseSaving(true);
+    try {
+      await triggerParse(
+        reparseDoc.id,
+        profile ? { profileId: profile.id, profileVersion: profile.version } : {},
+      );
+      setReparseDoc(null);
+      message.success("已开始重新解析");
+      await load();
+    } catch (e) {
+      const msg = errMsg(e);
+      if (msg.includes("409")) message.warning("该文档已有处理任务进行中");
+      else message.error(msg);
+    } finally {
+      setReparseSaving(false);
     }
   };
 
@@ -532,7 +653,7 @@ export default function DocumentsPage() {
           }}
         >
           <span>
-            分块模板：<span style={strong}>{chunkLabel}</span>
+            处理方案：<span style={strong}>{kbProfileLabel}</span>
           </span>
           <span style={dotSep}>·</span>
           <span>
@@ -761,24 +882,32 @@ export default function DocumentsPage() {
               />
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div style={fieldLabel}>分块模板</div>
-              <Segmented
-                block
-                value={editChunkTemplate}
-                onChange={(v) => setEditChunkTemplate(v as ChunkTemplate)}
-                options={CHUNK_TEMPLATE_OPTS.map((c) => ({ label: c.label, value: c.value }))}
+              <div style={fieldLabel}>文档处理方案</div>
+              <Select
+                value={editProfileId}
+                onChange={setEditProfileId}
+                optionLabelProp="label"
+                options={profiles.map((p) => ({
+                  value: p.id,
+                  label: p.label,
+                  option: (
+                    <div>
+                      <div>{p.label}</div>
+                      <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>{p.summary}</div>
+                    </div>
+                  ),
+                }))}
+                optionRender={(opt) => opt.data.option}
               />
-              <div style={hintText}>
-                {CHUNK_TEMPLATE_OPTS.find((c) => c.value === editChunkTemplate)?.desc}
-              </div>
-              {editChunkTemplate !== kb.chunkTemplate && (
+              <div style={hintText}>{profiles.find((p) => p.id === editProfileId)?.description}</div>
+              {editProfileId !== (kb.processingProfileId ?? PROFILE_FALLBACK[kb.chunkTemplate]) && (
                 <Alert
-                  type="warning"
+                  type="info"
                   showIcon={false}
-                  style={{ background: "#fffbe6", border: "1px solid #ffe58f" }}
+                  style={{ background: "#e6f4ff", border: "1px solid #91caff" }}
                   message={
-                    <span style={{ color: "#d46b08", fontSize: 12, lineHeight: 1.6 }}>
-                      分块模板变更后，库内全部文档将重新解析切片；重建期间检索仍使用旧版本，完成后自动切换。
+                    <span style={{ color: "#1677ff", fontSize: 12, lineHeight: 1.6 }}>
+                      保存后仅影响之后处理的文档；可选择是否用新方案重建已有文档。
                     </span>
                   }
                 />
@@ -914,23 +1043,37 @@ export default function DocumentsPage() {
             </div>
           )}
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "10px 12px",
-              background: "#fafafa",
-              borderRadius: 6,
-              fontSize: 12,
-              color: "rgba(0,0,0,.5)",
-              lineHeight: 1.6,
-              flexWrap: "wrap",
-            }}
-          >
-            分块方式：
-            <span style={{ color: "rgba(0,0,0,.75)", fontWeight: 500 }}>{chunkLabel}</span>
-            （继承自知识库设置，如需更换请到知识库详情页编辑）
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={fieldLabel}>文档处理方案（本批次）</div>
+            <Select<string | null>
+              value={uploadProfileId}
+              onChange={setUploadProfileId}
+              optionLabelProp="label"
+              options={[
+                {
+                  value: null as unknown as string,
+                  label: `继承知识库：${kbProfileLabel}`,
+                  option: (
+                    <div>
+                      <div>继承知识库默认</div>
+                      <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>{kbProfileLabel}</div>
+                    </div>
+                  ),
+                },
+                ...profiles.map((p) => ({
+                  value: p.id,
+                  label: p.label,
+                  option: (
+                    <div>
+                      <div>{p.label}</div>
+                      <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>{p.summary}</div>
+                    </div>
+                  ),
+                })),
+              ]}
+              optionRender={(opt) => opt.data.option}
+            />
+            <div style={hintText}>不选则本批文档继承知识库默认方案；选定则仅覆盖本批。</div>
           </div>
 
           <div
@@ -1179,9 +1322,118 @@ export default function DocumentsPage() {
                 })}
               />
             )}
+
+            {/* 处理历史：按 createdAt desc 的 Run 列表 */}
+            <div style={{ marginTop: 8 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 8,
+                }}
+              >
+                <span style={{ fontSize: 14, fontWeight: 600 }}>处理历史</span>
+                <Button size="small" onClick={() => openReparse(lifecycleDoc)}>
+                  重新解析
+                </Button>
+              </div>
+              {runsLoading && <Spin size="small" />}
+              {!runsLoading && runs.length === 0 && (
+                <div style={{ fontSize: 12, color: "rgba(0,0,0,.35)" }}>暂无处理记录</div>
+              )}
+              {runs.map((r) => {
+                const view = RUN_STATUS_VIEW[r.status];
+                const durationS =
+                  r.startedAt && r.endedAt
+                    ? Math.round((+new Date(r.endedAt) - +new Date(r.startedAt)) / 1000)
+                    : null;
+                return (
+                  <div
+                    key={r.id}
+                    style={{ borderTop: "1px solid rgba(0,0,0,.06)", padding: "8px 0" }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <Tag color={view.color}>{view.label}</Tag>
+                      <span style={{ fontSize: 13 }}>
+                        {r.profileLabel}
+                        <span style={{ color: "rgba(0,0,0,.35)" }}>@v{r.profileVersion}</span>
+                      </span>
+                      {r.parserEngine && (
+                        <span style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>
+                          {r.parserEngine} {r.parserVersion}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)", marginTop: 3 }}>
+                      {durationS !== null && `耗时 ${durationS}s · `}
+                      {r.warnings.length > 0 && `警告 ${r.warnings.length} · `}
+                      {formatDateTime(r.createdAt)}
+                    </div>
+                    {r.error && (
+                      <Alert type="error" showIcon message={r.error} style={{ marginTop: 4 }} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </>
         )}
       </Drawer>
+
+      {/* 重新解析 Modal：用当前方案或更换方案重解析（服务端写回文档 override） */}
+      <Modal
+        title="重新解析文档"
+        open={!!reparseDoc}
+        onCancel={() => (reparseSaving ? undefined : setReparseDoc(null))}
+        onOk={() => void submitReparse()}
+        okText="开始解析"
+        cancelText="取消"
+        confirmLoading={reparseSaving}
+        mask={{ closable: !reparseSaving }}
+        destroyOnHidden
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, paddingTop: 8 }}>
+          <Segmented
+            block
+            value={reparseMode}
+            onChange={(v) => setReparseMode(v as "current" | "switch")}
+            options={[
+              { label: "使用当前方案", value: "current" },
+              { label: "更换方案", value: "switch" },
+            ]}
+          />
+          {reparseMode === "switch" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={fieldLabel}>选择新方案</div>
+              <Select
+                value={reparseProfileId}
+                onChange={setReparseProfileId}
+                optionLabelProp="label"
+                options={profiles.map((p) => ({
+                  value: p.id,
+                  label: p.label,
+                  option: (
+                    <div>
+                      <div>{p.label}</div>
+                      <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>{p.summary}</div>
+                    </div>
+                  ),
+                }))}
+                optionRender={(opt) => opt.data.option}
+              />
+              <div style={hintText}>
+                {profiles.find((p) => p.id === reparseProfileId)?.description}
+              </div>
+            </div>
+          )}
+          <div style={hintText}>
+            {reparseMode === "current"
+              ? "用文档当前有效方案重新解析并切片，替换现有切片。"
+              : "更换方案后将写回该文档的方案覆盖，之后的处理沿用新方案。"}
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

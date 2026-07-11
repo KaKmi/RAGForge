@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, asc, eq, ilike, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, ilike, inArray, notExists, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
 import { chunks, type ChunkDraft, type ChunkRow } from "./schema";
@@ -106,6 +107,11 @@ export class ChunksRepository {
           tokenCount: d.tokenCount,
           section: d.section,
           embedding: d.embedding,
+          processingRunId: d.processingRunId,
+          contentType: d.contentType,
+          pageStart: d.pageStart,
+          pageEnd: d.pageEnd,
+          assetKey: d.assetKey,
         })),
       );
     });
@@ -117,6 +123,51 @@ export class ChunksRepository {
       .where(inArray(chunks.id, ids))
       .returning({ id: chunks.id });
     return deleted.length;
+  }
+
+  // 重建切换前调用：把「本轮未被重新处理」的文档（scope='inherited' 排除的文档、per-doc
+  // 409/400 被跳过的文档、reparse 失败仍保留旧结果的文档）的切片从旧版本前移到新版本，
+  // 使其在切换后继续满足检索契约 `chunks.version = kb.active_version`，不被下方
+  // deleteByVersion 当作「已被替换的旧切片」误删（QA P1：scope='inherited' 静默清空
+  // 被排除文档的可检索内容）。
+  //
+  // NOT EXISTS 排除「该文档在 toVersion 已有同 seq 切片」的行（review P2）：调用方基于
+  // documents.chunkVersion 这个非原子信号判断"本轮未推进"，但该字段的写入落后于 chunks
+  // 表——文档若被本轮官方重建排除、却又被用户独立触发了目标版本恰好也是 toVersion 的重解析，
+  // 会出现"chunkVersion 读到旧值、但 chunks 表已有 toVersion 新切片"的窗口。此时这些新切片
+  // 才是该文档的最新内容，不该被旧内容覆盖，也不需要前移——旧内容留给下方 deleteByVersion
+  // 按 fromVersion 正常清理，不做特殊处理。NOT EXISTS 天然规避了 chunks_doc_version_seq_unique
+  // 唯一约束冲突，不需要调用方自证「确实未在本轮写入 toVersion」。
+  async carryForwardVersion(
+    kbId: string,
+    docIds: string[],
+    fromVersion: number,
+    toVersion: number,
+  ): Promise<void> {
+    if (docIds.length === 0) return;
+    const existing = alias(chunks, "existing_at_to_version");
+    await this.db
+      .update(chunks)
+      .set({ version: toVersion })
+      .where(
+        and(
+          eq(chunks.kbId, kbId),
+          eq(chunks.version, fromVersion),
+          inArray(chunks.docId, docIds),
+          notExists(
+            this.db
+              .select({ one: sql`1` })
+              .from(existing)
+              .where(
+                and(
+                  eq(existing.docId, chunks.docId),
+                  eq(existing.version, toVersion),
+                  eq(existing.seq, chunks.seq),
+                ),
+              ),
+          ),
+        ),
+      );
   }
 
   // 全库重建切换后，异步分批清理旧版本切片（不进切换事务，避免大删拖慢原子切换）。

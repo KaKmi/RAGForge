@@ -1,18 +1,45 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
-import type { ChunkTemplate, DocumentType } from "@codecrush/contracts";
+import type { ChunkTemplate, DocumentType, ProcessingProfileRef } from "@codecrush/contracts";
 import { BLOB_STORE } from "../../platform/storage/blob-store.constants";
 import type { BlobStore } from "../../platform/storage/blob-store.port";
+import { AppConfigService } from "../../platform/config/config.service";
 import { INGESTION_QUEUE } from "../../platform/queue/queue.constants";
 import type { Queue } from "../../platform/queue/queue.port";
 import { DocumentsRepository } from "../documents/documents.repository";
 import { KnowledgeBasesRepository } from "../knowledge-bases/knowledge-bases.repository";
-import { INGESTION_PIPELINE_PORT } from "./ingestion.constants";
+import { INGESTION_PIPELINE_PORT, PROFILE_REGISTRY } from "./ingestion.constants";
 import type { IngestionPipelinePort } from "./ports/ingestion-pipeline.port";
 import { IngestionError } from "./pipeline/ingestion-error";
 import { INGEST_DOCUMENT_JOB } from "./ingestion-job.constants";
+import { ProcessingRunsRepository, isActiveRunConflict } from "./processing-runs.repository";
+import type { ProcessingRunRow } from "./schema";
+import type { ProcessingProfileSnapshot } from "./profiles/processing-profile";
+import {
+  PROCESSING_PROFILES,
+  ProfileRegistry,
+  chunkTemplateToProfileRef,
+} from "./profiles/profile-registry";
 
 const nowIso = (): string => new Date().toISOString();
+
+// running 态 Run 超过此时长仍被重复投递 → 判为僵尸（worker 崩溃残留），放行重跑；
+// 之内则视为正常并发重复投递，跳过（幂等）。
+const ZOMBIE_RUN_MS = 15 * 60 * 1000;
+
+export interface CreateRunOptions {
+  // 显式换 Profile（重新解析 Modal 选新方案）：建 Run 前写回文档 override，供后续重建/重解析继承。
+  profileRef?: ProcessingProfileRef;
+  // mode:"retry"：定位最近 failed Run 复用其冻结快照；无失败 Run 则回退当前有效 Profile 重解析。
+  retry?: boolean;
+}
 
 // 文档终态监听端口：KbRebuildService 实现之，经此 token 由 ingestion.module 用 useExisting 绑定。
 // 用 token + 懒解析（ModuleRef）而非直接 import KbRebuildService 类：KbRebuildService 构造依赖本服务
@@ -34,6 +61,9 @@ export class IngestionService {
     private readonly docsRepo: DocumentsRepository,
     private readonly kbRepo: KnowledgeBasesRepository,
     @Inject(INGESTION_PIPELINE_PORT) private readonly pipeline: IngestionPipelinePort,
+    private readonly runsRepo: ProcessingRunsRepository,
+    @Inject(PROFILE_REGISTRY) private readonly registry: ProfileRegistry,
+    private readonly config: AppConfigService,
     private readonly moduleRef?: ModuleRef,
   ) {}
 
@@ -83,11 +113,18 @@ export class IngestionService {
     try {
       const kb = await this.kbRepo.findById(doc.kbId);
       const blob = await this.blobStore.get(doc.blobKey);
+      const template = (kb?.chunkTemplate ?? "general") as ChunkTemplate;
+      const profileRef = chunkTemplateToProfileRef(template);
+      const profile = PROCESSING_PROFILES.find(
+        (candidate) =>
+          candidate.id === profileRef.profileId && candidate.version === profileRef.profileVersion,
+      );
+      if (!profile) throw new IngestionError("PROFILE_INVALID", `${template} 无兼容 Profile`);
       const result = await this.pipeline.run({
         documentId,
         kbId: doc.kbId,
         docType: doc.type as DocumentType,
-        chunkTemplate: (kb?.chunkTemplate ?? "general") as ChunkTemplate,
+        snapshot: structuredClone(profile),
         embeddingModelId: kb?.embeddingModelId ?? "",
         targetVersion,
         blob,
@@ -103,7 +140,7 @@ export class IngestionService {
       await this.docsRepo.update(documentId, {
         status: "ready",
         chunkVersion: targetVersion,
-        parsedText: result.parsedText,
+        parsedText: result.markdown ?? result.parsedText,
         error: null,
       });
       // 闭合起始处追加的 ingest/running 项（写 endedAt，UI 的耗时/进行中态才有终点），
@@ -141,5 +178,179 @@ export class IngestionService {
     // 单一调用点放在 try/catch 之后：回调抛错既不会把已 ready 的文档误改成 failed（AC3），
     // 也不会二次触发；notifyDocumentTerminal 内部自吞异常，双保险。
     await this.notifyDocumentTerminal(doc.kbId);
+  }
+
+  // M4.1 新入库路径：为文档建一条冻结快照的 Processing Run 并入队。特性开关分流不在此方法内——
+  // 调用方（DocumentsService/KbRebuildService）按 config.processingProfilesEnabled 决定走此法还是 legacy enqueue。
+  // Profile 解析优先级：显式 ref > 文档 override > KB default > chunkTemplate 反查兜底。
+  async createRun(documentId: string, opts: CreateRunOptions = {}): Promise<ProcessingRunRow> {
+    const doc = await this.docsRepo.findById(documentId);
+    if (!doc) throw new NotFoundException(`document ${documentId} not found`);
+    const kb = await this.kbRepo.findById(doc.kbId);
+    if (!kb) throw new NotFoundException(`knowledge base ${doc.kbId} not found`);
+    const targetVersion = kb.buildingVersion ?? kb.activeVersion;
+
+    let snapshot: ProcessingProfileSnapshot | null = null;
+    if (opts.retry) {
+      // 复用最近一次失败 Run 的冻结快照：确保重试与原次「同方案同版本」，不受注册表后续变更影响。
+      const prev = (await this.runsRepo.findByDocument(documentId)).find(
+        (run) => run.status === "failed",
+      );
+      if (prev) snapshot = prev.profileSnapshot as unknown as ProcessingProfileSnapshot;
+      // 无失败 Run：回退到当前有效 Profile 重解析（落入下方解析链）。
+    }
+
+    if (!snapshot) {
+      const ref: ProcessingProfileRef =
+        opts.profileRef ??
+        (doc.profileOverrideId && doc.profileOverrideVersion
+          ? { profileId: doc.profileOverrideId, profileVersion: doc.profileOverrideVersion }
+          : kb.defaultProfileId && kb.defaultProfileVersion
+            ? { profileId: kb.defaultProfileId, profileVersion: kb.defaultProfileVersion }
+            : chunkTemplateToProfileRef((kb.chunkTemplate ?? "general") as ChunkTemplate));
+      const def = this.registry.get(ref.profileId, ref.profileVersion);
+      if (!def) {
+        throw new BadRequestException(
+          `[PROFILE_VERSION_UNAVAILABLE] 处理方案 ${ref.profileId}@${ref.profileVersion} 不可用`,
+        );
+      }
+      if (!def.supportedTypes.includes(doc.type as DocumentType)) {
+        throw new BadRequestException(`处理方案 ${def.label} 不支持 ${doc.type} 类型文档`);
+      }
+      if (opts.profileRef) {
+        // 显式换 Profile = 单文档覆盖（010 In-scope）：写回 override，供后续重建/重解析继承。
+        await this.docsRepo.update(documentId, {
+          profileOverrideId: ref.profileId,
+          profileOverrideVersion: ref.profileVersion,
+        });
+      }
+      // 冻结：深拷贝隔离注册表定义对象，此后改注册表不影响已建 Run（AC4）。
+      snapshot = structuredClone(def);
+    }
+
+    let run: ProcessingRunRow;
+    try {
+      run = await this.runsRepo.insert({
+        documentId,
+        kbId: doc.kbId,
+        targetVersion,
+        profileId: snapshot.id,
+        profileVersion: snapshot.version,
+        // jsonb 列以 Record<string,unknown> 保存（schema 域内不引用 profile 实现类型），此处存冻结快照。
+        profileSnapshot: snapshot as unknown as Record<string, unknown>,
+        status: "queued",
+      });
+    } catch (err) {
+      // partial unique dpr_active_doc_unique：同文档已有 queued/running Run → 409，不重复入队。
+      if (isActiveRunConflict(err)) throw new ConflictException("该文档已有处理任务进行中");
+      throw err;
+    }
+    await this.docsRepo.update(documentId, { status: "queued" });
+    await this.queue.publish(
+      INGEST_DOCUMENT_JOB,
+      // 超集 payload：processingRunId 走新路径；旧镜像 worker 忽略此字段仍可消费。
+      { processingRunId: run.id, documentId, targetVersion },
+      { singletonKey: run.id, retryLimit: 1 },
+    );
+    return run;
+  }
+
+  // pg-boss worker 新路径回调：以 Run 冻结快照为唯一行为源跑管线，落地 Run 与文档终态。
+  // 重复投递幂等 + 僵尸兜底：succeeded/failed 跳过；running 且未超时跳过；running 超时（崩溃残留）重跑。
+  async processRun(runId: string): Promise<void> {
+    const run = await this.runsRepo.findById(runId);
+    if (!run) return; // Run 不存在（已删/幂等）：静默返回。
+    if (run.status === "succeeded" || run.status === "failed") return;
+    if (run.status === "running") {
+      const age = run.startedAt ? Date.now() - run.startedAt.getTime() : Infinity;
+      if (age < ZOMBIE_RUN_MS) return; // 正常并发重复投递：跳过。
+    }
+
+    const doc = await this.docsRepo.findById(run.documentId);
+    if (!doc) {
+      await this.runsRepo.update(runId, {
+        status: "failed",
+        error: "文档已删除",
+        endedAt: new Date(),
+      });
+      return;
+    }
+
+    await this.runsRepo.update(runId, { status: "running", startedAt: new Date() });
+    await this.docsRepo.update(run.documentId, { status: "processing" });
+    await this.docsRepo.appendLifecycleStage(run.documentId, {
+      stage: "ingest",
+      status: "running",
+      startedAt: nowIso(),
+      endedAt: null,
+    });
+
+    try {
+      const kb = await this.kbRepo.findById(run.kbId);
+      const blob = await this.blobStore.get(doc.blobKey);
+      const result = await this.pipeline.run({
+        documentId: run.documentId,
+        kbId: run.kbId,
+        docType: doc.type as DocumentType,
+        snapshot: run.profileSnapshot as unknown as ProcessingProfileSnapshot,
+        embeddingModelId: kb?.embeddingModelId ?? "",
+        targetVersion: run.targetVersion,
+        processingRunId: run.id,
+        blob,
+        docName: doc.name,
+        kbName: kb?.name ?? "",
+      });
+      // Canonical 产物归档：稳定 key 便于按 Run 溯源/复现（parsed_text 仍写 markdown 全文兼容旧读端）。
+      const canonicalBlobKey = `kb/${run.kbId}/${run.documentId}/runs/${run.id}/canonical.json`;
+      await this.blobStore.put(
+        canonicalBlobKey,
+        Buffer.from(JSON.stringify(result.canonical), "utf8"),
+      );
+      await this.runsRepo.update(runId, {
+        status: "succeeded",
+        parserEngine: result.parserEngine,
+        parserVersion: result.parserVersion,
+        canonicalBlobKey,
+        warnings: result.warnings,
+        metrics: result.metrics,
+        endedAt: new Date(),
+        error: null,
+      });
+      await this.docsRepo.update(run.documentId, {
+        status: "ready",
+        chunkVersion: run.targetVersion,
+        parsedText: result.markdown,
+        error: null,
+      });
+      await this.docsRepo.completeLifecycleStage(run.documentId, "ingest", {
+        status: "done",
+        endedAt: nowIso(),
+      });
+      await this.docsRepo.appendLifecycleStage(run.documentId, {
+        stage: "ready",
+        status: "done",
+        startedAt: nowIso(),
+        endedAt: nowIso(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await this.runsRepo.update(runId, { status: "failed", error: message, endedAt: new Date() });
+      await this.docsRepo.update(run.documentId, { status: "failed", error: message });
+      const closed = await this.docsRepo.completeLifecycleStage(run.documentId, "ingest", {
+        status: "failed",
+        endedAt: nowIso(),
+        error: message,
+      });
+      if (!closed) {
+        await this.docsRepo.appendLifecycleStage(run.documentId, {
+          stage: "ingest",
+          status: "failed",
+          startedAt: nowIso(),
+          endedAt: nowIso(),
+          error: message,
+        });
+      }
+    }
+    await this.notifyDocumentTerminal(run.kbId);
   }
 }

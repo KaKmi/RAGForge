@@ -1,6 +1,7 @@
 import { customType, index, integer, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import { vector1024 } from "../../platform/persistence/pgvector-type";
 import { documents } from "../documents/schema";
+import { documentProcessingRuns } from "../ingestion/schema";
 import { knowledgeBases } from "../knowledge-bases/schema";
 
 // tsvector 列类型：drizzle-orm 无内置类型，仿 pgvector-type 的 customType 先例。
@@ -30,6 +31,13 @@ export const chunks = pgTable(
     section: text("section").notNull().default(""),
     embedding: vector1024("embedding").notNull(),
     tsv: tsvector("tsv"),
+    processingRunId: uuid("processing_run_id").references(() => documentProcessingRuns.id, {
+      onDelete: "set null",
+    }),
+    contentType: text("content_type"),
+    pageStart: integer("page_start"),
+    pageEnd: integer("page_end"),
+    assetKey: text("asset_key"),
   },
   (table) => [
     unique("chunks_doc_version_seq_unique").on(table.docId, table.version, table.seq),
@@ -46,4 +54,9 @@ export interface ChunkDraft {
   tokenCount: number;
   section: string;
   embedding: number[];
+  processingRunId?: string | null;
+  contentType?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  assetKey?: string | null;
 }
