@@ -187,6 +187,8 @@ export async function verifyBackfill(db: DB): Promise<{ ok: boolean; problems: s
        OR target.enabled IS DISTINCT FROM old.enabled
        OR target.created_by <> old.updated_by
        OR target.updated_by <> old.updated_by
+       OR target.created_at IS DISTINCT FROM old.created_at
+       OR target.updated_at IS DISTINCT FROM old.updated_at
        OR target.production_config_version_id IS DISTINCT FROM old.current_version_id
   `);
   if (Number((badApplications.rows[0] as { n: number }).n) > 0) {

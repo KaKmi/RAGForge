@@ -98,6 +98,26 @@ describeDb("applications migration + backfill", () => {
       ids.version,
       ids.agent,
     ]);
+    ids.agentWithoutProduction = (
+      await pool.query(
+        `INSERT INTO agents (name,"desc",enabled,updated_by)
+         VALUES ('legacy-draft-app','',true,'legacy') RETURNING id`,
+      )
+    ).rows[0].id;
+    ids.versionWithoutProduction = (
+      await pool.query(
+        `INSERT INTO agent_config_versions
+          (agent_id,version,status,gen_model_id,prompt_rewrite_ver_id,prompt_intent_ver_id,
+           prompt_reply_ver_id,prompt_fallback_ver_id,node_params,top_k,top_n,threshold,
+           multi_recall,vec_weight,fallback_human,created_by)
+         VALUES ($1,1,'draft',$2,$3,$3,$3,$3,$4,20,5,0.4,true,0.7,true,'legacy') RETURNING id`,
+        [ids.agentWithoutProduction, ids.model, ids.promptVersion, JSON.stringify(nodeParams)],
+      )
+    ).rows[0].id;
+    await pool.query(`INSERT INTO agent_config_version_kbs (version_id,kb_id) VALUES ($1,$2)`, [
+      ids.versionWithoutProduction,
+      ids.kb,
+    ]);
   });
 
   afterAll(async () => pool?.end());
@@ -113,11 +133,11 @@ describeDb("applications migration + backfill", () => {
       "applications",
     ]);
     expect(result.rows.some((row) => row.table_name === "application_release_checks")).toBe(false);
-    expect((await pool.query(`SELECT 1 FROM agents`)).rowCount).toBe(1);
+    expect((await pool.query(`SELECT 1 FROM agents`)).rowCount).toBe(2);
   });
 
   it("maps legacy identities, pointers, versions and snapshots idempotently", async () => {
-    expect(await runBackfill(db)).toEqual({ applications: 1, versions: 1, kbs: 1 });
+    expect(await runBackfill(db)).toEqual({ applications: 2, versions: 2, kbs: 2 });
     expect(await runBackfill(db)).toEqual({ applications: 0, versions: 0, kbs: 0 });
     await pool.query(
       `DELETE FROM application_config_version_kbs WHERE config_version_id=$1 AND kb_id=$2`,
@@ -127,6 +147,10 @@ describeDb("applications migration + backfill", () => {
     const app = (await pool.query(`SELECT * FROM applications WHERE id=$1`, [ids.agent])).rows[0];
     expect(app.slug).toBe(ids.agent);
     expect(app.production_config_version_id).toBe(ids.version);
+    const draftApp = (
+      await pool.query(`SELECT * FROM applications WHERE id=$1`, [ids.agentWithoutProduction])
+    ).rows[0];
+    expect(draftApp.production_config_version_id).toBeNull();
     const version = (
       await pool.query(`SELECT * FROM application_config_versions WHERE id=$1`, [ids.version])
     ).rows[0];
@@ -183,6 +207,18 @@ describeDb("applications migration + backfill", () => {
     expect(invalid.ok).toBe(false);
     expect(invalid.problems).toContain("applications 存在与 legacy identity 映射不一致的行");
     await pool.query(`UPDATE applications SET description='' WHERE id=$1`, [ids.agent]);
+    await pool.query(
+      `UPDATE applications SET updated_at=updated_at + interval '1 second' WHERE id=$1`,
+      [ids.agent],
+    );
+    expect((await verifyBackfill(db)).problems).toContain(
+      "applications 存在与 legacy identity 映射不一致的行",
+    );
+    await pool.query(
+      `UPDATE applications target SET updated_at=source.updated_at
+       FROM agents source WHERE target.id=source.id AND target.id=$1`,
+      [ids.agent],
+    );
     await pool.query(`UPDATE application_config_versions SET config_schema_version=2 WHERE id=$1`, [
       ids.version,
     ]);
