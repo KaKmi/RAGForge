@@ -426,16 +426,28 @@ export default function ApplicationsPage() {
       ),
     },
     {
+      // M7a 仅有 production 一个标识；M7b 引入自定义命名标签（qa20260707 等）后此列展示锚点
       title: "标识",
-      key: "prod",
-      width: 150,
+      key: "tags",
+      width: 130,
       render: (_: unknown, r: Application) =>
         r.productionVersion != null ? (
           <Tag color="green" style={mono}>
-            production → v{r.productionVersion}
+            production
           </Tag>
         ) : (
-          <span style={{ color: "rgba(0,0,0,.35)" }}>未上线</span>
+          <span style={{ color: "rgba(0,0,0,.35)" }}>—</span>
+        ),
+    },
+    {
+      title: "是否上线",
+      key: "online",
+      width: 120,
+      render: (_: unknown, r: Application) =>
+        r.productionVersion != null ? (
+          <Tag color="green">已上线 · v{r.productionVersion}</Tag>
+        ) : (
+          <Tag>未上线</Tag>
         ),
     },
     {

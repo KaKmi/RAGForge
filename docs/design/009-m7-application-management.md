@@ -19,6 +19,34 @@ last_modified: "2026-07-11"
 
 当前代码仍是旧 M7：`apps/backend/src/modules/agents/`、`agents.current_version_id`、`agent_config_versions.status/eval_*`、v1 自动发布和 Eval stub。本文描述的 applications 模块、无状态不可变版本、真实 release check 与新 API 尚未实现，不能标记为 `current`。旧 `008-m7-agent-management.md` 曾记录该实现；因其与 M5 的 008 编号冲突，目标设计规范化为 009，迁移历史保留在本文。
 
+## 决策更新 · 2026-07-11（应用版本命名标签，复议“单指针”）
+
+> **本节记录一次对下文核心决策的复议，尚未整合进正文；正文其余部分仍描述旧“单指针”方案，冲突处以本节为准，M7b design 时统一回改。M7a 已交付部分不受影响。**
+
+用户（产品）明确新需求：应用配置版本需要**自定义命名标签**（如 `qa20260707`），作为版本的稳定、可读**访问锚点**——
+
+- 打标签后该标签稳定指向打标签时的那个版本；之后新增版本不影响它（等价于 git tag）。
+- 前端可经 `chat/{应用 slug 或 id}/{标签}` 直接解析到该版本对话（QA 验收、分享、留存书签）。
+- `production` 降为一个**保留标签**（决定不带标签访问时的默认版本）；`qa20260707`/`beta` 等为用户自定义锚点。
+
+这**推翻**本文原“单一 `production_config_version_id` 指针 + 明确拒绝应用标签”的决策，涉及冲突处：§Status 第 3 段（“取代早先标签方案”）、§Out-of-scope「应用级自定义标签」、§Context 末段（“不能照搬 Prompt 标签表”）、§Invariants、§编辑保存上线（“不能退回指针+标签双写”）、§Alternatives「生产选择」、§Assumptions「不需要 beta/staging 别名」、§Revisit triggers。原否决理由是“原型只有单一服务中版本，标签是过度设计”；新用例揭示标签价值不在多环境灰度，而在**版本的命名可读引用**，该理由不再成立。
+
+**新方向（M7b 落地，需在 M7b design 细化并回改本文正文）：**
+
+- 新增应用版本命名标签表：应用内标签名唯一；移动语义为“同名标签排他地从旧版本移到新版本”（复用 012 Prompt 标签的排他移动范式，但归属 applications 域，仍不与 Prompt 标签耦合）。
+- `production` 为保留标签，决定公开默认解析；其余为自定义锚点。上线/回滚 = 移动 `production` 标签（与原“移动单指针”语义等价，只是 production 成为标签之一）；ReleaseCheck 仍在移动 production 前执行。
+- 运行时解析扩展为 `resolve(applicationIdOrSlug, tag?)`：带 tag 解析到标签指向版本，不带则用 production；沿用 deleted → disabled → 目标缺失 → resolved 的拒绝顺序。
+- 前端：`/chat/:appIdOrSlug/:tag?` 路由 + 版本历史「管理标识」弹窗（打/移/摘标签，原型 `CodeCrushBot.dc.html` 已画该弹窗）。M7a 详情页暂未做此弹窗（属 M7b）。
+
+**标签写入与列表展示细则（2026-07-11 追加）：**
+
+- 标签在应用内**排他**：一个标签名同一时刻只属于一个版本（复用 012 Prompt 标签的“同名标签唯一”约束）。
+- 给某版本打一个**当前指向别的版本**的标签时，前端须**提示“将从 vX 移动到本版本”**（移动确认，对应原型「管理标识」弹窗“beta 当前指向 v13，勾选将移动到此版本”那条橙色提示）。
+- 打的标签若是保留字 `production`，**不是简单移动标签，而是走上线流程**（先 ReleaseCheck，通过后再原子移动 production 指针）；其余自定义标签的移动即时生效、无上线副作用与 ReleaseCheck。
+- 应用列表：在「标识」列（展示该应用生产版本携带的标签 / 自定义标签）之外，**单加一列「是否上线」**明确上线状态（已上线 vN / 未上线），把“有哪些标签”与“是否对外服务”两件事拆开。M7a 阶段仅有 `production` 概念、两列信息重叠；M7b 引入自定义标签后「标识」列展示 `qa20260707` 等锚点、不再与「是否上线」重复。**（M7a 已按此拆分列表两列。）**
+
+- 待澄清（M7b design 决）：标签是否可被非管理员经 URL 直达（安全/可见性）；自定义标签数量上限；`production` 之外是否还需 `beta` 保留字；移动 `production`（上线）与移动自定义标签是否共用同一「管理标识」入口但分流程。
+
 ## Summary
 
 应用是一份完整 RAG 运行配置：知识库集合、四个固定节点各自引用的 PromptVersion、模型和生成参数，以及检索、重排和兜底策略。编辑态只存在于前端；点击“保存为新版本”追加不可变 ApplicationConfigVersion；点击“上线这个版本”先创建异步 ReleaseCheck，检查通过后再以乐观并发方式原子移动 `production_config_version_id`。

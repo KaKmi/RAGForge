@@ -194,7 +194,7 @@ describe("buildDefaultConfig", () => {
 });
 
 describe("应用列表页", () => {
-  it("未上线态显示「未上线」，服务中态显示「production → vN」", async () => {
+  it("标识列与是否上线列拆开：未上线 → 「未上线」，已上线 → 「production」+「已上线 · vN」", async () => {
     mocked.getApplications.mockResolvedValue([
       application(),
       application({ id: "app2", name: "已上线应用", slug: "live-bot", productionVersion: 3 }),
@@ -202,7 +202,8 @@ describe("应用列表页", () => {
     renderRoutes("/admin/applications");
     expect(await screen.findByText("售后助手")).toBeInTheDocument();
     expect(screen.getByText("未上线")).toBeInTheDocument();
-    expect(screen.getByText("production → v3")).toBeInTheDocument();
+    expect(screen.getByText("production")).toBeInTheDocument();
+    expect(screen.getByText("已上线 · v3")).toBeInTheDocument();
   });
 
   it("点行导航到详情", async () => {
