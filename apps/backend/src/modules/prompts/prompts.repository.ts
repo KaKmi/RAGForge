@@ -149,17 +149,17 @@ export class PromptsRepository {
     return rows[0];
   }
 
-  async insertVersion(row: NewPromptVersion): Promise<PromptVersionRow> {
-    const rows = await this.db.insert(promptVersions).values(row).returning();
-    return rows[0];
-  }
-
-  /** 保存新版本时刷新 prompt 更新人/时间（列表「更新人·时间」列语义） */
-  async touchPrompt(promptId: string, actorEmail: string): Promise<void> {
-    await this.db
-      .update(prompts)
-      .set({ updatedBy: actorEmail, updatedAt: new Date() })
-      .where(eq(prompts.id, promptId));
+  // 保存新版本 + 刷新 prompt 更新人/时间在同一事务（review P2：两步分离会在
+  // touch 失败时留下孤儿版本与过期元数据，重试还会再插一版）
+  async insertVersion(row: NewPromptVersion, actorEmail: string): Promise<PromptVersionRow> {
+    return await this.db.transaction(async (tx) => {
+      const rows = await tx.insert(promptVersions).values(row).returning();
+      await tx
+        .update(prompts)
+        .set({ updatedBy: actorEmail, updatedAt: new Date() })
+        .where(eq(prompts.id, row.promptId));
+      return rows[0];
+    });
   }
 
   /** 某 Prompt 全部标签（键 = 版本 id），供版本 DTO 组装 */

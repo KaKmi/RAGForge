@@ -122,20 +122,23 @@ export class PromptsService {
       const latest = await this.repo.findVersions(promptId);
       const next = (latest[0]?.version ?? 0) + 1;
       try {
-        const row = await this.repo.insertVersion({
-          promptId,
-          version: next,
-          body: req.body,
-          variables: extractVars(req.body),
-          contractVersion,
-          compileStatus: compiled.status,
-          compileErrors: compiled.issues,
-          note: req.note,
-          author: actorEmail,
-          // 兼容窗口：显式写 draft（Story 4 随列删除）
-          status: "draft",
-        });
-        await this.repo.touchPrompt(promptId, actorEmail);
+        // insertVersion 事务内同时刷新 prompt 更新人/时间（原子性，review P2）
+        const row = await this.repo.insertVersion(
+          {
+            promptId,
+            version: next,
+            body: req.body,
+            variables: extractVars(req.body),
+            contractVersion,
+            compileStatus: compiled.status,
+            compileErrors: compiled.issues,
+            note: req.note,
+            author: actorEmail,
+            // 兼容窗口：显式写 draft（Story 4 随列删除）
+            status: "draft",
+          },
+          actorEmail,
+        );
         return toVersion(row, node, []);
       } catch (e) {
         if (isUniqueViolation(e) && attempt === 0) continue;

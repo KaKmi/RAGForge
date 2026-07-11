@@ -53,7 +53,6 @@ function makeRepo(
     findVersions: jest.fn(async () => []),
     findVersionById: jest.fn(),
     insertVersion: jest.fn(),
-    touchPrompt: jest.fn(async () => undefined),
     findTagsByPromptId: jest.fn(async () => []),
     findTagsByVersionIds: jest.fn(async () => []),
     findTagsWithVersion: jest.fn(async () => []),
@@ -137,16 +136,15 @@ describe("PromptsService · createVersion（不可变保存 + 服务端编译）
     expect(res.version).toBe(4);
   });
 
-  it("保存后刷新 prompt 更新人/时间（touchPrompt）", async () => {
-    const touchPrompt = jest.fn(async () => undefined);
+  it("insertVersion 收到 actor（事务内刷新 prompt 更新人/时间，review P2）", async () => {
+    const insertVersion = jest.fn(async (row) => ({ ...versionRow, ...row }));
     const repo = makeRepo({
       findVersions: jest.fn(async () => [versionRow]),
-      insertVersion: jest.fn(async (row) => ({ ...versionRow, ...row })),
-      touchPrompt,
+      insertVersion,
     });
     const service = new PromptsService(repo);
     await service.createVersion("p1", { body: "b {query}" }, "actor@x");
-    expect(touchPrompt).toHaveBeenCalledWith("p1", "actor@x");
+    expect(insertVersion.mock.calls[0][1]).toBe("actor@x");
   });
 
   it("sourceVersionId 沿用来源 contractVersion（创建副本语义）", async () => {
