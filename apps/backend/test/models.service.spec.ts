@@ -170,6 +170,108 @@ describe("ModelsService", () => {
   });
 });
 
+describe("ModelsService.chat", () => {
+  it("非 llm 类型 → 400，不调用 port", async () => {
+    const repo = makeRepo();
+    const chatPort = {
+      testConnection: jest.fn(),
+      embed: jest.fn(),
+      rerank: jest.fn(),
+      chat: jest.fn(),
+      chatStream: jest.fn(),
+    } as unknown as jest.Mocked<ModelProviderPort>;
+    const svc = new ModelsService(repo as unknown as ModelsRepository, enc, chatPort);
+    const created = await svc.create({
+      type: "embedding",
+      protocol: "self_hosted",
+      name: "embed-1",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-embed12345",
+      params: {},
+      enabled: true,
+    });
+    await expect(svc.chat(created.id, [{ role: "user", content: "q" }])).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(chatPort.chat).not.toHaveBeenCalled();
+  });
+
+  it("llm 类型：查行解密 key 后转发 port.chat()，返回值透传", async () => {
+    const repo = makeRepo();
+    const chatPort = {
+      testConnection: jest.fn(),
+      embed: jest.fn(),
+      rerank: jest.fn(),
+      chat: jest.fn(async () => ({ content: "回答内容" })),
+      chatStream: jest.fn(),
+    } as unknown as jest.Mocked<ModelProviderPort>;
+    const svc = new ModelsService(repo as unknown as ModelsRepository, enc, chatPort);
+    const created = await svc.create(createReq);
+    const messages = [{ role: "system" as const, content: "s" }, { role: "user" as const, content: "u" }];
+    const res = await svc.chat(created.id, messages, { temperature: 0.5 });
+    expect(res).toEqual({ content: "回答内容" });
+    expect(chatPort.chat).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "sk-test12345678", protocol: "openai_compat" }),
+      messages,
+      { temperature: 0.5 },
+    );
+  });
+});
+
+describe("ModelsService.chatStream", () => {
+  it("非 llm 类型 → 400，不调用 port", async () => {
+    const repo = makeRepo();
+    const chatPort = {
+      testConnection: jest.fn(),
+      embed: jest.fn(),
+      rerank: jest.fn(),
+      chat: jest.fn(),
+      chatStream: jest.fn(),
+    } as unknown as jest.Mocked<ModelProviderPort>;
+    const svc = new ModelsService(repo as unknown as ModelsRepository, enc, chatPort);
+    const created = await svc.create({
+      type: "rerank",
+      protocol: "cohere",
+      name: "rerank-1",
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-rerank12345",
+      params: {},
+      enabled: true,
+    });
+    await expect(
+      svc.chatStream(created.id, [{ role: "user", content: "q" }]),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(chatPort.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("llm 类型：转发 port.chatStream()，AsyncIterable 逐块透传", async () => {
+    const repo = makeRepo();
+    async function* gen() {
+      yield { delta: "你" };
+      yield { delta: "好" };
+      yield { done: true };
+    }
+    const chatPort = {
+      testConnection: jest.fn(),
+      embed: jest.fn(),
+      rerank: jest.fn(),
+      chat: jest.fn(),
+      chatStream: jest.fn(() => gen()),
+    } as unknown as jest.Mocked<ModelProviderPort>;
+    const svc = new ModelsService(repo as unknown as ModelsRepository, enc, chatPort);
+    const created = await svc.create(createReq);
+    const stream = await svc.chatStream(created.id, [{ role: "user", content: "u" }]);
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    expect(chunks).toEqual([{ delta: "你" }, { delta: "好" }, { done: true }]);
+    expect(chatPort.chatStream).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "sk-test12345678" }),
+      [{ role: "user", content: "u" }],
+      undefined,
+    );
+  });
+});
+
 describe("ModelsService.rerankTexts", () => {
   it("查行、解密 key、调用 provider.rerank，返回 results", async () => {
     const repo = makeRepo();

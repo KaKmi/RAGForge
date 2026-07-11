@@ -22,7 +22,14 @@ import { ENCRYPTION } from "../../platform/security/security.constants";
 import { EncryptionService } from "../../platform/security/encryption";
 import { ModelsRepository } from "./models.repository";
 import { MODEL_PROVIDER_PORT } from "./model-provider.constants";
-import type { ModelCallConfig, ModelProviderPort } from "./ports/model-provider.port";
+import type {
+  ChatMessage,
+  ChatOptions,
+  ChatResult,
+  ChatStreamChunk,
+  ModelCallConfig,
+  ModelProviderPort,
+} from "./ports/model-provider.port";
 import type { ModelProviderRow, NewModelProvider } from "./schema";
 
 const OP_BY_TYPE: Record<ModelType, string> = {
@@ -113,47 +120,32 @@ export class ModelsService {
     return this.doTest({ ...req });
   }
 
-  // 供 prompts 域试运行调用（012 §6）：按 modelId 查行、解密 key、调端口 chat()。
+  // 供 node-runtime 域调用（M8.0）：按 modelId 查行、解密 key、调端口 chat()。
   // 密钥解密不出 models 域；非 llm 类型直接拒绝（400）。
-  async chatText(
-    modelId: string,
-    input: { system: string; user: string },
-    opts?: { temperature?: number },
-  ): Promise<{ text: string }> {
+  async chat(modelId: string, messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult> {
     const row = await this.mustFind(modelId);
     if (row.type !== "llm") {
       throw new BadRequestException(`model ${modelId} 不是 llm 类型，无法 chat`);
     }
-    return await this.provider.chat(
-      {
-        type: row.type as ModelType,
-        protocol: row.protocol as ModelProtocol,
-        name: row.name,
-        baseUrl: row.baseUrl,
-        deploymentId: row.deploymentId ?? undefined,
-        params: row.params,
-        apiKey: this.enc.decrypt(row.apiKeyEnc),
-      },
-      input,
-      opts,
-    );
+    return await this.provider.chat(this.toCallConfig(row), messages, opts);
+  }
+
+  async chatStream(
+    modelId: string,
+    messages: ChatMessage[],
+    opts?: ChatOptions,
+  ): Promise<AsyncIterable<ChatStreamChunk>> {
+    const row = await this.mustFind(modelId);
+    if (row.type !== "llm") {
+      throw new BadRequestException(`model ${modelId} 不是 llm 类型，无法 chatStream`);
+    }
+    return this.provider.chatStream(this.toCallConfig(row), messages, opts);
   }
 
   // 供 ingestion 域调用：按 modelId 查行、解密 key、调端口 embed()。密钥解密不出 models 域。
   async embedTexts(modelId: string, texts: string[]): Promise<number[][]> {
     const row = await this.mustFind(modelId);
-    const { vectors } = await this.provider.embed(
-      {
-        type: row.type as ModelType,
-        protocol: row.protocol as ModelProtocol,
-        name: row.name,
-        baseUrl: row.baseUrl,
-        deploymentId: row.deploymentId ?? undefined,
-        params: row.params,
-        apiKey: this.enc.decrypt(row.apiKeyEnc),
-      },
-      texts,
-    );
+    const { vectors } = await this.provider.embed(this.toCallConfig(row), texts);
     return vectors;
   }
 
@@ -166,21 +158,20 @@ export class ModelsService {
     topN?: number,
   ): Promise<{ index: number; score: number }[]> {
     const row = await this.mustFind(modelId);
-    const { results } = await this.provider.rerank(
-      {
-        type: row.type as ModelType,
-        protocol: row.protocol as ModelProtocol,
-        name: row.name,
-        baseUrl: row.baseUrl,
-        deploymentId: row.deploymentId ?? undefined,
-        params: row.params,
-        apiKey: this.enc.decrypt(row.apiKeyEnc),
-      },
-      query,
-      texts,
-      topN,
-    );
+    const { results } = await this.provider.rerank(this.toCallConfig(row), query, texts, topN);
     return results;
+  }
+
+  private toCallConfig(row: ModelProviderRow): ModelCallConfig {
+    return {
+      type: row.type as ModelType,
+      protocol: row.protocol as ModelProtocol,
+      name: row.name,
+      baseUrl: row.baseUrl,
+      deploymentId: row.deploymentId ?? undefined,
+      params: row.params,
+      apiKey: this.enc.decrypt(row.apiKeyEnc),
+    };
   }
 
   // best-effort span：属性只含类型/协议/模型名，永不含 apiKey。

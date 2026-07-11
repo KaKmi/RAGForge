@@ -24,6 +24,13 @@ export const RAG = {
   RERANK_THRESHOLD: "rag.rerank.threshold",
   // 012 §Observability：试运行（预览）调用打标，与正式问答的成功率/延迟统计隔离
   PREVIEW: "rag.preview",
+  // M8.0 011 §Observability：NodeRuntime 执行层 span 属性
+  NODE_NAME: "rag.node.name",
+  PROMPT_CONTRACT_VERSION: "rag.prompt.contract_version",
+  VALIDATION_ERROR_CODE: "rag.validation.error_code",
+  REPAIR_RETRY_COUNT: "rag.repair.retry_count",
+  FALLBACK_USED: "rag.fallback.used",
+  STRUCTURED_OUTPUT_MODE: "rag.structured_output.mode",
 } as const;
 
 export const OTEL_OPERATIONS = {
