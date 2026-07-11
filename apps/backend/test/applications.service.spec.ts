@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
 import { ApplicationsService } from "../src/modules/applications/applications.service";
 
 const now = new Date("2026-07-11T00:00:00.000Z");
@@ -128,5 +128,25 @@ describe("ApplicationsService", () => {
       mode: "unavailable",
       reason: "pending_orchestration",
     });
+  });
+  it("normalizes top-level and wrapped unique violations to 409", async () => {
+    const topLevel = Object.assign(new Error("duplicate"), { code: "23505" });
+    const { app } = service({
+      createApplicationWithV1: jest.fn(async () => {
+        throw topLevel;
+      }),
+    });
+    await expect(
+      app.create({ slug: "after-sale", name: "售后", description: "", config }, "u"),
+    ).rejects.toBeInstanceOf(ConflictException);
+    const wrapped = Object.assign(new Error("wrapped"), { cause: { code: "23505" } });
+    const second = service({
+      createApplicationWithV1: jest.fn(async () => {
+        throw wrapped;
+      }),
+    });
+    await expect(
+      second.app.create({ slug: "after-sale", name: "售后", description: "", config }, "u"),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 });

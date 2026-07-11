@@ -257,8 +257,11 @@ export class ApplicationsService {
   }
 }
 function pgCode(error: unknown) {
-  const source = error instanceof Error ? error.cause : error;
-  return typeof source === "object" && source && "code" in source
-    ? (source as { code: string }).code
+  if (typeof error === "object" && error && "code" in error) {
+    return (error as { code: string }).code;
+  }
+  const cause = error instanceof Error ? error.cause : undefined;
+  return typeof cause === "object" && cause && "code" in cause
+    ? (cause as { code: string }).code
     : undefined;
 }
