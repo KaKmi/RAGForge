@@ -4,14 +4,16 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
-import type { ModelProvider } from "@codecrush/contracts";
 import { PromptsService } from "../src/modules/prompts/prompts.service";
 import type { PromptsRepository, PromptListRow } from "../src/modules/prompts/prompts.repository";
-import type { ModelsService } from "../src/modules/models/models.service";
+import {
+  UnsupportedChatProtocolError,
+  type NodeRuntimeService,
+} from "../src/modules/node-runtime/executor/node-runtime.service";
 import type { PromptVersionRow } from "../src/modules/prompts/schema";
 
-// 012 Story 7 §6：try-run 分支矩阵（drill 收口）——版本归属 / 编译错误 422 /
-// refApplicationId 门控 / rewrite·intent pending / 字段要求 / 协议矩阵 / provider 错误映射
+// M8.0 Story 8：try-run 分支矩阵——版本归属 / 编译错误 422 / refApplicationId 门控 /
+// rewrite·intent 走 NodeRuntime 真实结构化 / 字段要求 / NodeRuntime 错误映射
 
 const now = new Date("2026-07-01T00:00:00.000Z");
 const replyPrompt: PromptListRow = {
@@ -39,16 +41,6 @@ const version: PromptVersionRow = {
   author: "u@x",
   createdAt: now,
 };
-const llmModel: ModelProvider = {
-  id: "m1",
-  type: "llm",
-  protocol: "openai_compat",
-  name: "deepseek-v3",
-  baseUrl: "https://api.example.com/v1",
-  apiKeyMasked: "sk-****",
-  params: {},
-  enabled: true,
-};
 
 const baseReq = {
   modelId: "m1",
@@ -58,9 +50,8 @@ const baseReq = {
 function makeService(over: {
   prompt?: Partial<PromptListRow>;
   version?: Partial<PromptVersionRow> | null;
-  model?: Partial<ModelProvider>;
-  chatText?: jest.Mock;
-  getModel?: jest.Mock;
+  executeStructured?: jest.Mock;
+  streamText?: jest.Mock;
 }) {
   const repo = {
     findPromptById: jest.fn(async () => ({ ...replyPrompt, ...over.prompt })),
@@ -68,45 +59,35 @@ function makeService(over: {
       over.version === null ? undefined : { ...version, ...over.version },
     ),
   } as unknown as PromptsRepository;
-  const chatText = over.chatText ?? jest.fn(async () => ({ text: "模型输出" }));
-  const models = {
-    get: over.getModel ?? jest.fn(async () => ({ ...llmModel, ...over.model })),
-    chatText,
-  } as unknown as ModelsService;
-  return { service: new PromptsService(repo, models), chatText, models };
+  const executeStructured =
+    over.executeStructured ??
+    jest.fn(async () => ({ output: {}, fallbackUsed: false, validateSteps: [] }));
+  const streamText = over.streamText ?? jest.fn(async () => ({ text: "模型输出", fallbackUsed: false }));
+  const nodeRuntime = { executeStructured, streamText } as unknown as NodeRuntimeService;
+  return { service: new PromptsService(repo, nodeRuntime), executeStructured, streamText };
 }
 
 describe("PromptsService.tryRun · 前置校验", () => {
-  it("版本不属于该 Prompt → 404，不触达模型", async () => {
-    const { service, chatText } = makeService({ version: { promptId: "other" } });
+  it("版本不属于该 Prompt → 404，不触达 NodeRuntime", async () => {
+    const { service, streamText } = makeService({ version: { promptId: "other" } });
     await expect(service.tryRun("p1", "pv1", baseReq)).rejects.toBeInstanceOf(NotFoundException);
-    expect(chatText).not.toHaveBeenCalled();
+    expect(streamText).not.toHaveBeenCalled();
   });
 
-  it("存量 compile_status=has_errors → 422，不调用 provider", async () => {
-    const { service, chatText } = makeService({ version: { compileStatus: "has_errors" } });
+  it("存量 compile_status=has_errors → 422，不调用 NodeRuntime", async () => {
+    const { service, streamText } = makeService({ version: { compileStatus: "has_errors" } });
     await expect(service.tryRun("p1", "pv1", baseReq)).rejects.toBeInstanceOf(
       UnprocessableEntityException,
     );
-    expect(chatText).not.toHaveBeenCalled();
+    expect(streamText).not.toHaveBeenCalled();
   });
 
   it("refApplicationId 非空 → unavailable/application_context_not_available（009 依赖门控）", async () => {
-    const { service, chatText } = makeService({});
+    const { service, streamText } = makeService({});
     const res = await service.tryRun("p1", "pv1", { ...baseReq, refApplicationId: "app-1" });
     expect(res).toEqual({ mode: "unavailable", reason: "application_context_not_available" });
-    expect(chatText).not.toHaveBeenCalled();
+    expect(streamText).not.toHaveBeenCalled();
   });
-
-  it.each(["rewrite", "intent"] as const)(
-    "%s 节点 → unavailable/pending_node_runtime（不伪造结构化结果）",
-    async (node) => {
-      const { service, chatText } = makeService({ prompt: { node } });
-      const res = await service.tryRun("p1", "pv1", baseReq);
-      expect(res).toEqual({ mode: "unavailable", reason: "pending_node_runtime" });
-      expect(chatText).not.toHaveBeenCalled();
-    },
-  );
 
   it("reply 缺 query → 400；fallback 缺 reason → 400", async () => {
     const { service } = makeService({});
@@ -119,68 +100,91 @@ describe("PromptsService.tryRun · 前置校验", () => {
       fb.service.tryRun("p1", "pv1", { modelId: "m1", testVars: { query: "q" } }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
+});
 
-  it("模型非 llm → 400；协议不在矩阵 → unavailable/unsupported_protocol", async () => {
-    const notLlm = makeService({ model: { type: "embedding" } });
-    await expect(notLlm.service.tryRun("p1", "pv1", baseReq)).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+describe("PromptsService.tryRun · rewrite/intent 走 NodeRuntime.executeStructured", () => {
+  it("rewrite 节点：调用 executeStructured，返回 structured，temperature 透传", async () => {
+    const executeStructured = jest.fn(async () => ({
+      output: { rewrittenQuery: "改写后", keywords: [] },
+      fallbackUsed: false,
+      validateSteps: [{ step: "input", ok: true }],
+    }));
+    const { service } = makeService({ prompt: { node: "rewrite" }, executeStructured });
+    const res = await service.tryRun("p1", "pv1", { ...baseReq, temperature: 1.2 });
+    expect(res).toEqual({
+      mode: "structured",
+      fields: { rewrittenQuery: "改写后", keywords: [] },
+      validateSteps: [{ step: "input", ok: true }],
+      fallbackUsed: false,
+    });
+    expect(executeStructured.mock.calls[0][6]).toEqual({ temperature: 1.2 });
+  });
 
-    const cohere = makeService({ model: { protocol: "cohere" } });
-    const res = await cohere.service.tryRun("p1", "pv1", baseReq);
-    expect(res).toEqual({ mode: "unavailable", reason: "unsupported_protocol" });
-    expect(cohere.chatText).not.toHaveBeenCalled();
+  it("intent 节点：调用 executeStructured 时 reserved 传入空 availableRoutes（试运行无真实应用上下文）", async () => {
+    const executeStructured = jest.fn(async () => ({
+      output: { intent: "unknown", routeIds: [], confidence: 0 },
+      fallbackUsed: true,
+      validateSteps: [],
+    }));
+    const { service } = makeService({ prompt: { node: "intent" }, executeStructured });
+    await service.tryRun("p1", "pv1", baseReq);
+    expect(executeStructured.mock.calls[0][5]).toEqual({ availableRoutes: [] });
   });
 });
 
-describe("PromptsService.tryRun · 真实调用路径", () => {
-  it("reply 成功：渲染不可变 body 为 system（缺省字段按空串），query 作 user，temperature 透传", async () => {
-    const { service, chatText } = makeService({});
+describe("PromptsService.tryRun · reply/fallback 走 NodeRuntime.streamText", () => {
+  it("reply 成功：调用 streamText，temperature 透传，返回 mode:text", async () => {
+    const streamText = jest.fn(async () => ({ text: "模型输出", fallbackUsed: false }));
+    const { service } = makeService({ streamText });
     const res = await service.tryRun("p1", "pv1", {
       modelId: "m1",
       temperature: 1.2,
       testVars: { query: "怎么退货", retrievalContext: "第二条 七天无理由" },
     });
     expect(res).toEqual({ mode: "text", text: "模型输出" });
-    expect(chatText).toHaveBeenCalledWith(
-      "m1",
-      {
-        system: "依据 第二条 七天无理由 回答 怎么退货，历史：",
-        user: "怎么退货",
-      },
-      { temperature: 1.2 },
-    );
+    expect(streamText.mock.calls[0][6]).toEqual({ temperature: 1.2 });
   });
 
-  it("fallback 成功：reason 参与渲染", async () => {
-    const { service, chatText } = makeService({
+  it("fallback 成功：reason 参与 input", async () => {
+    const streamText = jest.fn(async () => ({ text: "兜底文案", fallbackUsed: true }));
+    const { service } = makeService({
       prompt: { node: "fallback" },
       version: { body: "因 {reason} 无法回答 {query}" },
+      streamText,
     });
     const res = await service.tryRun("p1", "pv1", {
       modelId: "m1",
       testVars: { query: "q", reason: "未命中知识" },
     });
     expect(res.mode).toBe("text");
-    expect(chatText.mock.calls[0][1].system).toBe("因 未命中知识 无法回答 q");
+    expect(streamText.mock.calls[0][4]).toMatchObject({ query: "q", reason: "未命中知识" });
+  });
+});
+
+describe("PromptsService.tryRun · NodeRuntime 错误映射", () => {
+  it("协议不在矩阵 → NodeRuntime 抛 UnsupportedChatProtocolError → unavailable/unsupported_protocol", async () => {
+    const streamText = jest.fn(async () => {
+      throw new UnsupportedChatProtocolError("protocol cohere 不支持");
+    });
+    const { service } = makeService({ streamText });
+    const res = await service.tryRun("p1", "pv1", baseReq);
+    expect(res).toEqual({ mode: "unavailable", reason: "unsupported_protocol" });
   });
 
-  it("provider 失败 → 502 BadGateway（错误响应，不是 unavailable）", async () => {
-    const { service } = makeService({
-      chatText: jest.fn(async () => {
-        throw new Error("HTTP 500: upstream boom");
-      }),
+  it("模型不存在（NodeRuntime 内部 mustFind 抛 404）原样透传", async () => {
+    const streamText = jest.fn(async () => {
+      throw new NotFoundException("model m1 not found");
     });
+    const { service } = makeService({ streamText });
+    await expect(service.tryRun("p1", "pv1", baseReq)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("NodeRuntime 抛普通 Error（如 provider 超时）→ 502 BadGateway", async () => {
+    const streamText = jest.fn(async () => {
+      throw new Error("HTTP 500: upstream boom");
+    });
+    const { service } = makeService({ streamText });
     await expect(service.tryRun("p1", "pv1", baseReq)).rejects.toBeInstanceOf(BadGatewayException);
     await expect(service.tryRun("p1", "pv1", baseReq)).rejects.toThrow(/upstream boom/);
-  });
-
-  it("模型不存在（ModelsService.get 抛 404）原样透传", async () => {
-    const { service } = makeService({
-      getModel: jest.fn(async () => {
-        throw new NotFoundException("model m1 not found");
-      }),
-    });
-    await expect(service.tryRun("p1", "pv1", baseReq)).rejects.toBeInstanceOf(NotFoundException);
   });
 });
