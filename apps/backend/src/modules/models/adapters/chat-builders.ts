@@ -1,27 +1,20 @@
 import type { ModelProtocol } from "@codecrush/contracts";
 import { bearerHeaders, isObj, joinUrl, modelId } from "./protocols/types";
-import type { ModelCallConfig } from "../ports/model-provider.port";
+import type {
+  ChatMessage,
+  ChatOptions,
+  ModelCallConfig,
+} from "../ports/model-provider.port";
 
 /**
- * 文本 chat 请求描述（012 Story 7 试运行）：builder 是纯函数，只负责按协议构造请求体
- * 与响应文本抽取。fetch / 60s 超时 / 密钥擦除统一在 ProtocolDispatchAdapter.chat()
+ * 文本 chat 请求描述（M8.0）：builder 是纯函数，只负责按协议构造请求体与
+ * 响应文本抽取。fetch / 超时 / 密钥擦除统一在 ProtocolDispatchAdapter.chat()
  * （同 PROBE/EMBED/RERANK_BUILDERS 的分工）。
  *
- * 支持矩阵（drill 收口）：当前全部三种 LLM 协议 openai_compat / anthropic / gemini。
+ * 支持矩阵：三种 LLM 协议 openai_compat / anthropic / gemini。
  * 参数合并优先级：请求 temperature 覆盖模型存量 params.temperature；
  * max token 沿用模型已配置的 params.max_tokens（anthropic 必填，缺省 1024）。
  */
-export interface ChatInput {
-  /** 平台组装的 system 指令（渲染后的 Prompt 正文） */
-  system: string;
-  /** 用户消息（试运行的 query） */
-  user: string;
-}
-
-export interface ChatCallOptions {
-  temperature?: number;
-}
-
 export interface ChatRequestSpec {
   url: string;
   headers: Record<string, string>;
@@ -32,13 +25,16 @@ export interface ChatRequestSpec {
 
 export type ChatBuilder = (
   config: ModelCallConfig,
-  input: ChatInput,
-  opts: ChatCallOptions,
+  messages: ChatMessage[],
+  opts: ChatOptions,
 ) => ChatRequestSpec;
 
 const ANTHROPIC_DEFAULT_MAX_TOKENS = 1024;
 
-function mergedTemperature(c: ModelCallConfig, opts: ChatCallOptions): number | undefined {
+// 四个 helper 均 export：Story 2 的 chat-stream-builders.ts 需要 import 复用，
+// 避免 request-body 构造逻辑（temperature/maxTokens 合并、system/developer/user
+// 消息合并规则）在两个文件里各写一份而漂移。
+export function mergedTemperature(c: ModelCallConfig, opts: ChatOptions): number | undefined {
   if (opts.temperature !== undefined) return opts.temperature;
   const stored = c.params?.temperature;
   if (stored === undefined) return undefined;
@@ -46,31 +42,40 @@ function mergedTemperature(c: ModelCallConfig, opts: ChatCallOptions): number | 
   return Number.isFinite(n) ? n : undefined;
 }
 
-function storedMaxTokens(c: ModelCallConfig): number | undefined {
+export function storedMaxTokens(c: ModelCallConfig): number | undefined {
   const stored = c.params?.max_tokens;
   if (stored === undefined) return undefined;
   const n = Number(stored);
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-// (protocol) → chat builder 表：仅 LLM 三协议（契约 TRY_RUN_CHAT_PROTOCOLS 同一矩阵）。
-// 其余协议查不到 builder：调用方（prompts try-run）已按契约矩阵返回 unavailable，
-// adapter 的防御分支兜底抛错（正常不可达）。
+// developer 角色无原生支持的协议（anthropic/gemini）按 011 Design §3 合并进
+// user 消息，用 [developer]/[user] 前缀分隔——不与自由文本拼接，保留结构边界。
+export function mergeNonSystemMessages(messages: ChatMessage[]): string {
+  return messages
+    .filter((m) => m.role !== "system")
+    .map((m) => `[${m.role === "developer" ? "developer" : "user"}]\n${m.content}`)
+    .join("\n\n");
+}
+
+export function systemContent(messages: ChatMessage[]): string {
+  return messages.find((m) => m.role === "system")?.content ?? "";
+}
+
 export const CHAT_BUILDERS: Partial<Record<ModelProtocol, ChatBuilder>> = {
-  openai_compat: (c, input, opts) => {
+  openai_compat: (c, messages, opts) => {
     const temperature = mergedTemperature(c, opts);
     const maxTokens = storedMaxTokens(c);
+    const so = opts.structuredOutput;
     return {
       url: joinUrl(c.baseUrl, "/chat/completions"),
       headers: bearerHeaders(c.apiKey),
       body: {
         model: modelId(c),
-        messages: [
-          { role: "system", content: input.system },
-          { role: "user", content: input.user },
-        ],
+        messages: messages.map((m) => ({ role: m.role, content: m.content })),
         ...(temperature !== undefined ? { temperature } : {}),
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+        ...(so ? { response_format: { type: "json_schema", json_schema: so } } : {}),
       },
       parseText: (json) => {
         if (!isObj(json) || !Array.isArray(json.choices)) return undefined;
@@ -80,8 +85,9 @@ export const CHAT_BUILDERS: Partial<Record<ModelProtocol, ChatBuilder>> = {
       },
     };
   },
-  anthropic: (c, input, opts) => {
+  anthropic: (c, messages, opts) => {
     const temperature = mergedTemperature(c, opts);
+    const so = opts.structuredOutput;
     return {
       url: joinUrl(c.baseUrl, "/v1/messages"),
       headers: {
@@ -93,12 +99,24 @@ export const CHAT_BUILDERS: Partial<Record<ModelProtocol, ChatBuilder>> = {
         model: modelId(c),
         // anthropic 必填 max_tokens：沿用模型配置，缺省 1024
         max_tokens: storedMaxTokens(c) ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
-        system: input.system,
-        messages: [{ role: "user", content: input.user }],
+        system: systemContent(messages),
+        messages: [{ role: "user", content: mergeNonSystemMessages(messages) }],
         ...(temperature !== undefined ? { temperature } : {}),
+        ...(so
+          ? {
+              tool_choice: { type: "tool", name: so.name },
+              tools: [{ name: so.name, input_schema: so.schema }],
+            }
+          : {}),
       },
       parseText: (json) => {
         if (!isObj(json) || !Array.isArray(json.content)) return undefined;
+        if (so) {
+          const toolUse = (
+            json.content as Array<{ type?: unknown; name?: unknown; input?: unknown }>
+          ).find((b) => b?.type === "tool_use" && b.name === so.name);
+          return toolUse ? JSON.stringify(toolUse.input) : undefined;
+        }
         const block = (json.content as Array<{ type?: unknown; text?: unknown }>).find(
           (b) => b?.type === "text" && typeof b.text === "string",
         );
@@ -106,20 +124,22 @@ export const CHAT_BUILDERS: Partial<Record<ModelProtocol, ChatBuilder>> = {
       },
     };
   },
-  gemini: (c, input, opts) => {
+  gemini: (c, messages, opts) => {
     const temperature = mergedTemperature(c, opts);
     const maxTokens = storedMaxTokens(c);
+    const so = opts.structuredOutput;
     const generationConfig = {
       ...(temperature !== undefined ? { temperature } : {}),
       ...(maxTokens !== undefined ? { maxOutputTokens: maxTokens } : {}),
+      ...(so ? { responseSchema: so.schema, responseMimeType: "application/json" } : {}),
     };
     return {
       url: joinUrl(c.baseUrl, `/models/${modelId(c)}:generateContent`),
       // 认证用 x-goog-api-key 请求头（同探针）：key 进 URL 会泄漏到日志/代理
       headers: { "x-goog-api-key": c.apiKey, "Content-Type": "application/json" },
       body: {
-        system_instruction: { parts: [{ text: input.system }] },
-        contents: [{ role: "user", parts: [{ text: input.user }] }],
+        system_instruction: { parts: [{ text: systemContent(messages) }] },
+        contents: [{ role: "user", parts: [{ text: mergeNonSystemMessages(messages) }] }],
         ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
       },
       parseText: (json) => {

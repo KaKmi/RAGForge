@@ -329,10 +329,19 @@ const inMemoryModelsRepo = {
 };
 const fakeModelProviderPort = {
   testConnection: jest.fn(async () => ({ ok: true, latencyMs: 5, statusCode: 200 })),
-  // 012 Story 7 try-run 走到这里：回显 system/user，e2e 可断言渲染结果
-  chat: jest.fn(async (_config: unknown, input: { system: string; user: string }) => ({
-    text: `echo:${input.system}|${input.user}`,
+  // M8.0：try-run 经 NodeRuntime 三层消息组装走到这里——回显全部消息内容，
+  // e2e 只需证明"真的打到了 provider、不是伪造结果"，具体消息拼装细节由
+  // node-runtime.compiler.spec.ts/node-runtime.executor.spec.ts 单测覆盖。
+  chat: jest.fn(async (_config: unknown, messages: Array<{ role: string; content: string }>) => ({
+    content: `echo:${messages.map((m) => m.content).join("|")}`,
   })),
+  chatStream: jest.fn(async function* (
+    _config: unknown,
+    messages: Array<{ role: string; content: string }>,
+  ) {
+    yield { delta: `echo:${messages.map((m) => m.content).join("|")}` };
+    yield { done: true };
+  }),
   // KnowledgeBasesService.create() 的 1024 维探针会走到这里
   embed: jest.fn(async (_config: unknown, texts: string[]) => ({
     vectors: texts.map(() => Array.from({ length: 1024 }, () => 0.01)),
@@ -2181,7 +2190,7 @@ describe("M2 domain skeleton", () => {
       rewriteVersionId = rewrite.body.versions[0].id;
     });
 
-    it("reply 真实调用：渲染不可变 body 为 system + query 作 user → mode:text", async () => {
+    it("reply 真实调用：经 NodeRuntime 三层组装打到 provider.chatStream → mode:text（M8.0）", async () => {
       const res = await request(app.getHttpServer())
         .post(`/api/prompts/${replyPromptId}/versions/${replyVersionId}/try-run`)
         .set(auth())
@@ -2191,19 +2200,28 @@ describe("M2 domain skeleton", () => {
           testVars: { query: "怎么退货", retrievalContext: "第二条 七天无理由" },
         })
         .expect(200);
-      expect(res.body).toEqual({
-        mode: "text",
-        text: "echo:依据 第二条 七天无理由 回答 怎么退货|怎么退货",
-      });
+      // 只断言"真的打到了 provider、拿到真实回显"，不锁定三层消息拼装的具体字符串——
+      // 那部分已由 node-runtime.compiler.spec.ts 单测覆盖，这里是 wiring smoke test。
+      expect(res.body.mode).toBe("text");
+      expect(res.body.text).toMatch(/^echo:/);
+      expect(res.body.text).toContain("依据 第二条 七天无理由 回答 怎么退货"); // developer 层渲染结果
+      expect(res.body.text).toContain("怎么退货"); // user 层 JSON envelope 里的 query
     });
 
-    it("rewrite 节点 → unavailable/pending_node_runtime（不伪造结构化结果）", async () => {
+    it("rewrite 节点：经 NodeRuntime.executeStructured 真实结构化（echo 非合法 JSON → 修复两次后 fallback，不再是 unavailable，M8.0）", async () => {
       const res = await request(app.getHttpServer())
         .post(`/api/prompts/${rewritePromptId}/versions/${rewriteVersionId}/try-run`)
         .set(auth())
         .send({ modelId: llmModelId, testVars: { query: "q" } })
         .expect(200);
-      expect(res.body).toEqual({ mode: "unavailable", reason: "pending_node_runtime" });
+      // echo mock 回显的不是合法 JSON，两次尝试都失败 → fallback：直接用原始 query
+      expect(res.body).toEqual({
+        mode: "structured",
+        fields: { rewrittenQuery: "q", keywords: [] },
+        validateSteps: expect.any(Array),
+        fallbackUsed: true,
+      });
+      expect(fakeModelProviderPort.chat).toHaveBeenCalledTimes(2); // 首次 + 修复重试一次，不递归
     });
 
     it("存量编译错误的版本 → 422，不调用 provider", async () => {

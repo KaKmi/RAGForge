@@ -1,8 +1,9 @@
 import type { ModelProtocol, ModelType } from "@codecrush/contracts";
 
-// 端口归 models 域（003:101）。终态为 001:95 chat()/embed()/rerank()，
-// M3 只需连通性测试；M4/M8 按需加必选方法（非破坏扩展，diff D5）。
-// (type, protocol) 是请求构造的路由键；params 为按类型的默认调用参数。
+// 端口归 models 域（003:101）。M8.0：chat() 从 012 的简化两消息签名升级为
+// 三层消息 + 结构化输出（011 Design §2），新增 chatStream()（非破坏扩展原则下的
+// 唯一一次签名 breaking change——旧签名的唯一调用方 prompts.service.tryRun()
+// 随本任务一起切到 node-runtime，不留兼容层）。
 export interface ModelCallConfig {
   type: ModelType;
   protocol: ModelProtocol;
@@ -24,19 +25,36 @@ export interface EmbedResult {
   vectors: number[][];
 }
 
-// 012 Story 7：文本 chat（试运行 reply/fallback 真实调用；011 落地后 node-runtime 复用）
-export interface ChatInput {
-  system: string;
-  user: string;
+export interface ChatMessage {
+  role: "system" | "developer" | "user" | "assistant";
+  content: string;
+}
+
+export interface StructuredOutputSpec {
+  name: string;
+  /** JSON Schema，由 node-runtime 用 Zod 4 原生 z.toJSONSchema(outputSchema) 生成 */
+  schema: Record<string, unknown>;
+  strict?: boolean;
 }
 
 export interface ChatOptions {
   /** 覆盖模型存量默认 temperature，仅影响本次调用 */
   temperature?: number;
+  maxTokens?: number;
+  structuredOutput?: StructuredOutputSpec;
 }
 
 export interface ChatResult {
-  text: string;
+  content: string;
+  raw?: unknown;
+  usage?: { inputTokens: number; outputTokens: number };
+}
+
+export interface ChatStreamChunk {
+  delta?: string;
+  done?: boolean;
+  usage?: { inputTokens: number; outputTokens: number };
+  error?: string;
 }
 
 export interface RerankResult {
@@ -45,7 +63,12 @@ export interface RerankResult {
 
 export interface ModelProviderPort {
   testConnection(config: ModelCallConfig): Promise<TestModelResult>;
-  chat(config: ModelCallConfig, input: ChatInput, opts?: ChatOptions): Promise<ChatResult>;
+  chat(config: ModelCallConfig, messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult>;
+  chatStream(
+    config: ModelCallConfig,
+    messages: ChatMessage[],
+    opts?: ChatOptions,
+  ): AsyncIterable<ChatStreamChunk>;
   embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult>;
   rerank(
     config: ModelCallConfig,

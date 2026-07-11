@@ -164,14 +164,24 @@ export const TryRunUnavailableReasonSchema = z.enum([
 ]);
 export type TryRunUnavailableReason = z.infer<typeof TryRunUnavailableReasonSchema>;
 
+// M8.0：executeStructured() 每阶段校验步骤（node-runtime.service.ts 权威定义，
+// 此处镜像其 ValidateStep.step 联合类型——含 review round 1/2 新增的 reserved，
+// 用于区分 input 校验失败与 reserved 校验失败）。
+export const ValidateStepSchema = z.object({
+  step: z.enum(["input", "reserved", "output_schema", "extra_validate", "repair", "fallback"]),
+  ok: z.boolean(),
+  issues: z.array(z.string()).optional(),
+});
+export type ValidateStep = z.infer<typeof ValidateStepSchema>;
+
 export const TryRunResultSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("text"), text: z.string() }),
   z.object({ mode: z.literal("unavailable"), reason: TryRunUnavailableReasonSchema }),
-  // 011 落地后启用：结构化字段 + 校验步骤 + 是否触发 fallback
+  // 011 落地：结构化字段 + 校验步骤 + 是否触发 fallback
   z.object({
     mode: z.literal("structured"),
     fields: z.record(z.string(), z.unknown()),
-    validateSteps: z.array(z.unknown()),
+    validateSteps: z.array(ValidateStepSchema),
     fallbackUsed: z.boolean(),
   }),
 ]);

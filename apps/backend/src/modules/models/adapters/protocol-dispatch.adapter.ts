@@ -1,9 +1,10 @@
 import { Injectable } from "@nestjs/common";
 import type { ModelProtocol, ModelType } from "@codecrush/contracts";
 import type {
-  ChatInput,
+  ChatMessage,
   ChatOptions,
   ChatResult,
+  ChatStreamChunk,
   EmbedResult,
   ModelCallConfig,
   ModelProviderPort,
@@ -11,6 +12,7 @@ import type {
   TestModelResult,
 } from "../ports/model-provider.port";
 import { CHAT_BUILDERS } from "./chat-builders";
+import { CHAT_STREAM_BUILDERS, type ChatStreamRequestSpec } from "./chat-stream-builders";
 import type { ProbeBuilder } from "./protocols/types";
 import {
   openaiCompatChatProbe,
@@ -109,15 +111,15 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     }
   }
 
-  // 012 Story 7：文本 chat（试运行）。失败一律 throw（同 embed/rerank 语义），
-  // 消费方（prompts try-run）把 provider 错误映射为 HTTP 错误响应而非 unavailable。
-  async chat(config: ModelCallConfig, input: ChatInput, opts?: ChatOptions): Promise<ChatResult> {
+  // M8.0：文本 chat（三层消息 + 结构化输出）。失败一律 throw（同 embed/rerank 语义），
+  // 消费方（node-runtime）把 provider 错误映射为对应的降级/Fallback 行为。
+  async chat(config: ModelCallConfig, messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult> {
     const builder = CHAT_BUILDERS[config.protocol];
     if (!builder) {
       // 契约层 TRY_RUN_CHAT_PROTOCOLS 已收口，调用方按矩阵返回 unavailable，此分支防御新枚举
       throw new Error(`unsupported protocol ${config.protocol} for chat`);
     }
-    const req = builder(config, input, opts ?? {});
+    const req = builder(config, messages, opts ?? {});
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
     let resp: Response;
@@ -149,7 +151,75 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     if (text === undefined || text.length === 0) {
       throw new Error("chat 响应形状不符：未找到非空文本输出");
     }
-    return { text };
+    return { content: text };
+  }
+
+  // M8.0：流式 chat。SSE 帧解析（fetch/超时/密钥擦除同 chat()；解析残缺 JSON 时
+  // parseSseFrame 内部抛出的 SyntaxError 会被下方 try/catch 捕获归一，不会未捕获
+  // 逃逸——见 concerns.md Story 2 条目）。
+  async *chatStream(
+    config: ModelCallConfig,
+    messages: ChatMessage[],
+    opts?: ChatOptions,
+  ): AsyncGenerator<ChatStreamChunk> {
+    const builder = CHAT_STREAM_BUILDERS[config.protocol];
+    if (!builder) {
+      throw new Error(`unsupported protocol ${config.protocol} for chatStream`);
+    }
+    const req = builder(config, messages, opts ?? {});
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+    let resp: Response;
+    try {
+      resp = await fetch(req.url, {
+        method: "POST",
+        headers: req.headers,
+        body: JSON.stringify(req.body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const message = controller.signal.aborted
+        ? `chat 流式请求超时（>${CHAT_TIMEOUT_MS}ms）`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+      throw new Error(redactSecret(message, config.apiKey));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok || !resp.body) {
+      const json: unknown = resp.ok ? undefined : await resp.json().catch(() => undefined);
+      throw new Error(redactSecret(upstreamError(resp.status, json), config.apiKey));
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE 帧以空行分隔；一次 read() 可能包含 0..N 个完整帧
+        let sep: number;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const chunk = parseSseFrame(frame, req);
+          if (chunk) {
+            yield chunk;
+            if (chunk.done) return;
+          }
+        }
+      }
+    } catch (err) {
+      throw new Error(redactSecret(err instanceof Error ? err.message : String(err), config.apiKey));
+    } finally {
+      // review round 1：consumer 提前 break（for-await 触发 generator.return()）时
+      // finally 仍会执行——释放 reader 锁并取消底层连接，防止连接悬挂不释放。
+      // cancel() 对已经自然读完（done）的流是安全 no-op，吞掉其自身可能的 reject。
+      await reader.cancel().catch(() => undefined);
+    }
   }
 
   async embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult> {
@@ -243,6 +313,26 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     const json = await resp.json();
     return { results: req.parseResponse(json) };
   }
+}
+
+// SSE 帧解析：openai_compat/gemini 用 "data: <json>" 单行；anthropic 用
+// "event: <type>\ndata: <json>" 两行配对——按帧内是否含 "event:" 行分流。
+// JSON.parse 抛出的 SyntaxError（残缺分片）沿调用栈冒泡，由 chatStream() 的
+// 外层 try/catch 统一捕获归一（不在此处吞掉——见 concerns.md Story 2 条目）。
+function parseSseFrame(frame: string, req: ChatStreamRequestSpec): ChatStreamChunk | undefined {
+  const lines = frame
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const eventLine = lines.find((l) => l.startsWith("event:"));
+  const dataLine = lines.find((l) => l.startsWith("data:"));
+  if (!dataLine) return undefined;
+  const data = dataLine.slice("data:".length).trim();
+  if (eventLine) {
+    const event = eventLine.slice("event:".length).trim();
+    return req.parseEvent(event, data);
+  }
+  return req.parseChunk(data);
 }
 
 // 明文 key 擦除：error message 中出现的 apiKey 一律替换（全局约束：key 不得出现在任何 error message）
