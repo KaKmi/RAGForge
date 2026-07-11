@@ -39,6 +39,16 @@ export class DocumentsRepository {
     return rows[0];
   }
 
+  // 重建切换时批量前移「本轮未重新处理」文档的 chunkVersion（配 ChunksRepository.carryForwardVersion
+  // 使用，单次 SQL 而非逐文档 update，避免重建规模大时的 N+1）。
+  async bulkUpdateChunkVersion(ids: string[], chunkVersion: number): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db
+      .update(documents)
+      .set({ chunkVersion, updatedAt: new Date() })
+      .where(inArray(documents.id, ids));
+  }
+
   async appendLifecycleStage(id: string, stage: LifecycleStageRow): Promise<void> {
     const row = await this.findById(id);
     if (!row) return;

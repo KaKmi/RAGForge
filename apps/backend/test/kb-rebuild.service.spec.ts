@@ -8,8 +8,8 @@ import type { AppConfigService } from "../src/platform/config/config.service";
 
 function makeDeps(processingProfilesEnabled = true) {
   const kbRepo = { findById: jest.fn(), updateVersions: jest.fn() };
-  const docsRepo = { findByKb: jest.fn() };
-  const chunksRepo = { deleteByVersion: jest.fn(async () => 0) };
+  const docsRepo = { findByKb: jest.fn(), bulkUpdateChunkVersion: jest.fn() };
+  const chunksRepo = { deleteByVersion: jest.fn(async () => 0), carryForwardVersion: jest.fn() };
   const ingestion = { enqueue: jest.fn(), createRun: jest.fn() };
   const config = { processingProfilesEnabled } as unknown as AppConfigService;
   return { kbRepo, docsRepo, chunksRepo, ingestion, config };
@@ -187,6 +187,30 @@ describe("KbRebuildService.startRebuild", () => {
       status: "ready",
     });
   });
+
+  // QA P1 回归：scope='inherited' 空范围时，被 override 排除的文档仍停留在旧版本——若不携带
+  // 前移，切换后 deleteByVersion 会把它们的切片当成「已替换的旧切片」一并删掉，静默清空其可检索内容。
+  it("scope='inherited' 空范围：被排除文档的切片携带前移到新版本，而非被清理（QA P1）", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: null });
+    deps.docsRepo.findByKb.mockResolvedValue([
+      { id: "d1", profileOverrideId: "faq-v1", chunkVersion: 1 },
+      { id: "d2", profileOverrideId: "course-wechat-v1", chunkVersion: 1 },
+    ]);
+
+    await makeService(deps).startRebuild("kb1", "inherited");
+
+    expect(deps.chunksRepo.carryForwardVersion).toHaveBeenCalledWith(
+      "kb1",
+      expect.arrayContaining(["d1", "d2"]),
+      1,
+      2,
+    );
+    expect(deps.docsRepo.bulkUpdateChunkVersion).toHaveBeenCalledWith(
+      expect.arrayContaining(["d1", "d2"]),
+      2,
+    );
+  });
 });
 
 describe("KbRebuildService.onDocumentTerminal", () => {
@@ -220,6 +244,55 @@ describe("KbRebuildService.onDocumentTerminal", () => {
       status: "ready",
     });
     expect(deps.chunksRepo.deleteByVersion).toHaveBeenCalledWith("kb1", 1);
+  });
+
+  // QA P1 回归：本轮全部文档都成功重处理、chunkVersion 已推进到 buildingVersion（正常健康路径）—
+  // 无需携带前移，不应对 carryForwardVersion/bulkUpdateChunkVersion 发起空操作之外的调用。
+  it("全部文档本轮成功推进到新版本时，不触发携带前移（健康路径无回归）", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: 2 });
+    deps.docsRepo.findByKb.mockResolvedValue([
+      { id: "d1", status: "ready", chunkVersion: 2 },
+      { id: "d2", status: "ready", chunkVersion: 2 },
+    ]);
+
+    await makeService(deps).onDocumentTerminal("kb1");
+
+    expect(deps.chunksRepo.carryForwardVersion).not.toHaveBeenCalled();
+    expect(deps.docsRepo.bulkUpdateChunkVersion).not.toHaveBeenCalled();
+    expect(deps.chunksRepo.deleteByVersion).toHaveBeenCalledWith("kb1", 1);
+  });
+
+  // QA P1 回归：本轮 reparse 失败的文档保留旧 chunkVersion（AC5：旧结果仍可检索）；
+  // KB 级切换发生时它必须和「被 scope 排除」的文档一样携带前移，而不是被当成旧切片清理掉。
+  it("本轮 reparse 失败的文档（chunkVersion 未推进）切片携带前移，保留旧结果可检索（AC5 × 全库切换）", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: 2 });
+    deps.docsRepo.findByKb.mockResolvedValue([
+      { id: "d1", status: "ready", chunkVersion: 2 }, // 本轮成功，已推进
+      { id: "d2", status: "failed", chunkVersion: 1 }, // 本轮失败，停留旧版本
+    ]);
+
+    await makeService(deps).onDocumentTerminal("kb1");
+
+    expect(deps.chunksRepo.carryForwardVersion).toHaveBeenCalledWith("kb1", ["d2"], 1, 2);
+    expect(deps.docsRepo.bulkUpdateChunkVersion).toHaveBeenCalledWith(["d2"], 2);
+  });
+
+  // QA P1 回归：scope='all' 重建中因 per-doc 409/400 被跳过的文档（kb-rebuild review P1/P2 修复）
+  // 停留在旧版本；切换时必须与失败/排除文档同等对待，携带前移而非被清理。
+  it("scope='all' 重建中被 per-doc 冲突跳过的文档（chunkVersion 未推进）切片携带前移", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: 2 });
+    deps.docsRepo.findByKb.mockResolvedValue([
+      { id: "d1", status: "ready", chunkVersion: 2 },
+      { id: "d2", status: "ready", chunkVersion: 1 }, // 被跳过：status 仍是旧 Run 留下的 ready，chunkVersion 未推进
+    ]);
+
+    await makeService(deps).onDocumentTerminal("kb1");
+
+    expect(deps.chunksRepo.carryForwardVersion).toHaveBeenCalledWith("kb1", ["d2"], 1, 2);
+    expect(deps.docsRepo.bulkUpdateChunkVersion).toHaveBeenCalledWith(["d2"], 2);
   });
 
   it("kb 当前不在 building 中（buildingVersion=null）时是 no-op（普通单文档入库场景）", async () => {

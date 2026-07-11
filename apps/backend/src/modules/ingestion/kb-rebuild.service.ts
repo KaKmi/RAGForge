@@ -127,6 +127,19 @@ export class KbRebuildService implements DocumentTerminalListener {
     buildingVersion: number,
     oldVersion: number,
   ): Promise<void> {
+    // 携带前移：chunkVersion 仍停留在 oldVersion 的文档——scope='inherited' 被排除、per-doc
+    // 409/400 被跳过、reparse 失败保留旧结果——本轮从未写入 buildingVersion，若不处理会在下方
+    // deleteByVersion 里被当成「已被替换的旧切片」一并删掉，导致这些文档静默清空、无 UI 提示
+    // （QA P1）。把它们的切片和 documents.chunk_version 一起前移到新版本，检索契约
+    // `chunks.version = kb.active_version` 才继续覆盖它们；真正被替换的旧切片（其文档已在
+    // processRun 成功路径写入 buildingVersion）不受影响，仍会被 deleteByVersion 正常清理。
+    const docs = await this.docsRepo.findByKb(kbId);
+    const carryDocIds = docs.filter((doc) => doc.chunkVersion === oldVersion).map((doc) => doc.id);
+    if (carryDocIds.length > 0) {
+      await this.chunksRepo.carryForwardVersion(kbId, carryDocIds, oldVersion, buildingVersion);
+      await this.docsRepo.bulkUpdateChunkVersion(carryDocIds, buildingVersion);
+    }
+
     await this.kbRepo.updateVersions(kbId, {
       activeVersion: buildingVersion,
       buildingVersion: null,

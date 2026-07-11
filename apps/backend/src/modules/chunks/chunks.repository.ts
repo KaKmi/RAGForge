@@ -124,6 +124,26 @@ export class ChunksRepository {
     return deleted.length;
   }
 
+  // 重建切换前调用：把「本轮未被重新处理」的文档（scope='inherited' 排除的文档、per-doc
+  // 409/400 被跳过的文档、reparse 失败仍保留旧结果的文档）的切片从旧版本前移到新版本，
+  // 使其在切换后继续满足检索契约 `chunks.version = kb.active_version`，不被下方
+  // deleteByVersion 当作「已被替换的旧切片」误删（QA P1：scope='inherited' 静默清空
+  // 被排除文档的可检索内容）。调用方必须保证 docIds 内文档确实未在本轮写入 toVersion。
+  async carryForwardVersion(
+    kbId: string,
+    docIds: string[],
+    fromVersion: number,
+    toVersion: number,
+  ): Promise<void> {
+    if (docIds.length === 0) return;
+    await this.db
+      .update(chunks)
+      .set({ version: toVersion })
+      .where(
+        and(eq(chunks.kbId, kbId), eq(chunks.version, fromVersion), inArray(chunks.docId, docIds)),
+      );
+  }
+
   // 全库重建切换后，异步分批清理旧版本切片（不进切换事务，避免大删拖慢原子切换）。
   // 分批：每轮只删 DELETE_BATCH_SIZE 条（子查询选 id 再按 id 删），避免单条超大 DELETE
   // 长时间持有行锁、产生巨量 WAL，以及一次性 RETURNING 全量 id 造成的 Node 内存尖峰。
