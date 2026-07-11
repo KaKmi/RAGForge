@@ -17,6 +17,10 @@ import request from "supertest";
 import { applyGlobalConfig, setupSwagger } from "../src/app/app-bootstrap";
 import {
   AgentSchema,
+  ApplicationChatResultSchema,
+  ApplicationConfigVersionSchema,
+  ApplicationDetailSchema,
+  ApplicationSchema,
   ChatStreamEventSchema,
   ChunkPageResponseSchema,
   ConversationSchema,
@@ -29,11 +33,21 @@ import {
   type PromptListQuery,
   PromptNodeVersionCandidateSchema,
   PromptSchema,
+  PromptUsageEntrySchema,
   PromptVersionSchema,
   RetrievalTestResponseSchema,
   TestModelResponseSchema,
 } from "@codecrush/contracts";
 import { AgentsModule } from "../src/modules/agents/agents.module";
+import { ApplicationsModule } from "../src/modules/applications/applications.module";
+import { ApplicationsRepository } from "../src/modules/applications/applications.repository";
+import type { ApplicationListRow } from "../src/modules/applications/applications.repository";
+import type {
+  ApplicationConfigVersionRow,
+  ApplicationRow,
+  NewApplication,
+  NewApplicationConfigVersion,
+} from "../src/modules/applications/schema";
 import { AgentsRepository } from "../src/modules/agents/agents.repository";
 import type { AgentListRow } from "../src/modules/agents/agents.repository";
 import type {
@@ -582,6 +596,155 @@ const inMemoryAgentsRepo: Partial<AgentsRepository> = {
   },
 };
 
+// —— M7a ApplicationsRepository 内存实现（DB-free，同上手写风格）——
+// production 指针默认 null（契约要求新建 v1 不上线）；prompt-usage 用例通过直接改
+// inMemoryApplications[i].productionConfigVersionId 模拟迁移回填后的生产指针。
+let applicationSeq = 0;
+let applicationVerSeq = 0;
+const inMemoryApplications: ApplicationRow[] = [];
+const inMemoryAppVersions: ApplicationConfigVersionRow[] = [];
+const inMemoryAppVersionKbs: Array<{ configVersionId: string; kbId: string }> = [];
+
+const toAppListRow = (a: ApplicationRow): ApplicationListRow => {
+  const versions = inMemoryAppVersions.filter((v) => v.applicationId === a.id);
+  const production = a.productionConfigVersionId
+    ? versions.find((v) => v.id === a.productionConfigVersionId)
+    : undefined;
+  return {
+    ...a,
+    productionVersion: production?.version ?? null,
+    latestVersion: Math.max(1, ...versions.map((v) => v.version)),
+    versionCount: versions.length || 1,
+  };
+};
+const insertAppVersion = (
+  row: NewApplicationConfigVersion,
+  kbIds: string[],
+): ApplicationConfigVersionRow => {
+  // unique(application_id, version) 模拟：撞号抛 23505（service createVersion 会 retry）
+  if (inMemoryAppVersions.some((v) => v.applicationId === row.applicationId && v.version === row.version))
+    throw pgError("23505");
+  const version = {
+    id: `appv${++applicationVerSeq}`,
+    configSchemaVersion: 1,
+    rerankModelId: null,
+    note: null,
+    createdAt: new Date(),
+    ...stripUndefined(row as Record<string, unknown>),
+  } as ApplicationConfigVersionRow;
+  inMemoryAppVersions.push(version);
+  kbIds.forEach((kbId) => inMemoryAppVersionKbs.push({ configVersionId: version.id, kbId }));
+  return version;
+};
+
+const inMemoryApplicationsRepo: Partial<ApplicationsRepository> = {
+  findApplications: async () => inMemoryApplications.map(toAppListRow),
+  findApplicationById: async (id: string) => {
+    const a = inMemoryApplications.find((x) => x.id === id);
+    return a ? toAppListRow(a) : undefined;
+  },
+  findBySlug: async (slug: string) => inMemoryApplications.find((x) => x.slug === slug),
+  findByName: async (name: string) => inMemoryApplications.find((x) => x.name === name),
+  findVersions: async (applicationId: string) =>
+    inMemoryAppVersions
+      .filter((v) => v.applicationId === applicationId)
+      .sort((a, b) => b.version - a.version),
+  findVersionById: async (id: string) => inMemoryAppVersions.find((v) => v.id === id),
+  findVersionKbIds: async (id: string) =>
+    inMemoryAppVersionKbs.filter((k) => k.configVersionId === id).map((k) => k.kbId),
+  findKbIdsByVersionIds: async (ids: string[]) => {
+    const map = new Map<string, string[]>();
+    for (const k of inMemoryAppVersionKbs)
+      if (ids.includes(k.configVersionId))
+        map.set(k.configVersionId, [...(map.get(k.configVersionId) ?? []), k.kbId]);
+    return map;
+  },
+  createApplicationWithV1: async (app: NewApplication, versionRow, kbIds: string[]) => {
+    if (inMemoryApplications.some((x) => x.slug === app.slug || x.name === app.name))
+      throw pgError("23505");
+    const application = {
+      id: `app${++applicationSeq}`,
+      description: "",
+      enabled: true,
+      productionConfigVersionId: null,
+      deletedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...stripUndefined(app as Record<string, unknown>),
+    } as ApplicationRow;
+    inMemoryApplications.push(application);
+    const version = insertAppVersion(
+      { ...versionRow, applicationId: application.id } as NewApplicationConfigVersion,
+      kbIds,
+    );
+    return { application, version };
+  },
+  insertVersion: async (row: NewApplicationConfigVersion, kbIds: string[], actor: string) => {
+    const version = insertAppVersion(row, kbIds);
+    const a = inMemoryApplications.find((x) => x.id === row.applicationId);
+    if (a) {
+      a.updatedBy = actor;
+      a.updatedAt = new Date();
+    }
+    return version;
+  },
+  updateBase: async (id: string, patch) => {
+    const a = inMemoryApplications.find((x) => x.id === id);
+    if (!a) return undefined;
+    Object.assign(a, stripUndefined(patch as Record<string, unknown>), { updatedAt: new Date() });
+    return a;
+  },
+  deleteApplication: async (id: string) => {
+    const idx = inMemoryApplications.findIndex((x) => x.id === id);
+    if (idx < 0) return 0;
+    inMemoryApplications.splice(idx, 1);
+    // cascade 版本与 kbs 快照
+    const versionIds = new Set(
+      inMemoryAppVersions.filter((v) => v.applicationId === id).map((v) => v.id),
+    );
+    for (let i = inMemoryAppVersions.length - 1; i >= 0; i--)
+      if (inMemoryAppVersions[i].applicationId === id) inMemoryAppVersions.splice(i, 1);
+    for (let i = inMemoryAppVersionKbs.length - 1; i >= 0; i--)
+      if (versionIds.has(inMemoryAppVersionKbs[i].configVersionId))
+        inMemoryAppVersionKbs.splice(i, 1);
+    return 1;
+  },
+  findPromptUsage: async (promptVersionIds: string[]) => {
+    if (promptVersionIds.length === 0) return [];
+    const ids = new Set(promptVersionIds);
+    const rows: {
+      application_id: string;
+      application_name: string;
+      config_version: number;
+      node: string;
+      prompt_version_id: string;
+    }[] = [];
+    // 只看 production 指针指向的版本；节点优先级 rewrite>intent>reply>fallback，
+    // 每个生产版本至多产一行（对齐真实 SQL 的 CASE 语义）。
+    for (const a of inMemoryApplications) {
+      if (!a.productionConfigVersionId) continue;
+      const v = inMemoryAppVersions.find((x) => x.id === a.productionConfigVersionId);
+      if (!v) continue;
+      const ordered: Array<[string, string]> = [
+        ["rewrite", v.promptRewriteVersionId],
+        ["intent", v.promptIntentVersionId],
+        ["reply", v.promptReplyVersionId],
+        ["fallback", v.promptFallbackVersionId],
+      ];
+      const hit = ordered.find(([, colId]) => ids.has(colId));
+      if (hit)
+        rows.push({
+          application_id: a.id,
+          application_name: a.name,
+          config_version: v.version,
+          node: hit[0],
+          prompt_version_id: hit[1],
+        });
+    }
+    return rows;
+  },
+};
+
 const inMemoryBlobs = new Map<string, Buffer>();
 const fakeBlobStore = {
   put: async (key: string, data: Buffer) => void inMemoryBlobs.set(key, data),
@@ -611,6 +774,7 @@ describe("M2 domain skeleton", () => {
         ChunksModule,
         RetrievalModule,
         AgentsModule,
+        ApplicationsModule,
         PromptsModule,
         ChatModule,
         ConversationsModule,
@@ -640,6 +804,8 @@ describe("M2 domain skeleton", () => {
       .useValue(inMemoryProcessingRunsRepo)
       .overrideProvider(AgentsRepository)
       .useValue(inMemoryAgentsRepo)
+      .overrideProvider(ApplicationsRepository)
+      .useValue(inMemoryApplicationsRepo)
       .overrideProvider(BLOB_STORE)
       .useValue(fakeBlobStore)
       .overrideProvider(INGESTION_QUEUE)
@@ -1424,6 +1590,353 @@ describe("M2 domain skeleton", () => {
     });
   });
 
+  describe("applications (M7a)", () => {
+    let appModelId: string;
+    let appKbId: string;
+    let promptVerIds: Record<"rewrite" | "intent" | "reply" | "fallback", string>;
+    let appSeq = 0;
+
+    const nodeCfg = (promptVersionId: string, modelId: string) => ({
+      promptVersionId,
+      modelId,
+      freedom: "balance" as const,
+      temperature: 0.7,
+      topP: 0.9,
+    });
+    const validConfig = () => ({
+      kbIds: [appKbId],
+      nodes: {
+        rewrite: nodeCfg(promptVerIds.rewrite, appModelId),
+        intent: nodeCfg(promptVerIds.intent, appModelId),
+        reply: nodeCfg(promptVerIds.reply, appModelId),
+        fallback: nodeCfg(promptVerIds.fallback, appModelId),
+      },
+      retrieval: {
+        schemaVersion: 1 as const,
+        topK: 20,
+        topN: 5,
+        hybridEnabled: true,
+        vectorWeight: 0.7,
+        rerankEnabled: false,
+      },
+      fallback: { toHuman: true },
+    });
+    const validCreate = () => {
+      appSeq++;
+      return {
+        slug: `demo-app-${appSeq}`,
+        name: `演示应用-${appSeq}`,
+        description: "e2e",
+        config: validConfig(),
+      };
+    };
+
+    // 自建 fixture（启用 llm 模型 / kb / 4 节点 prompt 版本）
+    beforeAll(async () => {
+      await ensureEmbeddingModel();
+      const modelRes = await request(app.getHttpServer())
+        .post("/api/models")
+        .set(auth())
+        .send({
+          type: "llm",
+          protocol: "openai_compat",
+          name: "app-e2e-llm",
+          baseUrl: "https://api.example.com/v1",
+          apiKey: "sk-appe2e123456",
+        })
+        .expect(201);
+      appModelId = modelRes.body.id;
+
+      const kbRes = await request(app.getHttpServer())
+        .post("/api/knowledge-bases")
+        .set(auth())
+        .send({
+          name: `app-e2e-kb-${Date.now()}`,
+          desc: "",
+          chunkTemplate: "general",
+          embeddingModelId,
+        })
+        .expect(201);
+      appKbId = kbRes.body.id;
+
+      const nodes = ["rewrite", "intent", "reply", "fallback"] as const;
+      const ids: Partial<Record<(typeof nodes)[number], string>> = {};
+      for (const node of nodes) {
+        const pRes = await request(app.getHttpServer())
+          .post("/api/prompts")
+          .set(auth())
+          .send({ name: `app-e2e-${node}`, node })
+          .expect(201);
+        ids[node] = pRes.body.versions[0].id;
+      }
+      promptVerIds = ids as Record<(typeof nodes)[number], string>;
+    });
+
+    it("POST / 合法 → 201：v1 未上线、四 FK 与 JSONB 回读一致；同 slug/name 二发 409", async () => {
+      const body = validCreate();
+      const res = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send(body)
+        .expect(201);
+      expect(() => ApplicationDetailSchema.parse(res.body)).not.toThrow();
+      expect(res.body.productionConfigVersionId).toBeNull();
+      expect(res.body.productionVersion).toBeNull();
+      expect(res.body.latestVersion).toBe(1);
+      expect(res.body.versions).toHaveLength(1);
+      const v1 = res.body.versions[0];
+      expect(v1.version).toBe(1);
+      expect(v1.kbIds).toEqual([appKbId]);
+      expect(v1.nodes.rewrite.promptVersionId).toBe(promptVerIds.rewrite);
+      expect(v1.nodes.intent.promptVersionId).toBe(promptVerIds.intent);
+      expect(v1.nodes.reply.promptVersionId).toBe(promptVerIds.reply);
+      expect(v1.nodes.fallback.promptVersionId).toBe(promptVerIds.fallback);
+      expect(v1.nodes.reply.modelId).toBe(appModelId);
+      expect(v1.retrieval).toEqual(body.config.retrieval);
+      expect(v1.fallback).toEqual({ toHuman: true });
+
+      // 同 slug → 409
+      await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send({ ...validCreate(), slug: body.slug })
+        .expect(409);
+      // 同 name → 409
+      await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send({ ...validCreate(), name: body.name })
+        .expect(409);
+    });
+
+    it("POST / kbIds 空 → 400；引用不存在 prompt version → 404；node 不匹配 → 400", async () => {
+      await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send({ ...validCreate(), config: { ...validConfig(), kbIds: [] } })
+        .expect(400);
+
+      const badPromptCfg = validConfig();
+      badPromptCfg.nodes.rewrite = nodeCfg("nope", appModelId);
+      await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send({ ...validCreate(), config: badPromptCfg })
+        .expect(404);
+
+      const mismatchCfg = validConfig();
+      mismatchCfg.nodes.rewrite = nodeCfg(promptVerIds.intent, appModelId);
+      await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send({ ...validCreate(), config: mismatchCfg })
+        .expect(400);
+    });
+
+    it("PATCH 基础信息 200（name/description/enabled）；带 slug → 400（strict）", async () => {
+      const created = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send(validCreate())
+        .expect(201);
+      const res = await request(app.getHttpServer())
+        .patch(`/api/applications/${created.body.id}`)
+        .set(auth())
+        .send({ name: `改名后-${appSeq}`, description: "改了描述", enabled: false })
+        .expect(200);
+      expect(() => ApplicationSchema.parse(res.body)).not.toThrow();
+      expect(res.body.name).toBe(`改名后-${appSeq}`);
+      expect(res.body.description).toBe("改了描述");
+      expect(res.body.enabled).toBe(false);
+
+      // slug 不可改（strictObject 拒未知键）
+      await request(app.getHttpServer())
+        .patch(`/api/applications/${created.body.id}`)
+        .set(auth())
+        .send({ slug: "new-slug" })
+        .expect(400);
+    });
+
+    it("POST config-versions → 201 version 2；GET 列表降序 [2,1]；GET :versionId 归属不符 404", async () => {
+      const created = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send(validCreate())
+        .expect(201);
+      const appId = created.body.id;
+
+      const v2 = await request(app.getHttpServer())
+        .post(`/api/applications/${appId}/config-versions`)
+        .set(auth())
+        .send({ config: validConfig(), note: "调大召回" })
+        .expect(201);
+      expect(() => ApplicationConfigVersionSchema.parse(v2.body)).not.toThrow();
+      expect(v2.body.version).toBe(2);
+      expect(v2.body.note).toBe("调大召回");
+
+      const list = await request(app.getHttpServer())
+        .get(`/api/applications/${appId}/config-versions`)
+        .set(auth())
+        .expect(200);
+      expect(list.body.map((v: { version: number }) => v.version)).toEqual([2, 1]);
+
+      // 归属不符：另一应用的版本从这个应用查 → 404
+      const other = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send(validCreate())
+        .expect(201);
+      const otherVersionId = other.body.versions[0].id;
+      await request(app.getHttpServer())
+        .get(`/api/applications/${appId}/config-versions/${otherVersionId}`)
+        .set(auth())
+        .expect(404);
+    });
+
+    it("验收 3：移动 Prompt 标签不改变应用引用的 prompt_*_version_id", async () => {
+      // 建一个 reply prompt 的第二版，供标签移动
+      const pRes = await request(app.getHttpServer())
+        .post("/api/prompts")
+        .set(auth())
+        .send({ name: `app-e2e-tagmove-${Date.now()}`, node: "reply" })
+        .expect(201);
+      const pid = pRes.body.id;
+      const replyV1Id = pRes.body.versions[0].id;
+      const v2 = await request(app.getHttpServer())
+        .post(`/api/prompts/${pid}/versions`)
+        .set(auth())
+        .send({ body: "第二版 {query} {retrievalContext}" })
+        .expect(201);
+
+      const cfg = validConfig();
+      cfg.nodes.reply = nodeCfg(replyV1Id, appModelId);
+      const created = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send({ ...validCreate(), config: cfg })
+        .expect(201);
+      const before = created.body.versions[0].nodes;
+
+      // 移动 production 标签到 v2
+      await request(app.getHttpServer())
+        .put(`/api/prompts/${pid}/tags`)
+        .set(auth())
+        .send({ name: "production", versionId: v2.body.id })
+        .expect(200);
+
+      const after = await request(app.getHttpServer())
+        .get(`/api/applications/${created.body.id}`)
+        .set(auth())
+        .expect(200);
+      // 应用引用的四节点版本 id 逐字节不变
+      expect(after.body.versions[0].nodes).toEqual(before);
+      expect(after.body.versions[0].nodes.reply.promptVersionId).toBe(replyV1Id);
+    });
+
+    it("GET prompt-usage：production 空 → []；置生产指针后返回具名条目；缺 promptId → 400", async () => {
+      // production 指针为 null 时该 prompt 无使用
+      const pRes = await request(app.getHttpServer())
+        .post("/api/prompts")
+        .set(auth())
+        .send({ name: `app-e2e-usage-${Date.now()}`, node: "reply" })
+        .expect(201);
+      const usagePromptId = pRes.body.id;
+      const usageVersionId = pRes.body.versions[0].id;
+
+      const cfg = validConfig();
+      cfg.nodes.reply = nodeCfg(usageVersionId, appModelId);
+      const created = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send({ ...validCreate(), config: cfg })
+        .expect(201);
+
+      // 静态路由不被 :id 捕获，且 production 为 null → []
+      const empty = await request(app.getHttpServer())
+        .get(`/api/applications/prompt-usage?promptId=${usagePromptId}`)
+        .set(auth())
+        .expect(200);
+      expect(empty.body).toEqual([]);
+
+      // 手工把 production 指向 v1（模拟迁移回填/M7b 上线后的状态）
+      const stored = inMemoryApplications.find((a) => a.id === created.body.id);
+      stored!.productionConfigVersionId = created.body.versions[0].id;
+
+      const used = await request(app.getHttpServer())
+        .get(`/api/applications/prompt-usage?promptId=${usagePromptId}`)
+        .set(auth())
+        .expect(200);
+      expect(Array.isArray(used.body)).toBe(true);
+      expect(used.body).toHaveLength(1);
+      expect(() => PromptUsageEntrySchema.parse(used.body[0])).not.toThrow();
+      expect(used.body[0]).toMatchObject({
+        applicationId: created.body.id,
+        applicationName: created.body.name,
+        node: "reply",
+        configVersion: 1,
+        promptVersionId: usageVersionId,
+        promptVersion: 1,
+      });
+
+      // 缺 promptId → 400
+      await request(app.getHttpServer())
+        .get("/api/applications/prompt-usage")
+        .set(auth())
+        .expect(400);
+    });
+
+    it("POST .../:versionId/chat → 200 unavailable；跨应用版本 → 404", async () => {
+      const created = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send(validCreate())
+        .expect(201);
+      const appId = created.body.id;
+      const versionId = created.body.versions[0].id;
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/applications/${appId}/config-versions/${versionId}/chat`)
+        .set(auth())
+        .expect(200);
+      expect(() => ApplicationChatResultSchema.parse(res.body)).not.toThrow();
+      expect(res.body).toEqual({ mode: "unavailable", reason: "pending_orchestration" });
+
+      // 跨应用：拿别的应用的版本 id 走这个应用的 chat → 404
+      const other = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send(validCreate())
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/applications/${appId}/config-versions/${other.body.versions[0].id}/chat`)
+        .set(auth())
+        .expect(404);
+    });
+
+    it("DELETE → 204，再 GET 404，版本级联消失", async () => {
+      const created = await request(app.getHttpServer())
+        .post("/api/applications")
+        .set(auth())
+        .send(validCreate())
+        .expect(201);
+      const appId = created.body.id;
+
+      await request(app.getHttpServer())
+        .delete(`/api/applications/${appId}`)
+        .set(auth())
+        .expect(204);
+      await request(app.getHttpServer())
+        .get(`/api/applications/${appId}`)
+        .set(auth())
+        .expect(404);
+      // 版本级联消失：列表端点因应用不存在 → 404
+      await request(app.getHttpServer())
+        .get(`/api/applications/${appId}/config-versions`)
+        .set(auth())
+        .expect(404);
+    });
+  });
+
   describe("prompts (012)", () => {
     let promptId: string;
     let v1Id: string;
@@ -1809,6 +2322,14 @@ describe("M2 domain skeleton", () => {
       expect(paths).not.toContain("/api/prompts/{id}/versions/{versionId}/rollback");
       expect(paths).toContain("/api/chat");
       expect(paths).toContain("/api/conversations/{id}/messages");
+      // M7a applications：静态 prompt-usage + 版本 chat 骨架；M7b production 端点不存在
+      expect(paths).toContain("/api/applications");
+      expect(paths).toContain("/api/applications/{id}");
+      expect(paths).toContain("/api/applications/prompt-usage");
+      expect(paths).toContain("/api/applications/{id}/config-versions");
+      expect(paths).toContain("/api/applications/{id}/config-versions/{versionId}");
+      expect(paths).toContain("/api/applications/{id}/config-versions/{versionId}/chat");
+      expect(paths).not.toContain("/api/applications/{id}/production");
     });
   });
 });

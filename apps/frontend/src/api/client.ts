@@ -13,6 +13,24 @@ import {
   type UpdateAgentRequest,
   CreateAgentConfigVersionRequestSchema,
   type CreateAgentConfigVersionRequest,
+  ApplicationListResponseSchema,
+  type ApplicationListResponse,
+  ApplicationDetailSchema,
+  type ApplicationDetail,
+  ApplicationSchema,
+  type Application,
+  ApplicationConfigVersionSchema,
+  type ApplicationConfigVersion,
+  ApplicationChatResultSchema,
+  type ApplicationChatResult,
+  CreateApplicationRequestSchema,
+  type CreateApplicationRequest,
+  CreateApplicationConfigVersionRequestSchema,
+  type CreateApplicationConfigVersionRequest,
+  UpdateApplicationRequestSchema,
+  type UpdateApplicationRequest,
+  PromptUsageResponseSchema,
+  type PromptUsageResponse,
   ChunkBatchDeleteRequestSchema,
   type ChunkBatchDeleteRequest,
   ChunkBatchDeleteResponseSchema,
@@ -224,6 +242,58 @@ export const rollbackAgentConfigVersion = (
   agentId: string,
   versionId: string,
 ): Promise<AgentConfigVersion> => postAgentVersionAction(agentId, versionId, "rollback");
+
+// applications — @Controller("applications")（M7a 应用配置基础：CRUD + 不可变配置版本 +
+// 版本对话骨架；production 上线语义留 M7b）
+export const getApplications = (): Promise<ApplicationListResponse> =>
+  getJson("/api/applications", ApplicationListResponseSchema);
+export const getApplicationDetail = (id: string): Promise<ApplicationDetail> =>
+  getJson(`/api/applications/${encodeURIComponent(id)}`, ApplicationDetailSchema);
+export const createApplication = (req: CreateApplicationRequest): Promise<ApplicationDetail> =>
+  postJson("/api/applications", req, CreateApplicationRequestSchema, ApplicationDetailSchema);
+export async function updateApplication(
+  id: string,
+  req: UpdateApplicationRequest,
+): Promise<Application> {
+  const resp = await apiFetch(`/api/applications/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(UpdateApplicationRequestSchema.parse(req)),
+  });
+  if (!resp.ok) throw new Error(`update application failed: ${resp.status} ${resp.statusText}`);
+  return ApplicationSchema.parse(await resp.json());
+}
+export async function deleteApplication(id: string): Promise<void> {
+  const resp = await apiFetch(`/api/applications/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!resp.ok) throw new Error(`delete application failed: ${resp.status} ${resp.statusText}`);
+}
+export const createApplicationConfigVersion = (
+  id: string,
+  req: CreateApplicationConfigVersionRequest,
+): Promise<ApplicationConfigVersion> =>
+  postJson(
+    `/api/applications/${encodeURIComponent(id)}/config-versions`,
+    req,
+    CreateApplicationConfigVersionRequestSchema,
+    ApplicationConfigVersionSchema,
+  );
+// 版本对话测试骨架：稳定返回 {mode:"unavailable"}（M8 换真实编排不破坏形状）
+export async function tryApplicationVersionChat(
+  id: string,
+  versionId: string,
+): Promise<ApplicationChatResult> {
+  const resp = await apiFetch(
+    `/api/applications/${encodeURIComponent(id)}/config-versions/${encodeURIComponent(versionId)}/chat`,
+    { method: "POST" },
+  );
+  if (!resp.ok) throw new Error(`application chat failed: ${resp.status} ${resp.statusText}`);
+  return ApplicationChatResultSchema.parse(await resp.json());
+}
+// 「谁在用」（012 seam）：production 指针引用该 prompt 的应用；失败/404 由调用方降级静默
+export const getPromptUsage = (promptId: string): Promise<PromptUsageResponse> =>
+  getJson(
+    `/api/applications/prompt-usage?promptId=${encodeURIComponent(promptId)}`,
+    PromptUsageResponseSchema,
+  );
 
 // models — @Controller("models")（M3 真实 CRUD + 连通性测试）
 export const getModels = (): Promise<ModelProviderListResponse> =>

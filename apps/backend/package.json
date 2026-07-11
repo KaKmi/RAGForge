@@ -11,6 +11,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:backfill-prompts": "tsx src/db/backfill-prompt-contracts.ts",
+    "db:backfill-applications": "tsx src/db/backfill-applications.ts",
     "test:db": "cross-env RUN_DB_TESTS=1 jest test/prompts.migration.spec.ts",
     "db:seed": "tsx src/db/seed.ts",
     "observability:verify": "node scripts/verify-observability.mjs"

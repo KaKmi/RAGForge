@@ -1,13 +1,18 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App";
+
+// 全量套件并发跑时，本文件每例都冷启动懒加载路由树（M7a 新增两个懒页后转换图更重），
+// 默认 1s 的 findBy 窗口偶发被冷转换击穿。放宽异步等待窗口与 it 超时，断言语义不变。
+configure({ asyncUtilTimeout: 5000 });
+vi.setConfig({ testTimeout: 15_000 });
 
 const NAV_LABELS = [
   "快速开始",
   "模型接入",
   "知识库",
   "Prompt 管理",
-  "Agent 管理",
+  "应用管理",
   "检索测试",
   "Trace 追踪",
   "知识缺口",
@@ -58,6 +63,8 @@ it("renders admin sider with brand, grouped nav (10 items + 3 group headers) whe
   for (const group of NAV_GROUPS) {
     expect(screen.getByText(group)).toBeInTheDocument();
   }
+  // M7a：导航入口由「Agent 管理」替换为「应用管理」（旧 /admin/agents 仅保留可直达）
+  expect(screen.queryByText("Agent 管理")).not.toBeInTheDocument();
 });
 
 it("renders GapsPage shell on /admin/gaps (数据飞轮壳页)", async () => {

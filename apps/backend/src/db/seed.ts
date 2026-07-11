@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { compilePromptBody, extractVars, NODE_CONTRACT_VERSION } from "@codecrush/contracts";
@@ -7,6 +8,13 @@ import { users } from "../modules/users/schema";
 import { hashPassword } from "../modules/users/password";
 import { normalizeEmail } from "../modules/users/users.service";
 import { prompts, promptVersions, promptVersionTags } from "../modules/prompts/schema";
+import { modelProviders } from "../modules/models/schema";
+import { knowledgeBases } from "../modules/knowledge-bases/schema";
+import {
+  applicationConfigVersionKbs,
+  applicationConfigVersions,
+  applications,
+} from "../modules/applications/schema";
 
 const DEMO_EMAIL = normalizeEmail(process.env.DEMO_USER_EMAIL ?? "demo@codecrush.local");
 const DEMO_PASSWORD = process.env.DEMO_USER_PASSWORD ?? "CodeCrushDemo123!";
@@ -77,9 +85,110 @@ async function main() {
     });
   }
 
+  await seedDemoApplication(db);
+
   await pool.end();
   console.log(`demo user ensured: ${DEMO_EMAIL}`);
   console.log(`default prompts ensured: ${DEFAULT_PROMPTS.length}`);
+}
+
+const DEMO_APP_SLUG = "demo-aftersale";
+
+// D6：条件演示应用。依赖已 seed 的 4 默认 Prompt v1 + 一个启用 llm 模型 + 一个知识库
+//（seed 不建模型/知识库；缺任一则跳过并日志说明）。production 指针留空——新建 v1 不上线
+//（002 验收 1），上线语义属 M7b。幂等：按 slug onConflictDoNothing。
+async function seedDemoApplication(db: ReturnType<typeof drizzle>): Promise<void> {
+  const [model] = await db
+    .select({ id: modelProviders.id })
+    .from(modelProviders)
+    .where(and(eq(modelProviders.type, "llm"), eq(modelProviders.enabled, true)))
+    .limit(1);
+  if (!model) {
+    console.log("no enabled llm model; skip demo application seed");
+    return;
+  }
+  const [kb] = await db.select({ id: knowledgeBases.id }).from(knowledgeBases).limit(1);
+  if (!kb) {
+    console.log("no knowledge base; skip demo application seed");
+    return;
+  }
+  const nodeVersionIds: Partial<Record<PromptNode, string>> = {};
+  for (const dp of DEFAULT_PROMPTS) {
+    const [pv] = await db
+      .select({ id: promptVersions.id })
+      .from(promptVersions)
+      .innerJoin(prompts, eq(promptVersions.promptId, prompts.id))
+      .where(and(eq(prompts.name, dp.name), eq(promptVersions.version, 1)))
+      .limit(1);
+    if (pv) nodeVersionIds[dp.node] = pv.id;
+  }
+  if (
+    !nodeVersionIds.rewrite ||
+    !nodeVersionIds.intent ||
+    !nodeVersionIds.reply ||
+    !nodeVersionIds.fallback
+  ) {
+    console.log("default prompt versions incomplete; skip demo application seed");
+    return;
+  }
+
+  const [application] = await db
+    .insert(applications)
+    .values({
+      slug: DEMO_APP_SLUG,
+      name: "售后助手 Demo",
+      description: "M7a 演示应用（未上线）",
+      enabled: true,
+      productionConfigVersionId: null,
+      createdBy: SEED_AUTHOR,
+      updatedBy: SEED_AUTHOR,
+    })
+    .onConflictDoNothing({ target: applications.slug })
+    .returning();
+  if (!application) {
+    console.log(`demo application already exists: ${DEMO_APP_SLUG}`);
+    return;
+  }
+
+  const nodeParam = { freedom: "balance" as const, temperature: 0.7, topP: 0.9 };
+  const [version] = await db
+    .insert(applicationConfigVersions)
+    .values({
+      applicationId: application.id,
+      version: 1,
+      configSchemaVersion: 1,
+      promptRewriteVersionId: nodeVersionIds.rewrite,
+      promptIntentVersionId: nodeVersionIds.intent,
+      promptReplyVersionId: nodeVersionIds.reply,
+      promptFallbackVersionId: nodeVersionIds.fallback,
+      rewriteModelId: model.id,
+      intentModelId: model.id,
+      replyModelId: model.id,
+      fallbackModelId: model.id,
+      rerankModelId: null,
+      nodeParams: {
+        rewrite: nodeParam,
+        intent: nodeParam,
+        reply: nodeParam,
+        fallback: nodeParam,
+      },
+      retrievalParams: {
+        schemaVersion: 1,
+        topK: 20,
+        topN: 5,
+        hybridEnabled: true,
+        vectorWeight: 0.7,
+        rerankEnabled: false,
+      },
+      fallbackParams: { toHuman: true },
+      note: null,
+      createdBy: SEED_AUTHOR,
+    })
+    .returning();
+  await db
+    .insert(applicationConfigVersionKbs)
+    .values({ configVersionId: version.id, kbId: kb.id });
+  console.log(`demo application ensured: ${DEMO_APP_SLUG}`);
 }
 
 main().catch((err) => {

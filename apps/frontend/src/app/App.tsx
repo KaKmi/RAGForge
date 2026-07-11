@@ -10,6 +10,8 @@ const ChatPage = lazy(() => import("../pages/chat/ChatPage"));
 const StartPage = lazy(() => import("../pages/admin/StartPage"));
 const DashboardPage = lazy(() => import("../pages/admin/DashboardPage"));
 const AgentsPage = lazy(() => import("../pages/admin/AgentsPage"));
+const ApplicationsPage = lazy(() => import("../pages/admin/ApplicationsPage"));
+const ApplicationDetailPage = lazy(() => import("../pages/admin/ApplicationDetailPage"));
 const KnowledgeBasesPage = lazy(() => import("../pages/admin/KnowledgeBasesPage"));
 const DocumentsPage = lazy(() => import("../pages/admin/DocumentsPage"));
 const ChunksPage = lazy(() => import("../pages/admin/ChunksPage"));
@@ -57,7 +59,10 @@ export function App() {
         >
           <Route index element={<StartPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
+          {/* 旧 agents 路由保留可直达（不入导航，M7b 删除） */}
           <Route path="agents" element={<AgentsPage />} />
+          <Route path="applications" element={<ApplicationsPage />} />
+          <Route path="applications/:appId" element={<ApplicationDetailPage />} />
           <Route path="knowledge-bases" element={<KnowledgeBasesPage />} />
           <Route path="knowledge-bases/:kbId/documents" element={<DocumentsPage />} />
           <Route path="knowledge-bases/:kbId/documents/:docId/chunks" element={<ChunksPage />} />

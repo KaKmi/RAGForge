@@ -21,6 +21,7 @@ import { AgentsModule } from "./modules/agents/agents.module";
 import { PromptsModule } from "./modules/prompts/prompts.module";
 import { ChatModule } from "./modules/chat/chat.module";
 import { ConversationsModule } from "./modules/conversations/conversations.module";
+import { ApplicationsModule } from "./modules/applications/applications.module";
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { ConversationsModule } from "./modules/conversations/conversations.modul
     RetrievalModule,
     AgentsModule,
     PromptsModule,
+    ApplicationsModule,
     ChatModule,
     ConversationsModule,
   ],

@@ -21,6 +21,7 @@ import {
   type CompileIssue,
   type ModelProvider,
   type PromptDetail,
+  type PromptUsageEntry,
   type PromptVersion,
   type TryRunResult,
 } from "@codecrush/contracts";
@@ -28,6 +29,7 @@ import {
   createPromptVersion,
   getModels,
   getPromptDetail,
+  getPromptUsage,
   movePromptTag,
   removePromptTag,
   tryRunPromptVersion,
@@ -68,6 +70,10 @@ export default function PromptDetailPage() {
   const [saveErr, setSaveErr] = useState("");
 
   const [historyOpen, setHistoryOpen] = useState(false);
+
+  // 「谁在用」（012 seam / 009）：production 指针引用本 Prompt 版本的应用；失败/404 静默置 null，
+  // 不把未知显示成「无人使用」。与详情并行拉取，不阻塞主体。
+  const [usage, setUsage] = useState<PromptUsageEntry[] | null>(null);
 
   // 标签面板：自定义标签输入（012 §3：production/v 不允许从自定义入口创建）
   const [newTag, setNewTag] = useState("");
@@ -121,6 +127,30 @@ export default function PromptDetailPage() {
     void refresh(true);
   }, [refresh]);
 
+  // usage 单独 try/catch 拉取（与详情并行）：失败/404 置 null 静默隐藏，页面主体不受影响
+  useEffect(() => {
+    let active = true;
+    setUsage(null);
+    getPromptUsage(promptId)
+      .then((list) => {
+        if (active) setUsage(list);
+      })
+      .catch(() => {
+        if (active) setUsage(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [promptId]);
+
+  // versionId → 引用它的 production 应用条目（派生渲染徽标/条幅/历史标记三处 UI）
+  const usageByVersionId = useMemo(() => {
+    const m = new Map<string, PromptUsageEntry[]>();
+    for (const u of usage ?? [])
+      m.set(u.promptVersionId, [...(m.get(u.promptVersionId) ?? []), u]);
+    return m;
+  }, [usage]);
+
   // 可试运行模型 = 启用的 llm 且协议在支持矩阵内；其余不展示为可运行（Invariant 4）
   useEffect(() => {
     let active = true;
@@ -154,6 +184,8 @@ export default function PromptDetailPage() {
   const errors = compiled.issues.filter((i) => i.severity === "error");
   const warnings = compiled.issues.filter((i) => i.severity === "warning");
   const dirty = sourceVersion !== null && body !== sourceVersion.body;
+  // 当前编辑版本被哪些 production 应用引用（命中 → 头部徽标 + 底部具名条幅）
+  const currentUsage = sourceVersion ? (usageByVersionId.get(sourceVersion.id) ?? []) : [];
 
   const applySuggestion = (issue: CompileIssue) => {
     if (!issue.field || !issue.suggestion) return;
@@ -311,6 +343,9 @@ export default function PromptDetailPage() {
         <span style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>Prompt 管理 /</span>
         <span style={{ fontSize: 16, fontWeight: 600 }}>{detail.name}</span>
         <Tag color={NODE_TAG_COLOR[node]}>{NODE_LABEL[node]}</Tag>
+        {currentUsage.length > 0 && sourceVersion && (
+          <Tag color="green">● v{sourceVersion.version} 服务中</Tag>
+        )}
         <div style={{ flex: 1 }} />
         <Button onClick={() => setHistoryOpen(true)}>🕑 历史版本 {detail.versionCount}</Button>
       </div>
@@ -702,6 +737,20 @@ export default function PromptDetailPage() {
         </div>
       </div>
 
+      {/* 「谁在用」具名条幅：当前编辑版本正被 production 应用引用时提示，改版不影响在线服务 */}
+      {currentUsage.length > 0 && sourceVersion && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>
+          {currentUsage.map((u) => (
+            <Alert
+              key={u.applicationId}
+              type="success"
+              showIcon
+              message={`「${u.applicationName}」的线上配置正用着 v${u.promptVersion}，对外服务中。改这个版本不会影响正在服务的内容——改完保存会生成新版本；要让新内容生效，去对应应用的配置里把节点指向新版本并上线。`}
+            />
+          ))}
+        </div>
+      )}
+
       {/* 历史版本抽屉：点行载入编辑；「创建副本」预填说明 */}
       <Drawer
         open={historyOpen}
@@ -742,6 +791,11 @@ export default function PromptDetailPage() {
                       </Tag>
                     </Tooltip>
                   )}
+                  {(usageByVersionId.get(v.id) ?? []).map((u) => (
+                    <Tag key={u.applicationId} color="green" style={{ fontSize: 11 }}>
+                      服务中 · {u.applicationName}
+                    </Tag>
+                  ))}
                   {isEditing && (
                     <span style={{ fontSize: 11, color: "#1677ff" }}>编辑中</span>
                   )}

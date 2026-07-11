@@ -14,3 +14,4 @@ export * from "../modules/documents/schema";
 export * from "../modules/ingestion/schema";
 export * from "../modules/chunks/schema";
 export * from "../modules/agents/schema";
+export * from "../modules/applications/schema";

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { Prompt, PromptDetail, PromptVersion } from "@codecrush/contracts";
 import PromptsPage from "./PromptsPage";
@@ -16,6 +16,7 @@ vi.mock("../../api/client", () => ({
   removePromptTag: vi.fn(),
   getModels: vi.fn(),
   tryRunPromptVersion: vi.fn(),
+  getPromptUsage: vi.fn(),
 }));
 
 const mocked = vi.mocked(client);
@@ -96,6 +97,8 @@ beforeEach(() => {
   });
   mocked.getPromptDetail.mockResolvedValue(makeDetail());
   mocked.getModels.mockResolvedValue([llmModel]);
+  // 默认无使用（不影响既有用例）；Story 6 各用例按需覆盖
+  mocked.getPromptUsage.mockResolvedValue([]);
 });
 
 describe("Prompt 列表页（012）", () => {
@@ -403,5 +406,61 @@ describe("Prompt 详情 · 试运行（012 Story 7）", () => {
     renderRoutes("/admin/prompts/p1");
     expect(await screen.findByText("该版本存在编译错误，无法试运行")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^运行/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("Prompt 详情 · 谁在用（M7a Story 6）", () => {
+  const usageEntry = (over: Partial<import("@codecrush/contracts").PromptUsageEntry> = {}) => ({
+    promptVersionId: "pv2",
+    promptVersion: 2,
+    applicationId: "app1",
+    applicationName: "售后助手",
+    node: "reply" as const,
+    configVersion: 1,
+    ...over,
+  });
+
+  it("命中当前编辑版本 → 头部「● vN 服务中」徽标 + 底部具名条幅", async () => {
+    mocked.getPromptUsage.mockResolvedValue([usageEntry()]);
+    renderRoutes("/admin/prompts/p1");
+    // 当前编辑版本为 v2（pv2）
+    expect(await screen.findByText("● v2 服务中")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /「售后助手」的线上配置正用着 v2，对外服务中。改这个版本不会影响正在服务的内容/,
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(mocked.getPromptUsage).toHaveBeenCalledWith("p1"));
+  });
+
+  it("历史抽屉命中版本行显示「服务中 · 应用名」标记", async () => {
+    mocked.getPromptUsage.mockResolvedValue([usageEntry()]);
+    renderRoutes("/admin/prompts/p1");
+    await screen.findByText("● v2 服务中");
+    fireEvent.click(screen.getByText("🕑 历史版本 2"));
+    const row = await screen.findByTestId("history-version-2");
+    expect(within(row).getByText("服务中 · 售后助手")).toBeInTheDocument();
+    // 未被引用的 v1 行无标记
+    expect(
+      within(screen.getByTestId("history-version-1")).queryByText(/服务中 ·/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("usage 请求失败 → 徽标/条幅/标记全部缺席，页面主体正常", async () => {
+    mocked.getPromptUsage.mockRejectedValue(new Error("404"));
+    renderRoutes("/admin/prompts/p1");
+    // 页面主体正常渲染（编辑区可见）
+    expect(await screen.findByText("你希望它怎么做")).toBeInTheDocument();
+    expect(screen.queryByText(/服务中/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/线上配置正用着/)).not.toBeInTheDocument();
+  });
+
+  it("usage 返回空数组 → 同样缺席，不渲染任何「无人使用」否定文案", async () => {
+    mocked.getPromptUsage.mockResolvedValue([]);
+    renderRoutes("/admin/prompts/p1");
+    expect(await screen.findByText("你希望它怎么做")).toBeInTheDocument();
+    expect(screen.queryByText(/服务中/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/无人使用/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/没有应用/)).not.toBeInTheDocument();
   });
 });

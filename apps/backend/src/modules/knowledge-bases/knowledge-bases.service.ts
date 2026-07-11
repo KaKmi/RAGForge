@@ -36,6 +36,11 @@ export class KnowledgeBasesService {
     @Inject(PROFILE_REGISTRY) private readonly registry: ProfileRegistry,
   ) {}
 
+  /** Cross-domain read port for application configuration validation. */
+  async findByIds(ids: string[]) {
+    return this.repo.findByIds(ids);
+  }
+
   // 迁移窗口解析：新前端送 processingProfile*，旧前端送 chunkTemplate；返回校验过的 ref + 反查的 chunkTemplate。
   // 二者互斥/成对由契约层保证；此处 registry 校验存在性（未注册 → 400）。
   private resolveProfile(
@@ -56,7 +61,9 @@ export class KnowledgeBasesService {
     // 保证 defaultProfile* 与 chunkTemplate 始终一致（契约已拒绝二者同传，此处为纵深防御）。
     return {
       ref,
-      chunkTemplate: (profileId ? def.chunker.id : (chunkTemplate ?? def.chunker.id)) as ChunkTemplate,
+      chunkTemplate: (profileId
+        ? def.chunker.id
+        : (chunkTemplate ?? def.chunker.id)) as ChunkTemplate,
     };
   }
 

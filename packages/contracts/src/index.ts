@@ -9,6 +9,7 @@ export * from "./processing-profiles";
 export * from "./chunks";
 export * from "./retrieval";
 export * from "./agents";
+export * from "./applications";
 export * from "./prompts";
 export * from "./prompt-template";
 export * from "./node-contract";
