@@ -149,4 +149,10 @@ describe("ApplicationsService", () => {
       second.app.create({ slug: "after-sale", name: "售后", description: "", config }, "u"),
     ).rejects.toBeInstanceOf(ConflictException);
   });
+  it("keeps slug immutable for direct service callers", async () => {
+    const repo = { updateBase: jest.fn(async () => ({ id: "a1" })) };
+    const { app } = service(repo);
+    await app.updateBase("a1", { slug: "rogue" } as never, "u");
+    expect(repo.updateBase).toHaveBeenCalledWith("a1", { updatedBy: "u" });
+  });
 });

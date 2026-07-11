@@ -82,9 +82,13 @@ export class ApplicationsService {
       const same = await this.repo.findByName(req.name);
       if (same && same.id !== id) throw new ConflictException(`name ${req.name} 已存在`);
     }
+    const patch: UpdateApplicationRequest = {};
+    if (req.name !== undefined) patch.name = req.name;
+    if (req.description !== undefined) patch.description = req.description;
+    if (req.enabled !== undefined) patch.enabled = req.enabled;
     let updated;
     try {
-      updated = await this.repo.updateBase(id, { ...req, updatedBy: actor });
+      updated = await this.repo.updateBase(id, { ...patch, updatedBy: actor });
     } catch (e) {
       if (pgCode(e) === "23505") throw new ConflictException("name 已存在");
       throw e;
