@@ -1,20 +1,23 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, count, desc, eq, ilike, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import type { PromptListQuery } from "@codecrush/contracts";
 import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
 import {
   prompts,
   promptVersions,
+  promptVersionTags,
   type NewPrompt,
   type NewPromptVersion,
   type PromptRow,
   type PromptVersionRow,
 } from "./schema";
 
-// list 端点 join 聚合（currentVersionNumber + versionCount），前端一次拿全避免 N+1
-export type PromptListRow = PromptRow & {
-  currentVersionNumber: number | null;
+// 012：列表聚合行 = prompt + 最新版本摘要（实时 ORDER BY version DESC LIMIT 1，无持久化指针）
+export type PromptListRow = Omit<PromptRow, "currentVersionId"> & {
+  latestVersionId: string | null;
+  latestVersion: number | null;
+  latestVariables: string[] | null;
   versionCount: number;
 };
 
@@ -23,21 +26,52 @@ export interface PromptListResult {
   total: number;
 }
 
+export interface TagRow {
+  promptVersionId: string;
+  name: string;
+}
+
+export interface TagWithVersionRow {
+  name: string;
+  versionId: string;
+  version: number;
+}
+
+export interface NodeVersionCandidateRow {
+  promptId: string;
+  promptName: string;
+  versionId: string;
+  version: number;
+  compileStatus: string | null;
+  body: string;
+  node: string;
+  createdAt: Date;
+}
+
+// 注意：drizzle 的 sql 模板里 `${prompts.x}` 渲染成未限定的 `"x"`，
+// 在相关子查询中会被内层表抢解析，外层引用必须显式限定 "prompts"."x"。
 const PROMPT_AGG_SELECT = {
   id: prompts.id,
   name: prompts.name,
   node: prompts.node,
-  currentVersionId: prompts.currentVersionId,
   createdAt: prompts.createdAt,
   updatedAt: prompts.updatedAt,
   updatedBy: prompts.updatedBy,
-  // 注意：drizzle 的 sql 模板里 `${prompts.x}` 渲染成未限定的 `"x"`，
-  // 在相关子查询中会被内层表（prompt_versions 也有 id 列）抢解析。
-  // 必须显式限定外层引用为 "prompts"."x"。
-  currentVersionNumber: sql<number | null>`(
+  latestVersionId: sql<string | null>`(
+    SELECT ${promptVersions.id} FROM ${promptVersions}
+    WHERE ${promptVersions.promptId} = "prompts"."id"
+    ORDER BY ${promptVersions.version} DESC LIMIT 1
+  )`.as("latest_version_id"),
+  latestVersion: sql<number | null>`(
     SELECT ${promptVersions.version} FROM ${promptVersions}
-    WHERE ${promptVersions.id} = "prompts"."current_version_id"
-  )`.as("current_version_number"),
+    WHERE ${promptVersions.promptId} = "prompts"."id"
+    ORDER BY ${promptVersions.version} DESC LIMIT 1
+  )`.as("latest_version"),
+  latestVariables: sql<string[] | null>`(
+    SELECT ${promptVersions.variables} FROM ${promptVersions}
+    WHERE ${promptVersions.promptId} = "prompts"."id"
+    ORDER BY ${promptVersions.version} DESC LIMIT 1
+  )`.as("latest_variables"),
   versionCount: sql<number>`(
     SELECT COUNT(*)::int FROM ${promptVersions}
     WHERE ${promptVersions.promptId} = "prompts"."id"
@@ -48,8 +82,7 @@ const PROMPT_AGG_SELECT = {
 export class PromptsRepository {
   constructor(@Inject(DRIZZLE) private readonly db: DB) {}
 
-  // 分页 + 条件查询：search（name/updatedBy ILIKE）+ node + status（prod/draft 按 currentVersionId 是否 null）
-  // 注：ILIKE 未转义 %/_ 通配符（demo 环境搜索词不太会含，后端真实化时再加 escape）
+  // 分页 + 条件查询：search（name/updatedBy ILIKE）+ node（012 去掉发布状态筛选）
   async findPrompts(q: PromptListQuery): Promise<PromptListResult> {
     const conditions: Array<SQL | undefined> = [];
     if (q.search) {
@@ -57,8 +90,6 @@ export class PromptsRepository {
       conditions.push(or(ilike(prompts.name, like), ilike(prompts.updatedBy, like)));
     }
     if (q.node) conditions.push(eq(prompts.node, q.node));
-    if (q.status === "prod") conditions.push(isNotNull(prompts.currentVersionId));
-    if (q.status === "draft") conditions.push(isNull(prompts.currentVersionId));
     const where = conditions.length ? and(...conditions) : undefined;
 
     const [items, totalRows] = await Promise.all([
@@ -83,16 +114,30 @@ export class PromptsRepository {
     return rows[0];
   }
 
-  async insertPrompt(row: NewPrompt): Promise<PromptRow> {
-    const rows = await this.db.insert(prompts).values(row).returning();
-    return rows[0];
+  // 012：建 Prompt + 空 v1 在同一事务（撞名唯一冲突原样抛给 service 归一 409）
+  async createPromptWithV1(
+    prompt: NewPrompt,
+    versionSeed: Omit<NewPromptVersion, "promptId">,
+  ): Promise<{ prompt: PromptRow; version: PromptVersionRow }> {
+    return await this.db.transaction(async (tx) => {
+      const created = (await tx.insert(prompts).values(prompt).returning())[0];
+      const version = (
+        await tx
+          .insert(promptVersions)
+          .values({ ...versionSeed, promptId: created.id })
+          .returning()
+      )[0];
+      return { prompt: created, version };
+    });
   }
 
+  /** 历史版本按版本号降序（历史抽屉/详情一次拿全，顺序确定） */
   async findVersions(promptId: string): Promise<PromptVersionRow[]> {
     return await this.db
       .select()
       .from(promptVersions)
-      .where(eq(promptVersions.promptId, promptId));
+      .where(eq(promptVersions.promptId, promptId))
+      .orderBy(desc(promptVersions.version));
   }
 
   async findVersionById(versionId: string): Promise<PromptVersionRow | undefined> {
@@ -109,50 +154,94 @@ export class PromptsRepository {
     return rows[0];
   }
 
-  async findProdVersion(promptId: string): Promise<PromptVersionRow | undefined> {
-    const rows = await this.db
-      .select()
-      .from(promptVersions)
-      .where(
-        and(eq(promptVersions.promptId, promptId), eq(promptVersions.status, "prod")),
-      )
-      .limit(1);
-    return rows[0];
+  /** 保存新版本时刷新 prompt 更新人/时间（列表「更新人·时间」列语义） */
+  async touchPrompt(promptId: string, actorEmail: string): Promise<void> {
+    await this.db
+      .update(prompts)
+      .set({ updatedBy: actorEmail, updatedAt: new Date() })
+      .where(eq(prompts.id, promptId));
   }
 
-  // 发布/回滚事务（D2）：archive 旧 prod → set 新 prod → 更新 prompt.currentVersionId/updatedBy/updatedAt（D16）
-  async publishVersion(
+  /** 某 Prompt 全部标签（键 = 版本 id），供版本 DTO 组装 */
+  async findTagsByPromptId(promptId: string): Promise<TagRow[]> {
+    return await this.db
+      .select({ promptVersionId: promptVersionTags.promptVersionId, name: promptVersionTags.name })
+      .from(promptVersionTags)
+      .where(eq(promptVersionTags.promptId, promptId))
+      .orderBy(asc(promptVersionTags.name));
+  }
+
+  /** 批量取多个版本的标签（列表页最新版本「标识」列，一次查询防 N+1） */
+  async findTagsByVersionIds(versionIds: string[]): Promise<TagRow[]> {
+    if (versionIds.length === 0) return [];
+    return await this.db
+      .select({ promptVersionId: promptVersionTags.promptVersionId, name: promptVersionTags.name })
+      .from(promptVersionTags)
+      .where(inArray(promptVersionTags.promptVersionId, versionIds))
+      .orderBy(asc(promptVersionTags.name));
+  }
+
+  /** 标签 + 所指版本号（PUT/GET tags 响应形状） */
+  async findTagsWithVersion(promptId: string): Promise<TagWithVersionRow[]> {
+    return await this.db
+      .select({
+        name: promptVersionTags.name,
+        versionId: promptVersionTags.promptVersionId,
+        version: promptVersions.version,
+      })
+      .from(promptVersionTags)
+      .innerJoin(promptVersions, eq(promptVersionTags.promptVersionId, promptVersions.id))
+      .where(eq(promptVersionTags.promptId, promptId))
+      .orderBy(asc(promptVersionTags.name));
+  }
+
+  // 012 §1 排他移动：一条原子 UPSERT，冲突目标是 (prompt_id, lower(name)) 表达式唯一索引。
+  // 并发移动在行锁上天然串行（Invariant 5）；跨 Prompt 版本被复合 FK 直接拒绝（23503）。
+  async upsertTag(
     promptId: string,
     versionId: string,
+    name: string,
     actorEmail: string,
-  ): Promise<PromptVersionRow> {
-    return await this.db.transaction(async (tx) => {
-      await tx
-        .update(promptVersions)
-        .set({ status: "archived" })
-        .where(
-          and(eq(promptVersions.promptId, promptId), eq(promptVersions.status, "prod")),
-        );
-      await tx
-        .update(promptVersions)
-        .set({ status: "prod" })
-        .where(eq(promptVersions.id, versionId));
-      await tx
-        .update(prompts)
-        .set({ currentVersionId: versionId, updatedBy: actorEmail, updatedAt: new Date() })
-        .where(eq(prompts.id, promptId));
-      const rows = await tx
-        .select()
-        .from(promptVersions)
-        .where(eq(promptVersions.id, versionId))
-        .limit(1);
-      const row = rows[0];
-      if (!row) throw new Error(`publishVersion: version ${versionId} vanished after update`);
-      return row;
-    });
+  ): Promise<void> {
+    await this.db.execute(sql`
+      INSERT INTO ${promptVersionTags} (prompt_id, prompt_version_id, name, created_by)
+      VALUES (${promptId}, ${versionId}, ${name}, ${actorEmail})
+      ON CONFLICT (prompt_id, lower(name))
+      DO UPDATE SET prompt_version_id = excluded.prompt_version_id,
+                    created_at = now(),
+                    created_by = excluded.created_by
+    `);
   }
 
-  // 删除 prompt（仅草稿允许；versions 由外键 ON DELETE CASCADE 级联删，无需手动清）
+  /** 摘除标签；返回删除行数（0 = 标签不存在） */
+  async deleteTag(promptId: string, name: string): Promise<number> {
+    const rows = await this.db
+      .delete(promptVersionTags)
+      .where(and(eq(promptVersionTags.promptId, promptId), eq(promptVersionTags.name, name)))
+      .returning({ id: promptVersionTags.id });
+    return rows.length;
+  }
+
+  /** 节点下所有 Prompt 的所有版本（012 版本平权：应用表单候选不过滤标签） */
+  async findNodeVersionCandidates(node: string): Promise<NodeVersionCandidateRow[]> {
+    return await this.db
+      .select({
+        promptId: prompts.id,
+        promptName: prompts.name,
+        versionId: promptVersions.id,
+        version: promptVersions.version,
+        compileStatus: promptVersions.compileStatus,
+        body: promptVersions.body,
+        node: prompts.node,
+        createdAt: promptVersions.createdAt,
+      })
+      .from(promptVersions)
+      .innerJoin(prompts, eq(promptVersions.promptId, prompts.id))
+      .where(eq(prompts.node, node))
+      .orderBy(asc(prompts.name), desc(promptVersions.version));
+  }
+
+  // 删除 prompt（versions/tags 由 FK ON DELETE CASCADE 级联；被应用配置 RESTRICT 时抛 23503）
   async deletePrompt(id: string): Promise<void> {
     await this.db.delete(prompts).where(eq(prompts.id, id));
   }
