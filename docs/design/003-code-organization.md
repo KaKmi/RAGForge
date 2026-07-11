@@ -5,8 +5,8 @@ category: "design"
 number: "003"
 status: draft
 services: [backend, frontend, tooling, deploy]
-related: ["design/001", "design/002", "design/007", "design/010", "design/011"]
-last_modified: "2026-07-10"
+related: ["design/001", "design/002", "design/007", "design/009", "design/010", "design/011", "design/012"]
+last_modified: "2026-07-11"
 ---
 
 # 003 — 代码组织与工程架构（M0）
@@ -16,6 +16,7 @@ last_modified: "2026-07-10"
 `draft` — 承接 `001`(系统架构) 与 `002`(路线图) 的 M0 代码组织决策，尚无实现代码。M0 落地后对照真实目录/lint 配置校验，推进为 `current`。
 2026-07-10：补充 010 的 ingestion Profile/Run 组织边界；Profile 公开描述归 contracts，具体定义、解析器/清洗器/分块器注册和 Run Snapshot 归 backend ingestion，Docling/OCR 只作为端口适配器存在。
 2026-07-10：补充 011 的 `node-runtime` 能力域；Prompt 素材库保持叶子，预览/Agent 激活/chat 共用版本化 NodeContract 和执行器，避免 prompts↔chat 循环依赖与两套 Prompt 组装逻辑。
+2026-07-11：目标业务域由 `agents` 改为 `applications`，拥有不可变配置版本、单一 production 指针、异步 ReleaseCheck 和 `ApplicationConfigResolver`。当前代码目录仍是 `agents`，迁移完成前本文保持 `draft`，详见 009。
 
 ## Summary
 
@@ -75,7 +76,7 @@ rag-service/
 │  │  │  │  └─ observability/       # Nest provider wrapper, 调用 @codecrush/otel
 │  │  │  └─ modules/                # 业务域(001 划分)
 │  │  │     ├─ auth/ users/ models/ knowledge-bases/ documents/
-│  │  │     ├─ ingestion/ chunks/ retrieval/ node-runtime/ agents/
+│  │  │     ├─ ingestion/ chunks/ retrieval/ node-runtime/ applications/
 │  │  │     └─ prompts/ chat/ traces/ conversations/
 │  │  │        每个: <m>.module.ts / .controller.ts / .service.ts
 │  │  │              schema.ts(Drizzle 表) / repository.ts
@@ -114,12 +115,14 @@ rag-service/
 - `platform/storage` / `platform/queue`：继续提供中性 `BlobStore` / `Queue` 端口，不感知 Profile、Canonical Document 或 Docling。
 - Docling/OCR 服务：独立运行时依赖，通过 ingestion-owned adapter 调用；其 URL、内部凭据、超时和资源限制由 `platform/config` 提供，不新建跨域业务模块。
 
-**LLM 节点契约的内部组织（011）**：新增 `node-runtime` 能力域，拥有版本化 `NodeContractRegistry`、模板编译/严格渲染、三层消息组装、结构化输出归一化、Schema/动态值域校验、一次修复和 Fallback。Prompt 后台预览、Agent 激活门禁与 chat 运行时均调用同一 `NodeRuntimeService`；任何一方不得自行拼接 Prompt 或解析模型 JSON。
+**应用配置与发布的内部组织（009）**：`applications` 域拥有应用身份、不可变配置版本、production 指针、ReleaseCheck 状态/fingerprint/队列协调和 `ApplicationConfigResolver`。`chat` 只通过 applications barrel 取得已解析配置；不得直接访问 applications repository/schema。applications 调用 node-runtime 的 `compileAndSample(NodeSampleRequest)`，但不得自行拼接 Prompt 或解析模型输出。
+
+**LLM 节点契约的内部组织（011）**：新增 `node-runtime` 能力域，拥有版本化 `NodeContractRegistry`、模板编译/严格渲染、三层消息组装、结构化输出归一化、Schema/动态值域校验、一次修复和 Fallback。Prompt 后台试运行、应用 ReleaseCheck 与 chat 运行时均调用同一 `NodeRuntimeService`；任何一方不得自行拼接 Prompt 或解析模型 JSON。
 
 - `apps/backend/src/modules/node-runtime/contracts/`：rewrite/intent/reply/fallback 的版本化 Contract、固定 System、Fallback 与注册表。
 - `apps/backend/src/modules/node-runtime/compiler/`：字段扫描、错误建议、`renderTemplateStrict`、Runtime Data envelope 和消息组装。
 - `apps/backend/src/modules/node-runtime/executor/`：调用 `ModelProviderPort` structured output、归一化、Zod/动态校验、修复与 Fallback。
-- `node-runtime` 不依赖 `prompts`、`agents`、`chat`、knowledge-bases 或 retrieval；调用方传入固定 PromptVersion body、modelId 和中性 RuntimeContext，避免循环依赖。
+- `node-runtime` 不依赖 `prompts`、`applications`、`chat`、knowledge-bases 或 retrieval；调用方传入固定 PromptVersion body、modelId、modelParams、samples 和中性 RuntimeContext，避免循环依赖。
 - `prompts` 继续是 persistence 叶子；Prompt 页面直接调用 node-runtime preview API，后端 prompts 模块不反向依赖执行层。
 - `prompt_versions.contract_version` 固定 Contract；`@codecrush/contracts` 只承载公共字段/输出 DTO、编译错误与预览 API schema，不承载固定 System、Fallback 函数或模型运行时。
 
@@ -130,7 +133,7 @@ rag-service/
 ```
 ① 编排        chat 问答编排 ─────────── (虚线: 经 OTLP/CH, 无代码依赖) ┄┄► traces 追踪(只读 CH)
                   │  依赖 ↓
-② 配置·会话   agents 配置 · conversations 会话
+② 配置·会话   applications 配置/发布 · conversations 会话
                   │
 ③ 能力域      retrieval 检索 · ingestion 入库 · documents 文档 · node-runtime 节点执行
                   │
@@ -142,12 +145,12 @@ rag-service/
 ```
 
 精确依赖边:
-- `chat` → `agents`、`retrieval`、`prompts`、`node-runtime`、`conversations`、`observability`（LLM 调用经 node-runtime，chat 不直接解析结构化输出）
-- `conversations` → `agents`
-- `agents` → `knowledge-bases`、`models`、`prompts`、`node-runtime`（激活门禁）
+- `chat` → `applications`、`retrieval`、`prompts`、`node-runtime`、`conversations`、`observability`（配置只经 `ApplicationConfigResolver`，LLM 调用经 node-runtime）
+- `conversations` → `applications`
+- `applications` → `knowledge-bases`、`models`、`prompts`、`node-runtime`（ReleaseCheck）
 - `retrieval` → `models`、`chunks`
 - `ingestion` → `documents`、`chunks`、`models`、`storage`、`queue`；Profile/Run/Canonical Document 均留在 ingestion 域内，不增加新的横向业务依赖
-- `node-runtime` → `models`、`platform/observability`、`contracts`；不得反向依赖 prompts/agents/chat
+- `node-runtime` → `models`、`platform/observability`、`contracts`；不得反向依赖 prompts/applications/chat
 - `documents` → `knowledge-bases`、`storage`、`queue`
 - `knowledge-bases` → `models`
 - `models` / `prompts` / `chunks` → 无域依赖(叶子),仅 `persistence`
@@ -237,7 +240,7 @@ Trace 相关能力分两层，不合成一个大包：
 - Jest+Vitest → 统一:双 runner 维护烦
 - pnpm+Turbo → Nx:应用/包数量激增
 - Zod 契约 → OpenAPI-first/codegen:出现外部 API 消费方
-- NodeContract 活跃版本 >3 或节点类型 >8 → 设计契约迁移助手/受约束插件；`node-runtime` 仍保持低于 chat/agents 的共享能力层
+- NodeContract 活跃版本 >3 或节点类型 >8 → 设计契约迁移助手/受约束插件；`node-runtime` 仍保持低于 chat/applications 的共享能力层
 
 ## Red-team
 

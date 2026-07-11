@@ -5,8 +5,8 @@ category: "design"
 number: "002"
 status: draft
 services: [backend, frontend, observability, deploy]
-related: ["design/001", "design/007", "design/010", "design/011"]
-last_modified: "2026-07-10"
+related: ["design/001", "design/007", "design/009", "design/010", "design/011", "design/012"]
+last_modified: "2026-07-11"
 ---
 
 # 002 — RAG 平台实现路线图（模块级）
@@ -16,23 +16,24 @@ last_modified: "2026-07-10"
 `draft` — 大块模块级路线图，承接 `001-rag-platform-architecture` 的架构决策。用于统筹执行顺序；**每一波再用 `/ship:design` 拆成可执行 spec + plan**。随各波落地，将对应模块状态在本文更新，并把细粒度产物记入各自 plan。
 2026-07-10：在已落地 M4 基础上新增 M4.1 文档处理 Profile，不阻塞既有 M5；该增强先复用现有解析/分块行为完成兼容迁移，再接版面解析与 OCR，详见 010。
 2026-07-10：在 M8 前新增 M8.0 NodeContract 地基：PromptVersion 固定 ContractVersion，预览/Agent 激活/C 端共用 NodeRuntime，非法模型输出不得进入编排，详见 011。
+2026-07-11：M7 产品语义改为“应用管理”：移除配置版本发布状态机和 Eval stub，新增不可变版本、单一 production 指针、异步真实 ReleaseCheck、停用/恢复与删除，详见 009。旧 M7 已实现代码需要作为迁移输入重做，本里程碑重新打开。
 
 ## Summary
 
-把 001 的架构拆成 M0–M12 主里程碑，并在真实需求出现后插入 M4.1 文档处理与 M8.0 NodeContract 两个兼容增强，**严格按依赖先行排序**。核心策略：**M2 先把所有页面骨架（含首页、Agent 配置）1:1 布局搭出（空态/mock），让全貌可见可点；M3+ 再按依赖顺序往骨架里填真实逻辑**。最没底的 OTLP→ClickHouse 链路在 M0.5 第一个验证掉。
+把 001 的架构拆成 M0–M12 主里程碑，并在真实需求出现后插入 M4.1 文档处理与 M8.0 NodeContract 两个兼容增强，**严格按依赖先行排序**。核心策略：**M2 先把所有页面骨架（含首页、应用配置）1:1 布局搭出（空态/mock），让全貌可见可点；M3+ 再按依赖顺序往骨架里填真实逻辑**。最没底的 OTLP→ClickHouse 链路在 M0.5 第一个验证掉。
 
 ## Boundaries
 
 > 反漂移边界 + 排序不变量。改顺序/范围先改本文。
 
-**In-scope（首期 M0–M9）**：工程地基、可观测最小闭环、用户/认证、前后端骨架、模型接入、Prompt 管理、知识库/切片/入库、检索、Agent 配置、问答/RAG 编排、Trace 追踪完整版。
+**In-scope（首期 M0–M9）**：工程地基、可观测最小闭环、用户/认证、前后端骨架、模型接入、Prompt 管理、知识库/切片/入库、检索、应用配置与发布、问答/RAG 编排、Trace 追踪完整版。
 
 **Out-of-scope（里程碑 2，M10–M12，schema 不堵死）**：运行看板聚合、评测集/管理/报告、RBAC 权限。
 
 **排序不变量（不可违反）**
 1. **M0 → M0.5 最先**：无地基与埋点，其余模块无处依附；OTLP/ClickHouse 风险最高，必须第一个端到端验证。
-2. **依赖先行**：M4 在 M3 后（需 embedding 模型）；M5 在 M4 后（需向量/切片）；M7 在 M3/M4/M5/M6 全部之后（Agent 是"绑定"一切的汇聚点）；M8.0 在 M3/M6/M7 后（需模型、PromptVersion、Agent 激活点）；M8 在 M8.0 后，M9 在 M8 后（M8 才产出真 trace）。
-3. **骨架与逻辑分离**：页面 1:1 布局在 M2 一次性出壳；真实逻辑在 M3+ 按依赖填入。Agent 配置页壳子在 M2，功能在 M7。
+2. **依赖先行**：M4 在 M3 后（需 embedding 模型）；M5 在 M4 后（需向量/切片）；M7a 在 M3/M4/M5/M6 后先落应用身份与不可变配置；M8.0 在 M3/M6 后落 NodeRuntime；M7b 汇聚 M7a/M8.0 实现 ReleaseCheck 与 production；M8 在 M7b 后，M9 在 M8 后。
+3. **骨架与逻辑分离**：页面 1:1 布局在 M2 一次性出壳；真实逻辑在 M3+ 按依赖填入。应用页在 M7a 具备保存/历史/测试骨架，在 M7b 才具备真实上线闭环。
 4. 一波一个 `design → dev` 闭环，不一次性规划全部（见 001 及 /ship:design 质量门）。
 
 ## 依赖总览（DAG，箭头 = 依赖方向）
@@ -54,10 +55,11 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
         │              │
         └──────┬───────┘
                ▼
-        M7 Agent 配置  (汇聚 M3 模型 / M4 知识库 / M5 检索 / M6 Prompt)
-               │
-               ▼
-        M8.0 NodeContract / Prompt 组装
+        M7a 应用配置基础  (不可变版本，暂不上线)
+               │                 M8.0 NodeContract / Prompt 组装
+               └──────────────────┬───────────────────┘
+                                  ▼
+        M7b 应用 ReleaseCheck / production 发布闭环
                │
                ▼
         M8 问答 / RAG 编排  (只消费 typed output，产出完整 OTLP trace) ◄── M0.5 埋点地基
@@ -117,9 +119,10 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
 
 | # | 模块 | 大块内容 | 依赖 | 验收 |
 |---|---|---|---|---|
-| **M7** | Agent 配置 | agent CRUD:绑知识库(M4)、三类模型(M3)、4 个 Prompt(M6)、检索参数(topK/topN/阈值/多路/权重)、兜底转人工 | M3,M4,M5,M6 | 建 Agent 绑齐上述、保存生效 |
-| **M8.0** | Prompt 组装 / NodeContract | 独立 `node-runtime`；四节点版本化 Contract；Prompt 三层组装；字段编译；Structured Output；Prompt 预览；Agent 激活门禁；运行时校验、修复一次与 Fallback——设计见 011 | M3,M6,M7 | 无字段模板仍可运行；未知字段阻断激活；非法 JSON/越权 routeId 不进入编排；Contract 升级不改变旧生产 Agent |
-| **M8** | 问答 / RAG 编排 | 编排:改写→意图→多路召回→重排→生成→引用→兜底；所有 LLM 节点只消费 NodeRuntime typed output；SSE 流式；会话/消息；C 端问答页；每阶段一个 span，产出完整 OTLP trace | M8.0,M7,M5,M3,M6 | 问一句带引用回答；非法节点输出可观测并降级；ClickHouse 出现完整 span 树；`message.trace_id` 写入 |
+| **M7a** | 应用配置基础 | application CRUD；不可变配置版本；版本级知识库/四节点模型/4 个 Prompt/检索参数快照；版本历史、载入编辑与未上线版本对话测试骨架；从旧 agents schema 开始迁移——设计见 009 | M3,M4,M5,M6 | 新建 v1 默认未上线；保存只追加版本；Prompt 标签变化不影响应用 |
+| **M8.0** | Prompt 组装 / NodeContract | 独立 `node-runtime`；四节点版本化 Contract；Prompt 三层组装；字段编译；Structured Output；Prompt 试运行；真实样例预演接口；运行时校验、修复一次与 Fallback——设计见 011 | M3,M6 | 无字段模板仍可运行；非法 JSON/越权 routeId 不进入编排；预览/预演/chat 共用执行器 |
+| **M7b** | 应用发布闭环 | 单一 production 指针；异步真实 NodeRuntime ReleaseCheck；fingerprint/过期；问题跳 Prompt 试运行；passed check + CAS 上线/回滚；停用/恢复与删除——设计见 009 | M7a,M8.0 | 检查失败不改变线上；并发发布冲突可见；停用优先于 production |
+| **M8** | 问答 / RAG 编排 | 编排:改写→意图→多路召回→重排→生成→引用→兜底；所有 LLM 节点只消费 NodeRuntime typed output；SSE 流式；会话/消息；C 端问答页；每阶段一个 span，产出完整 OTLP trace | M7b,M8.0,M5,M3,M6 | 问一句带引用回答；非法节点输出可观测并降级；ClickHouse 出现完整 span 树；`message.trace_id` 写入 |
 | **M9** | Trace 追踪(完整版) | 列表(采样/失败率/P95/筛选) + 详情(瀑布图/Span 树、命中分块及分数、引用溯源、token/cost、OTLP JSON 导出、重放、跳 Prompt 版本) | M8, M0.5 | 从一条回答一键跳其 trace 详情，信息齐全 |
 
 #### M8.0 需求记录
@@ -128,9 +131,9 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
 
 1. 管理员只编辑节点策略 Instructions；平台固定职责、输入/输出 Schema、保留数据、动态校验和 Fallback。
 2. `query/history/availableRoutes` 等 Runtime Data 始终由平台注入；管理员无占位符时仍可运行。
-3. 合法字段可重复引用；未知/语法错误/保留字段冲突允许保存草稿，但必须阻断生产 Agent 激活。
-4. PromptVersion 固定 ContractVersion，AgentConfigVersion 固定 PromptVersion；旧 Contract 只要仍被生产引用就不能删除。
-5. Prompt 预览、Agent 激活预演和 C 端调用共用 NodeRuntime，不允许各自拼接 Prompt。
+3. 合法字段可重复引用；未知/语法错误/保留字段冲突不阻止保存新的不可变版本，但必须阻断应用 ReleaseCheck。
+4. PromptVersion 固定 ContractVersion，ApplicationConfigVersion 固定 PromptVersion；旧 Contract 只要仍被任一应用版本引用就不能删除。
+5. Prompt 预览、应用 production 预演和 C 端调用共用 NodeRuntime，不允许各自拼接 Prompt。
 6. rewrite/intent 走严格结构化输出和动态值域校验；reply/fallback 至少保证非空，并具有代码级最终 Fallback。
 7. 结构失败最多修复一次；仍失败降级，非法原始输出不得流入检索、路由或最终回答。
 8. Trace 记录 PromptVersion、ContractVersion、校验错误、结构化输出模式、修复次数和 Fallback。
@@ -139,7 +142,7 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
 
 | # | 模块 | 说明 |
 |---|---|---|
-| **M10** | 运行看板 | 问答量/Agent 分布/热门问题等聚合图表 |
+| **M10** | 运行看板 | 问答量/应用分布/热门问题等聚合图表 |
 | **M11** | 评测集 / 管理 / 报告 | 召回命中率、回答准确率、引用正确率、耗时 |
 | **M12** | RBAC 权限 | 多角色/多团队，承接 M1 用户体系 |
 
