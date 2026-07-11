@@ -243,8 +243,11 @@ export async function verifyBackfill(db: DB): Promise<{ ok: boolean; problems: s
     if (
       row.applicationId !== source.agent_id ||
       row.version !== source.version ||
+      row.configSchemaVersion !== 1 ||
+      row.rerankModelId !== source.rerank_model_id ||
       row.note !== source.note ||
       row.createdBy !== source.created_by ||
+      row.createdAt.getTime() !== new Date(source.created_at).getTime() ||
       JSON.stringify(targetConfig) !== JSON.stringify(expectedConfig)
     ) {
       problems.push(`配置版本 ${row.id} 与 legacy 映射不一致`);

@@ -183,6 +183,15 @@ describeDb("applications migration + backfill", () => {
     expect(invalid.ok).toBe(false);
     expect(invalid.problems).toContain("applications 存在与 legacy identity 映射不一致的行");
     await pool.query(`UPDATE applications SET description='' WHERE id=$1`, [ids.agent]);
+    await pool.query(`UPDATE application_config_versions SET config_schema_version=2 WHERE id=$1`, [
+      ids.version,
+    ]);
+    expect((await verifyBackfill(db)).problems).toContain(
+      `配置版本 ${ids.version} 与 legacy 映射不一致`,
+    );
+    await pool.query(`UPDATE application_config_versions SET config_schema_version=1 WHERE id=$1`, [
+      ids.version,
+    ]);
   });
 
   it("keeps referenced prompts restricted and cascades application-owned rows", async () => {

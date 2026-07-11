@@ -56,4 +56,4 @@ ALTER TABLE "application_config_versions" ADD CONSTRAINT "application_config_ver
 ALTER TABLE "application_config_versions" ADD CONSTRAINT "application_config_versions_rerank_model_id_model_providers_id_fk" FOREIGN KEY ("rerank_model_id") REFERENCES "public"."model_providers"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "application_config_version_kbs_kb_id_idx" ON "application_config_version_kbs" USING btree ("kb_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "application_config_versions_application_id_version_idx" ON "application_config_versions" USING btree ("application_id","version");--> statement-breakpoint
-CREATE INDEX "application_config_versions_application_id_created_at_idx" ON "application_config_versions" USING btree ("application_id","created_at");
+CREATE INDEX "application_config_versions_application_id_created_at_idx" ON "application_config_versions" USING btree ("application_id","created_at" DESC NULLS LAST);

@@ -84,7 +84,7 @@ export const applicationConfigVersions = pgTable(
     ).on(table.applicationId, table.version),
     applicationCreatedAtIndex: index(
       "application_config_versions_application_id_created_at_idx",
-    ).on(table.applicationId, table.createdAt),
+    ).on(table.applicationId, table.createdAt.desc()),
   }),
 );
 
