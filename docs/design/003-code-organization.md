@@ -123,7 +123,10 @@ rag-service/
 - `apps/backend/src/modules/node-runtime/compiler/`：字段扫描、错误建议、`renderTemplateStrict`、Runtime Data envelope 和消息组装。
 - `apps/backend/src/modules/node-runtime/executor/`：调用 `ModelProviderPort` structured output、归一化、Zod/动态校验、修复与 Fallback。
 - `node-runtime` 不依赖 `prompts`、`applications`、`chat`、knowledge-bases 或 retrieval；调用方传入固定 PromptVersion body、modelId、modelParams、samples 和中性 RuntimeContext，避免循环依赖。
-- `prompts` 继续是 persistence 叶子；Prompt 页面直接调用 node-runtime preview API，后端 prompts 模块不反向依赖执行层。
+- ~~`prompts` 继续是 persistence 叶子；Prompt 页面直接调用 node-runtime preview API，后端 prompts 模块不反向依赖执行层。~~
+  **已被下方 2026-07-11 条目部分取代**——试运行这一条路径改为 `prompts` 后端直接
+  依赖 `NodeRuntimeService`，不是前端直连 node-runtime 新端点；`prompts` 仍是
+  持久化叶子（无 repository 反查），但不再是"零域依赖"。
   2026-07-11（M8.0 落地）：实现阶段发现按此约束需要新端点 + 前端改调用路径，
   与 012 已实现并过 QA 的 try-run 端点（`POST /api/prompts/:id/versions/:version/
   try-run`，为避免二次破坏性改动而设计了 tagged union 响应形状）冲突，用户拍板
