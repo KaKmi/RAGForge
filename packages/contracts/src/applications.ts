@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { FreedomSchema } from "./agents";
-import { PromptNodeSchema } from "./node-contract";
+// M7b S8：FreedomSchema/PromptNodeSchema 均来自 node-contract 叶子——applications 不再依赖 agents 旧域。
+import { FreedomSchema, PromptNodeSchema } from "./node-contract";
 
 export const APPLICATION_SLUG_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
 

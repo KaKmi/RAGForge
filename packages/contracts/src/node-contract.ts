@@ -11,6 +11,12 @@ import { extractVars } from "./prompt-template";
 export const PromptNodeSchema = z.enum(["rewrite", "intent", "reply", "fallback"]);
 export type PromptNode = z.infer<typeof PromptNodeSchema>;
 
+// 节点生成自由度预设（precise/balance/improvise 预设温度/TopP，custom 解锁微调）。
+// M7b S8：从 agents.ts 迁至此叶子——applications/agents 都消费它，属节点配置共享概念，
+// 不该让 applications → agents 反向依赖（agents 是待下线的旧域）。agents.ts 改为从此 import。
+export const FreedomSchema = z.enum(["precise", "balance", "improvise", "custom"]);
+export type Freedom = z.infer<typeof FreedomSchema>;
+
 /** 当前静态字段契约版本（001/011 不变量：PromptVersion 固定 contract_version） */
 export const NODE_CONTRACT_VERSION = 1;
 

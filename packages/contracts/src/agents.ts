@@ -1,7 +1,7 @@
 import { z } from "zod";
-
-// M7：Agent 改三层版本化模型（008 设计）——agents(身份+派生 status) /
-// agent_config_versions(配置快照) / 版本级知识库快照。旧 M2 扁平契约整体废弃。
+// M7b S8：FreedomSchema 迁至 node-contract（叶子共享），agents 内部消费但不再自己定义/导出——
+// 切断 applications → agents 的反向契约依赖（agents 是待下线旧域）。
+import { FreedomSchema } from "./node-contract";
 
 export const AgentStatusSchema = z.enum(["draft", "active", "archived"]);
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
@@ -12,9 +12,6 @@ export type AgentConfigVersionStatus = z.infer<typeof AgentConfigVersionStatusSc
 // M7 阶段不产生 failed/running（Eval 是硬编码 stub，008 决策 2）；M11 接入真实评测后扩展
 export const EvalStatusSchema = z.enum(["not_run", "passed", "exempt"]);
 export type EvalStatus = z.infer<typeof EvalStatusSchema>;
-
-export const FreedomSchema = z.enum(["precise", "balance", "improvise", "custom"]);
-export type Freedom = z.infer<typeof FreedomSchema>;
 
 export const NodeConfigSchema = z.object({
   freedom: FreedomSchema,
