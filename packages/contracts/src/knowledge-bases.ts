@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { IntentKeySchema } from "./intent-table";
 
 export const ChunkTemplateSchema = z.enum(["general", "qa", "custom"]);
 export type ChunkTemplate = z.infer<typeof ChunkTemplateSchema>;
@@ -20,6 +21,8 @@ export const KnowledgeBaseSchema = z.object({
   // 默认文档处理方案（M4.1）；迁移期 nullable（历史行由 chunkTemplate 反查兜底填充）。
   processingProfileId: z.string().nullable(),
   processingProfileVersion: z.number().int().positive().nullable(),
+  // 014 D2：KB 外挂意图绑定（单绑定 v1）；null = 未绑定 = 通配（参与所有业务意图检索）。
+  intentKey: IntentKeySchema.nullable().optional(),
   progress: z.number().min(0).max(100).optional(),
   updatedAt: z.string().datetime(),
 });
@@ -38,6 +41,7 @@ export const CreateKnowledgeBaseRequestSchema = z
     processingProfileId: z.string().min(1).optional(),
     processingProfileVersion: z.number().int().positive().optional(),
     embeddingModelId: z.string().min(1),
+    intentKey: IntentKeySchema.nullable().optional(),
   })
   .refine((v) => (v.processingProfileId === undefined) === (v.processingProfileVersion === undefined), {
     message: "processingProfileId 与 processingProfileVersion 必须成对出现",
@@ -62,6 +66,8 @@ export const UpdateKnowledgeBaseRequestSchema = z
     chunkTemplate: ChunkTemplateSchema.optional(),
     processingProfileId: z.string().min(1).optional(),
     processingProfileVersion: z.number().int().positive().optional(),
+    // 014 D2：strictObject 必须显式扩字段否则 PATCH 400；undefined=不改 / null=解绑。
+    intentKey: IntentKeySchema.nullable().optional(),
   })
   .refine((v) => (v.processingProfileId === undefined) === (v.processingProfileVersion === undefined), {
     message: "processingProfileId 与 processingProfileVersion 必须成对出现",

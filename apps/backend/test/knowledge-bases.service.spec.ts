@@ -23,6 +23,7 @@ function baseRow(overrides: Partial<KnowledgeBaseRow> = {}): KnowledgeBaseRow {
     status: "ready",
     activeVersion: 1,
     buildingVersion: null,
+    intentKey: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -260,6 +261,83 @@ describe("KnowledgeBasesService 迁移窗口矩阵", () => {
     deps.repo.findById.mockResolvedValue(baseRow());
     await makeSvc(deps).rebuild("kb1", "inherited");
     expect(deps.kbRebuild.startRebuild).toHaveBeenCalledWith("kb1", "inherited");
+  });
+});
+
+describe("KnowledgeBasesService intentKey（014 D2 KB 外挂意图绑定）", () => {
+  it("create 携 intentKey → 落库并回显", async () => {
+    const deps = makeDeps();
+    const kb = await makeSvc(deps).create({ ...createReq, intentKey: "SUPPORT" } as never);
+    expect(deps.repo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ intentKey: "SUPPORT" }),
+    );
+    expect(kb.intentKey).toBe("SUPPORT");
+  });
+
+  it("update 模板分支携 intentKey 穿透（不被静默丢弃）", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(baseRow());
+    deps.repo.update.mockResolvedValue(baseRow({ intentKey: "SUPPORT" }));
+    await makeSvc(deps).update("kb1", { desc: "d", intentKey: "SUPPORT" } as never);
+    expect(deps.repo.update).toHaveBeenCalledWith(
+      "kb1",
+      expect.objectContaining({ intentKey: "SUPPORT" }),
+    );
+  });
+
+  it("update profile 分支携 intentKey 穿透（带 profile 改时不被静默丢弃）", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(baseRow());
+    deps.repo.update.mockResolvedValue(baseRow({ intentKey: "FEEDBACK", chunkTemplate: "qa" }));
+    await makeSvc(deps).update("kb1", {
+      processingProfileId: "faq-v1",
+      processingProfileVersion: 1,
+      intentKey: "FEEDBACK",
+    } as never);
+    expect(deps.repo.update).toHaveBeenCalledWith(
+      "kb1",
+      expect.objectContaining({ intentKey: "FEEDBACK" }),
+    );
+  });
+
+  it("update {intentKey:null} 解绑穿透", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(baseRow({ intentKey: "SUPPORT" }));
+    deps.repo.update.mockResolvedValue(baseRow({ intentKey: null }));
+    await makeSvc(deps).update("kb1", { intentKey: null } as never);
+    expect(deps.repo.update).toHaveBeenCalledWith(
+      "kb1",
+      expect.objectContaining({ intentKey: null }),
+    );
+  });
+
+  it("update 未携 intentKey（undefined）不覆盖既有绑定", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(baseRow({ intentKey: "SUPPORT" }));
+    deps.repo.update.mockResolvedValue(baseRow({ intentKey: "SUPPORT", desc: "d" }));
+    await makeSvc(deps).update("kb1", { desc: "d" } as never);
+    const patch = deps.repo.update.mock.calls[0][1] as Record<string, unknown>;
+    expect("intentKey" in patch).toBe(false);
+  });
+
+  it("非法 intentKey（CHAT，绕过契约的非 HTTP 路径）→ 400 纵深防御", async () => {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue(baseRow());
+    await expect(makeSvc(deps).update("kb1", { intentKey: "CHAT" } as never)).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(deps.repo.update).not.toHaveBeenCalled();
+    await expect(
+      makeSvc(deps).create({ ...createReq, intentKey: "UNKNOWN" } as never),
+    ).rejects.toThrow(BadRequestException);
+    expect(deps.repo.insert).not.toHaveBeenCalled();
+  });
+
+  it("list/get 响应映射带 intentKey", async () => {
+    const deps = makeDeps();
+    deps.repo.find.mockResolvedValue([baseRow({ intentKey: "SUPPORT" })]);
+    const list = await makeSvc(deps).list();
+    expect(list[0].intentKey).toBe("SUPPORT");
   });
 });
 

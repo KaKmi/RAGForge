@@ -3,6 +3,7 @@ export * from "./traces";
 export * from "./users";
 export * from "./auth";
 export * from "./models";
+export * from "./intent-table";
 export * from "./knowledge-bases";
 export * from "./documents";
 export * from "./processing-profiles";

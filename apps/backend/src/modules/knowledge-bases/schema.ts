@@ -16,6 +16,9 @@ export const knowledgeBases = pgTable("knowledge_bases", {
   embeddingModelId: uuid("embedding_model_id")
     .notNull()
     .references(() => modelProviders.id, { onDelete: "restrict" }),
+  // 014 D2：KB 外挂意图绑定。nullable（null=未绑定=通配）、不 FK——意图表在代码（contracts intent-table），
+  // 同 chunkTemplate「text 落库、契约层收口」先例。
+  intentKey: text("intent_key"),
   status: text("status").notNull().default("ready"), // "ready" | "building" | "failed"
   activeVersion: integer("active_version").notNull().default(1),
   buildingVersion: integer("building_version"),

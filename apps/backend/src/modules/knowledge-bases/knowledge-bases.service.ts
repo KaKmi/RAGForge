@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import type {
@@ -12,6 +13,7 @@ import type {
   ProcessingProfileRef,
   UpdateKnowledgeBaseRequest,
 } from "@codecrush/contracts";
+import { IntentKeySchema } from "@codecrush/contracts";
 import { KnowledgeBasesRepository } from "./knowledge-bases.repository";
 import { DocumentsRepository } from "../documents/documents.repository";
 import { ChunksRepository } from "../chunks/chunks.repository";
@@ -27,6 +29,8 @@ const EMBED_DIMENSION = 1024;
 
 @Injectable()
 export class KnowledgeBasesService {
+  private readonly logger = new Logger(KnowledgeBasesService.name);
+
   constructor(
     private readonly repo: KnowledgeBasesRepository,
     private readonly docsRepo: DocumentsRepository,
@@ -111,6 +115,9 @@ export class KnowledgeBasesService {
     // 同时显式校验维度，兜住返回非 1024 维但未抛错的实现。
     await this.probeEmbeddingDimension(req.embeddingModelId);
 
+    // 014 D2 纵深防御：契约层已收口值域，此处兜住非 HTTP 调用路径（CHAT/UNKNOWN/未知 key → 400）。
+    this.assertValidIntentKey(req.intentKey);
+
     // 迁移窗口：profile 或 chunkTemplate 至少其一（契约层保证）→ 双写 defaultProfile* + chunkTemplate。
     const { ref, chunkTemplate } = this.resolveProfile(
       req.processingProfileId,
@@ -124,6 +131,7 @@ export class KnowledgeBasesService {
       defaultProfileId: ref.profileId,
       defaultProfileVersion: ref.profileVersion,
       embeddingModelId: req.embeddingModelId,
+      intentKey: req.intentKey ?? null,
     });
     return this.toKnowledgeBase(row);
   }
@@ -135,6 +143,16 @@ export class KnowledgeBasesService {
     }
 
     const existing = await this.mustFind(id);
+
+    // 014 D2：intentKey 纵深校验 + 变更审计（两个 update 分支共用；undefined=不改）。
+    this.assertValidIntentKey(req.intentKey);
+    const intentPatch = req.intentKey !== undefined ? { intentKey: req.intentKey } : {};
+    if (req.intentKey !== undefined && req.intentKey !== existing.intentKey) {
+      // 审计（控制面事件，同 application.production.changed 先例）：绑定影响路由候选集。
+      this.logger.log(
+        `knowledge_base.intent_key.changed kb=${id} prev=${existing.intentKey ?? "null"} next=${req.intentKey ?? "null"}`,
+      );
+    }
 
     // 新前端改默认 Profile：更新 defaultProfile* + 反写 chunkTemplate，但【不】触发重建
     // （010 §选择5：改默认只影响未来 Run；应用到旧文档走显式 rebuild 端点）。
@@ -156,6 +174,7 @@ export class KnowledgeBasesService {
         chunkTemplate,
         defaultProfileId: ref.profileId,
         defaultProfileVersion: ref.profileVersion,
+        ...intentPatch,
       });
       if (!row) throw new NotFoundException(`knowledge base ${id} not found`);
       return this.withCounts(row);
@@ -180,6 +199,7 @@ export class KnowledgeBasesService {
       name: req.name,
       desc: req.desc,
       ...templatePatch,
+      ...intentPatch,
     });
     if (!row) throw new NotFoundException(`knowledge base ${id} not found`);
 
@@ -215,6 +235,16 @@ export class KnowledgeBasesService {
     }
   }
 
+  // 014 D2 纵深防御：值域收口（契约层已 enum；此处兜非 HTTP 路径。undefined=未携带 / null=解绑均合法）。
+  private assertValidIntentKey(intentKey: string | null | undefined): void {
+    if (intentKey === undefined || intentKey === null) return;
+    if (!IntentKeySchema.safeParse(intentKey).success) {
+      throw new BadRequestException(
+        `intentKey "${intentKey}" 不在可绑定业务意图值域内（CHAT/UNKNOWN 不可绑定）`,
+      );
+    }
+  }
+
   private async mustFind(id: string): Promise<KnowledgeBaseRow> {
     const row = await this.repo.findById(id);
     if (!row) throw new NotFoundException(`knowledge base ${id} not found`);
@@ -246,6 +276,7 @@ export class KnowledgeBasesService {
       buildingVersion: row.buildingVersion,
       processingProfileId: row.defaultProfileId,
       processingProfileVersion: row.defaultProfileVersion,
+      intentKey: (row.intentKey as KnowledgeBase["intentKey"]) ?? null,
       updatedAt: row.updatedAt.toISOString(),
     };
   }
