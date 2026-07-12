@@ -18,6 +18,18 @@ function frame(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
+/** M8 done 事件（coverage/isFallback/fallbackReasons 必填）。 */
+function doneEvent(traceId: string, confidence?: number) {
+  return {
+    type: "done",
+    traceId,
+    ...(confidence !== undefined ? { confidence } : {}),
+    coverage: "full",
+    isFallback: false,
+    fallbackReasons: [],
+  };
+}
+
 beforeEach(() => {
   localStorage.clear();
 });
@@ -36,7 +48,7 @@ it("parses token → citation → done sequence from chunked stream", async () =
       type: "citation",
       citation: { n: 1, doc: "x.pdf", kb: "kb1", section: "s", score: 0.82 },
     }) +
-    frame({ type: "done", traceId: "abc123", confidence: 0.82 });
+    frame(doneEvent("abc123", 0.82));
   const mid = Math.floor(full.length / 2);
   const chunks = [full.slice(0, mid), full.slice(mid)];
 
@@ -57,14 +69,14 @@ it("parses token → citation → done sequence from chunked stream", async () =
     type: "citation",
     citation: { doc: "x.pdf", n: 1 },
   });
-  expect(events[3]).toEqual({ type: "done", traceId: "abc123", confidence: 0.82 });
+  expect(events[3]).toEqual(doneEvent("abc123", 0.82));
 });
 
 it("attaches Authorization header from localStorage token", async () => {
   localStorage.setItem(TOKEN_KEY, "tok-bearer");
   global.fetch = vi.fn().mockResolvedValue({
     ok: true,
-    body: makeSseStream([frame({ type: "done", traceId: "t1" })]),
+    body: makeSseStream([frame(doneEvent("t1"))]),
   }) as unknown as typeof fetch;
 
   const events = [];
@@ -83,7 +95,7 @@ it("attaches Authorization header from localStorage token", async () => {
 it("omits Authorization header when no token stored", async () => {
   global.fetch = vi.fn().mockResolvedValue({
     ok: true,
-    body: makeSseStream([frame({ type: "done", traceId: "t2" })]),
+    body: makeSseStream([frame(doneEvent("t2"))]),
   }) as unknown as typeof fetch;
 
   for await (const _ of openChatStream({ agentId: "a1", query: "q" })) {
@@ -118,7 +130,7 @@ it("skips comment lines, event fields, and retry directives", async () => {
     "retry: 1000\n\n" +
     frame({ type: "token", delta: "嗨" }) +
     "retry: 2000\n\n" +
-    frame({ type: "done", traceId: "t3" });
+    frame(doneEvent("t3"));
   global.fetch = vi.fn().mockResolvedValue({
     ok: true,
     body: makeSseStream([raw]),
@@ -138,7 +150,7 @@ it("passes AbortSignal through to fetch", async () => {
     captured = init as RequestInit;
     return Promise.resolve({
       ok: true,
-      body: makeSseStream([frame({ type: "done", traceId: "t4" })]),
+      body: makeSseStream([frame(doneEvent("t4"))]),
     });
   }) as unknown as typeof fetch;
 
@@ -155,7 +167,7 @@ it("rejects malformed event payload via ChatStreamEventSchema", async () => {
     ok: true,
     body: makeSseStream([
       frame({ type: "token" }), // 缺 delta
-      frame({ type: "done", traceId: "t5" }),
+      frame(doneEvent("t5")),
     ]),
   }) as unknown as typeof fetch;
 
