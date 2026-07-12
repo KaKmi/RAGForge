@@ -60,22 +60,29 @@ export class ConversationsRepository {
     return toConversation(rows[0]);
   }
 
+  /** 追加消息 + 同事务回写会话 updatedAt（list 按活跃时间排序依赖此语义） */
   async appendMessage(input: AppendMessageInput): Promise<Message> {
-    const rows = await this.db
-      .insert(messages)
-      .values({
-        convId: input.convId,
-        role: input.role,
-        content: input.content,
-        traceId: input.traceId,
-        confidence: input.confidence,
-        coverage: input.coverage,
-        isFallback: input.isFallback,
-        fallbackInfo: input.fallbackInfo,
-        citations: input.citations,
-      })
-      .returning();
-    return toMessage(rows[0]);
+    return await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(messages)
+        .values({
+          convId: input.convId,
+          role: input.role,
+          content: input.content,
+          traceId: input.traceId,
+          confidence: input.confidence,
+          coverage: input.coverage,
+          isFallback: input.isFallback,
+          fallbackInfo: input.fallbackInfo,
+          citations: input.citations,
+        })
+        .returning();
+      await tx
+        .update(conversations)
+        .set({ updatedAt: new Date() })
+        .where(eq(conversations.id, input.convId));
+      return toMessage(rows[0]);
+    });
   }
 
   async list(agentId?: string): Promise<Conversation[]> {

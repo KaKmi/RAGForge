@@ -8,10 +8,13 @@ import type {
 } from "../src/modules/conversations/conversations.repository";
 
 // 内存假 repository：验证 service 的委托语义（隔离/roundtrip），不碰真实 DB
+// 时钟用单调递增 tick，避免同毫秒内 updatedAt 打平导致排序断言不稳定
 function makeFakeRepo() {
   const convs: Conversation[] = [];
   const msgs: Message[] = [];
   let seq = 0;
+  let tick = Date.now();
+  const nextTime = () => new Date(++tick).toISOString();
   const repo = {
     createConversation: jest.fn(async (input: CreateConversationInput): Promise<Conversation> => {
       const conv: Conversation = {
@@ -19,7 +22,7 @@ function makeFakeRepo() {
         agentId: input.agentId,
         userId: input.userId,
         title: input.title,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nextTime(),
       };
       convs.push(conv);
       return conv;
@@ -27,10 +30,15 @@ function makeFakeRepo() {
     appendMessage: jest.fn(async (input: AppendMessageInput): Promise<Message> => {
       const msg: Message = { id: `msg-${++seq}`, ...input };
       msgs.push(msg);
+      // 与真实 repository 对齐：追加消息同时回写父会话 updatedAt（活跃时间）
+      const conv = convs.find((c) => c.id === input.convId);
+      if (conv) conv.updatedAt = nextTime();
       return msg;
     }),
     list: jest.fn(async (agentId?: string): Promise<Conversation[]> =>
-      agentId ? convs.filter((c) => c.agentId === agentId) : [...convs],
+      (agentId ? convs.filter((c) => c.agentId === agentId) : [...convs]).sort((a, b) =>
+        b.updatedAt.localeCompare(a.updatedAt),
+      ),
     ),
     getById: jest.fn(
       async (id: string): Promise<Conversation | undefined> => convs.find((c) => c.id === id),
@@ -80,6 +88,17 @@ describe("ConversationsService（真实读写）", () => {
     await svc.createConversation({ agentId: "app1", userId: "u1", title: "app1 的会话" });
     expect(await svc.list("app2")).toEqual([]);
     expect((await svc.list("app1")).length).toBe(1);
+  });
+
+  it("appendMessage 回写会话活跃时间：先建 A 再建 B，向 A 追加消息后 list 中 A 排最前", async () => {
+    const svc = new ConversationsService(makeFakeRepo());
+    const a = await svc.createConversation({ agentId: "app1", userId: "u1", title: "会话 A" });
+    const b = await svc.createConversation({ agentId: "app1", userId: "u1", title: "会话 B" });
+
+    await svc.appendMessage({ convId: a.id, role: "user", content: "新消息" });
+
+    const listed = await svc.list("app1");
+    expect(listed.map((c) => c.id)).toEqual([a.id, b.id]);
   });
 
   it("get 不存在时抛 NotFound（保留 M2 HTTP 语义）", async () => {
