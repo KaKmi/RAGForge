@@ -794,6 +794,28 @@ const inMemoryApplicationsRepo: Partial<ApplicationsRepository> = {
     inMemoryAppTags.filter((t) => t.applicationId === appId).length,
   tagExists: async (appId: string, lowerName: string) =>
     inMemoryAppTags.some((t) => t.applicationId === appId && t.name.toLowerCase() === lowerName),
+  // M7b S5 production CAS（对齐真实 SQL 语义：三重守卫，0 行按归属二次判定）
+  casProduction: async (appId: string, versionId: string, expected: string | null, actor: string) => {
+    const a = inMemoryApplications.find((x) => x.id === appId && !x.deletedAt);
+    const owns = inMemoryAppVersions.some((v) => v.id === versionId && v.applicationId === appId);
+    if (a && owns && (a.productionConfigVersionId ?? null) === expected) {
+      a.productionConfigVersionId = versionId;
+      a.updatedBy = actor;
+      a.updatedAt = new Date();
+      return "ok";
+    }
+    return owns ? "cas_conflict" : "ownership_fail";
+  },
+  clearProduction: async (appId: string, expected: string | null, actor: string) => {
+    const a = inMemoryApplications.find((x) => x.id === appId && !x.deletedAt);
+    if (a && (a.productionConfigVersionId ?? null) === expected) {
+      a.productionConfigVersionId = null;
+      a.updatedBy = actor;
+      a.updatedAt = new Date();
+      return "ok";
+    }
+    return "cas_conflict";
+  },
   // M7b S4 ReleaseCheck（worker 在 e2e 不跑——fakeQueue.subscribe 是 no-op，故只留 queued 态）
   insertReleaseCheck: async (row: {
     applicationId: string;
@@ -1898,6 +1920,84 @@ describe("M2 domain skeleton", () => {
         .expect(404);
     });
 
+    it("production 上线闭环（M7b）：passed check + CAS 上线 → 并发 409 → 下线", async () => {
+      const created = (
+        await request(app.getHttpServer())
+          .post("/api/applications")
+          .set(auth())
+          .send(validCreate())
+          .expect(201)
+      ).body;
+      const appId = created.id as string;
+      const v1 = created.versions[0].id as string;
+
+      // 开始检查（静态过 → queued）
+      const check = (
+        await request(app.getHttpServer())
+          .post(`/api/applications/${appId}/config-versions/${v1}/release-checks`)
+          .set(auth())
+          .expect(201)
+      ).body;
+
+      // queued check 直接上线 → 422（需要 passed）
+      await request(app.getHttpServer())
+        .put(`/api/applications/${appId}/production`)
+        .set(auth())
+        .send({ versionId: v1, releaseCheckId: check.id, expectedProductionVersionId: null })
+        .expect(422);
+
+      // 模拟 worker 完成：翻 passed + 未过期（e2e 的 fakeQueue 不真消费）
+      const row = inMemoryReleaseChecks.find((c) => c.id === check.id)!;
+      row.status = "passed";
+      row.expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+      // 上线成功：指针移动，「是否上线」= v1
+      const published = (
+        await request(app.getHttpServer())
+          .put(`/api/applications/${appId}/production`)
+          .set(auth())
+          .send({ versionId: v1, releaseCheckId: check.id, expectedProductionVersionId: null })
+          .expect(200)
+      ).body;
+      expect(published.productionConfigVersionId).toBe(v1);
+      expect(published.productionVersion).toBe(1);
+
+      // 并发语义：stale expected（null）再上线 → 409
+      await request(app.getHttpServer())
+        .put(`/api/applications/${appId}/production`)
+        .set(auth())
+        .send({ versionId: v1, releaseCheckId: check.id, expectedProductionVersionId: null })
+        .expect(409);
+
+      // 跨应用 versionId → 400（归属守卫）
+      const other = (
+        await request(app.getHttpServer())
+          .post("/api/applications")
+          .set(auth())
+          .send(validCreate())
+          .expect(201)
+      ).body;
+      await request(app.getHttpServer())
+        .put(`/api/applications/${appId}/production`)
+        .set(auth())
+        .send({
+          versionId: other.versions[0].id,
+          releaseCheckId: check.id,
+          expectedProductionVersionId: v1,
+        })
+        .expect(404); // check 归属校验先拦（configVersionId 不匹配）
+
+      // 下线：CAS 清指针
+      const unpublished = (
+        await request(app.getHttpServer())
+          .delete(`/api/applications/${appId}/production`)
+          .set(auth())
+          .send({ expectedProductionVersionId: v1 })
+          .expect(200)
+      ).body;
+      expect(unpublished.productionConfigVersionId).toBeNull();
+    });
+
     it("POST / kbIds 空 → 400；引用不存在 prompt version → 404；node 不匹配 → 400", async () => {
       await request(app.getHttpServer())
         .post("/api/applications")
@@ -2538,14 +2638,18 @@ describe("M2 domain skeleton", () => {
       expect(paths).not.toContain("/api/prompts/{id}/versions/{versionId}/rollback");
       expect(paths).toContain("/api/chat");
       expect(paths).toContain("/api/conversations/{id}/messages");
-      // M7a applications：静态 prompt-usage + 版本 chat 骨架；M7b production 端点不存在
+      // M7a applications 骨架 + M7b 发布闭环端点（标签/检查/production）
       expect(paths).toContain("/api/applications");
       expect(paths).toContain("/api/applications/{id}");
       expect(paths).toContain("/api/applications/prompt-usage");
       expect(paths).toContain("/api/applications/{id}/config-versions");
       expect(paths).toContain("/api/applications/{id}/config-versions/{versionId}");
       expect(paths).toContain("/api/applications/{id}/config-versions/{versionId}/chat");
-      expect(paths).not.toContain("/api/applications/{id}/production");
+      expect(paths).toContain("/api/applications/{id}/config-version-tags");
+      expect(paths).toContain("/api/applications/{id}/config-version-tags/{name}");
+      expect(paths).toContain("/api/applications/{id}/config-versions/{versionId}/release-checks");
+      expect(paths).toContain("/api/applications/{id}/release-checks/{checkId}");
+      expect(paths).toContain("/api/applications/{id}/production");
     });
   });
 });

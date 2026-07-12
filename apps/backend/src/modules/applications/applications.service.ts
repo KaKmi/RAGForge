@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -54,6 +55,8 @@ interface ReleaseContext {
 
 @Injectable()
 export class ApplicationsService {
+  private readonly logger = new Logger(ApplicationsService.name);
+
   constructor(
     private readonly repo: ApplicationsRepository,
     private readonly knowledgeBases: KnowledgeBasesService,
@@ -211,6 +214,55 @@ export class ApplicationsService {
     if (!row || row.applicationId !== id)
       throw new NotFoundException(`release check ${checkId} not found`);
     return this.toReleaseCheck(row);
+  }
+
+  // —— M7b production 受门禁 CAS 上线/回滚/下线（009 §上线请求）——
+  async publishProduction(
+    id: string,
+    req: { versionId: string; releaseCheckId: string; expectedProductionVersionId: string | null },
+    actor: string,
+  ): Promise<Application> {
+    await this.mustFind(id);
+    const version = await this.mustFindVersion(id, req.versionId);
+    const check = await this.repo.findReleaseCheckById(req.releaseCheckId);
+    // 门禁四连：归属 → passed → 未过期 → fingerprint 与当前依赖重算一致
+    if (!check || check.applicationId !== id || check.configVersionId !== req.versionId)
+      throw new NotFoundException(`release check ${req.releaseCheckId} 不存在或不属于该版本`);
+    if (check.status !== "passed")
+      throw new UnprocessableEntityException(`release check 状态为 ${check.status}，需要 passed`);
+    if (!check.expiresAt || check.expiresAt.getTime() <= Date.now())
+      throw new ConflictException("release check 已过期，请重新检查");
+    const currentFingerprint = await this.computeVersionFingerprint(version);
+    if (currentFingerprint !== check.configFingerprint)
+      throw new ConflictException("依赖已变化（fingerprint 不匹配），请重新检查后上线");
+
+    const cas = await this.repo.casProduction(id, req.versionId, req.expectedProductionVersionId, actor);
+    if (cas === "ownership_fail")
+      throw new BadRequestException(`version ${req.versionId} 不属于该应用`);
+    if (cas === "cas_conflict")
+      throw new ConflictException("production 指针已被并发修改，请刷新后重新确认");
+    // 审计（控制面事件，009 Observability；当前无独立审计存储，结构化日志承载）
+    this.logger.log(
+      `application.production.changed app=${id} version=${req.versionId} check=${req.releaseCheckId} by=${actor}`,
+    );
+    const row = await this.mustFind(id);
+    const tagsByApp = await this.repo.findTagNamesByAppIds([id]);
+    return this.toApplication(row, tagsByApp.get(id) ?? []);
+  }
+
+  async unpublishProduction(
+    id: string,
+    expectedProductionVersionId: string | null,
+    actor: string,
+  ): Promise<Application> {
+    await this.mustFind(id);
+    const cas = await this.repo.clearProduction(id, expectedProductionVersionId, actor);
+    if (cas === "cas_conflict")
+      throw new ConflictException("production 指针已被并发修改，请刷新后重新确认");
+    this.logger.log(`application.production.cleared app=${id} by=${actor}`);
+    const row = await this.mustFind(id);
+    const tagsByApp = await this.repo.findTagNamesByAppIds([id]);
+    return this.toApplication(row, tagsByApp.get(id) ?? []);
   }
 
   /** 同一函数供上线校验重算 fingerprint（S5）——保证 start 与 publish 用同一算法。 */

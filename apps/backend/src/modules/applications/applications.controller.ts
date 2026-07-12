@@ -18,6 +18,8 @@ import {
   CreateApplicationRequestSchema,
   MoveApplicationTagRequestSchema,
   PromptUsageQuerySchema,
+  PublishProductionRequestSchema,
+  UnpublishProductionRequestSchema,
   UpdateApplicationRequestSchema,
   type Application,
   type ApplicationChatResult,
@@ -33,6 +35,8 @@ class CreateApplicationDto extends createZodDto(CreateApplicationRequestSchema) 
 class CreateVersionDto extends createZodDto(CreateApplicationConfigVersionRequestSchema) {}
 class UpdateApplicationDto extends createZodDto(UpdateApplicationRequestSchema) {}
 class MoveApplicationTagDto extends createZodDto(MoveApplicationTagRequestSchema) {}
+class PublishProductionDto extends createZodDto(PublishProductionRequestSchema) {}
+class UnpublishProductionDto extends createZodDto(UnpublishProductionRequestSchema) {}
 type AuthedRequest = { user: AuthenticatedUser };
 @Controller("applications")
 export class ApplicationsController {
@@ -120,5 +124,21 @@ export class ApplicationsController {
     @Param("checkId") checkId: string,
   ): Promise<ReleaseCheck> {
     return this.service.getReleaseCheck(id, checkId);
+  }
+
+  // —— M7b production 上线/回滚/下线（passed check + expected 指针 CAS + 归属守卫）——
+  @Put(":id/production") @HttpCode(200) publish(
+    @Param("id") id: string,
+    @Body() body: PublishProductionDto,
+    @Req() req: AuthedRequest,
+  ): Promise<Application> {
+    return this.service.publishProduction(id, body, req.user.email);
+  }
+  @Delete(":id/production") @HttpCode(200) unpublish(
+    @Param("id") id: string,
+    @Body() body: UnpublishProductionDto,
+    @Req() req: AuthedRequest,
+  ): Promise<Application> {
+    return this.service.unpublishProduction(id, body.expectedProductionVersionId, req.user.email);
   }
 }

@@ -89,6 +89,8 @@ function service(overrides: Record<string, unknown> = {}) {
     deleteTag: jest.fn(async () => 1),
     countTags: jest.fn(async () => 0),
     tagExists: jest.fn(async () => false),
+    casProduction: jest.fn(async () => "ok"),
+    clearProduction: jest.fn(async () => "ok"),
     insertReleaseCheck: jest.fn(async (row: Record<string, unknown>) => ({
       id: "rc1",
       status: "queued",
@@ -286,6 +288,84 @@ describe("ApplicationsService", () => {
     );
     expect(releaseQueue.publish).not.toHaveBeenCalled();
   });
+  // —— M7b S5 production 受门禁 CAS ——
+  const futureCheck = (fp: string, over: Record<string, unknown> = {}) => ({
+    id: "rc1",
+    applicationId: "a1",
+    configVersionId: "v1",
+    configFingerprint: fp,
+    status: "passed",
+    issues: [],
+    sampleSummary: {},
+    startedAt: now,
+    finishedAt: now,
+    expiresAt: new Date(Date.now() + 60_000),
+    createdBy: "u",
+    createdAt: now,
+    ...over,
+  });
+  const publishReq = { versionId: "v1", releaseCheckId: "rc1", expectedProductionVersionId: null };
+
+  it("publish happy：passed+未过期+fingerprint 匹配 → CAS 移动指针", async () => {
+    const s = service();
+    const fp = await s.app.computeVersionFingerprint(version as never);
+    s.repo.findReleaseCheckById = jest.fn(async () => futureCheck(fp));
+    await expect(s.app.publishProduction("a1", publishReq, "u")).resolves.toBeDefined();
+    expect(s.repo.casProduction).toHaveBeenCalledWith("a1", "v1", null, "u");
+  });
+  it("publish：check 非 passed → 422", async () => {
+    const s = service();
+    const fp = await s.app.computeVersionFingerprint(version as never);
+    s.repo.findReleaseCheckById = jest.fn(async () => futureCheck(fp, { status: "queued" }));
+    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+    expect(s.repo.casProduction).not.toHaveBeenCalled();
+  });
+  it("publish：check 过期 → 409", async () => {
+    const s = service();
+    const fp = await s.app.computeVersionFingerprint(version as never);
+    s.repo.findReleaseCheckById = jest.fn(async () =>
+      futureCheck(fp, { expiresAt: new Date(Date.now() - 1000) }),
+    );
+    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(ConflictException);
+  });
+  it("publish：fingerprint 失配（依赖已变）→ 409", async () => {
+    const s = service();
+    s.repo.findReleaseCheckById = jest.fn(async () => futureCheck("stale-fingerprint"));
+    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(ConflictException);
+    expect(s.repo.casProduction).not.toHaveBeenCalled();
+  });
+  it("publish：check 归属异版本 → 404", async () => {
+    const s = service();
+    const fp = await s.app.computeVersionFingerprint(version as never);
+    s.repo.findReleaseCheckById = jest.fn(async () => futureCheck(fp, { configVersionId: "other" }));
+    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(NotFoundException);
+  });
+  it("publish：CAS 并发冲突 → 409；归属守卫失败 → 400", async () => {
+    const conflict = service({ casProduction: jest.fn(async () => "cas_conflict") });
+    const fp1 = await conflict.app.computeVersionFingerprint(version as never);
+    conflict.repo.findReleaseCheckById = jest.fn(async () => futureCheck(fp1));
+    await expect(conflict.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    const owner = service({ casProduction: jest.fn(async () => "ownership_fail") });
+    const fp2 = await owner.app.computeVersionFingerprint(version as never);
+    owner.repo.findReleaseCheckById = jest.fn(async () => futureCheck(fp2));
+    await expect(owner.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+  it("unpublish：CAS 清指针；并发冲突 → 409", async () => {
+    const ok = service();
+    await expect(ok.app.unpublishProduction("a1", "v1", "u")).resolves.toBeDefined();
+    expect(ok.repo.clearProduction).toHaveBeenCalledWith("a1", "v1", "u");
+    const conflict = service({ clearProduction: jest.fn(async () => "cas_conflict") });
+    await expect(conflict.app.unpublishProduction("a1", "v1", "u")).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+  });
+
   it("getReleaseCheck：归属校验 + 返回 DTO；异应用 → 404", async () => {
     const row = {
       id: "rc1",

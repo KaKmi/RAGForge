@@ -288,6 +288,55 @@ export class ApplicationsRepository {
     return rows.length > 0;
   }
 
+  // —— M7b production 受门禁 CAS（009 §上线请求）——
+  // 一条 UPDATE 同时完成三重守卫：CAS（expected 指针比对，IS NOT DISTINCT FROM 兼容 null）、
+  // 归属（EXISTS 校验 versionId 属于本应用——指针无 FK，这里是唯一的写路径保证）、软删排除。
+  // 0 行时二次判定区分「并发冲突(409)」与「归属失败(400)」。
+  async casProduction(
+    appId: string,
+    versionId: string,
+    expected: string | null,
+    actor: string,
+  ): Promise<"ok" | "cas_conflict" | "ownership_fail"> {
+    const result = await this.db.execute(sql`
+      UPDATE ${applications}
+      SET production_config_version_id = ${versionId}, updated_by = ${actor}, updated_at = now()
+      WHERE id = ${appId} AND deleted_at IS NULL
+        AND production_config_version_id IS NOT DISTINCT FROM ${expected}
+        AND EXISTS (SELECT 1 FROM ${applicationConfigVersions}
+                    WHERE id = ${versionId} AND application_id = ${appId})
+      RETURNING production_config_version_id
+    `);
+    if ((result.rowCount ?? result.rows.length) === 1) return "ok";
+    const owns = await this.db
+      .select({ id: applicationConfigVersions.id })
+      .from(applicationConfigVersions)
+      .where(
+        and(
+          eq(applicationConfigVersions.id, versionId),
+          eq(applicationConfigVersions.applicationId, appId),
+        ),
+      )
+      .limit(1);
+    return owns.length > 0 ? "cas_conflict" : "ownership_fail";
+  }
+
+  /** 下线：CAS 清空指针（同 expected 守卫）；0 行 = 并发冲突或应用不可见。 */
+  async clearProduction(
+    appId: string,
+    expected: string | null,
+    actor: string,
+  ): Promise<"ok" | "cas_conflict"> {
+    const result = await this.db.execute(sql`
+      UPDATE ${applications}
+      SET production_config_version_id = NULL, updated_by = ${actor}, updated_at = now()
+      WHERE id = ${appId} AND deleted_at IS NULL
+        AND production_config_version_id IS NOT DISTINCT FROM ${expected}
+      RETURNING id
+    `);
+    return (result.rowCount ?? result.rows.length) === 1 ? "ok" : "cas_conflict";
+  }
+
   // —— M7b ReleaseCheck ——
   async insertReleaseCheck(row: {
     applicationId: string;
