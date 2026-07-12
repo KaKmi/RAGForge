@@ -54,6 +54,19 @@ const NODE_TAG_COLOR: Record<string, string> = {
 
 const mono: CSSProperties = { fontFamily: "ui-monospace, Menlo, monospace" };
 
+// 校验步骤 key → 中文短语（ValidateStep.step 联合类型，见 packages/contracts/src/prompts.ts）
+const STEP_LABEL: Record<string, string> = {
+  input: "输入校验",
+  reserved: "保留字段校验",
+  output_schema: "输出结构",
+  extra_validate: "动态值域校验",
+  repair: "修复重试",
+  fallback: "兜底降级",
+};
+
+// 历史版本抽屉默认只展开最近几个版本，其余折叠在「展开更早的 N 个版本」后面
+const HISTORY_VISIBLE_COUNT = 5;
+
 export default function PromptDetailPage() {
   const { promptId = "" } = useParams();
   const navigate = useNavigate();
@@ -70,6 +83,7 @@ export default function PromptDetailPage() {
   const [saveErr, setSaveErr] = useState("");
 
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
 
   // 「谁在用」（012 seam / 009）：production 指针引用本 Prompt 版本的应用；失败/404 静默置 null，
   // 不把未知显示成「无人使用」。与详情并行拉取，不阻塞主体。
@@ -147,8 +161,7 @@ export default function PromptDetailPage() {
   // versionId → 引用它的 production 应用条目（派生渲染徽标/条幅/历史标记三处 UI）
   const usageByVersionId = useMemo(() => {
     const m = new Map<string, PromptUsageEntry[]>();
-    for (const u of usage ?? [])
-      m.set(u.promptVersionId, [...(m.get(u.promptVersionId) ?? []), u]);
+    for (const u of usage ?? []) m.set(u.promptVersionId, [...(m.get(u.promptVersionId) ?? []), u]);
     return m;
   }, [usage]);
 
@@ -348,7 +361,14 @@ export default function PromptDetailPage() {
           <Tag color="green">● v{sourceVersion.version} 服务中</Tag>
         )}
         <div style={{ flex: 1 }} />
-        <Button onClick={() => setHistoryOpen(true)}>🕑 历史版本 {detail.versionCount}</Button>
+        <Button
+          onClick={() => {
+            setHistoryExpanded(false);
+            setHistoryOpen(true);
+          }}
+        >
+          🕑 历史版本 {detail.versionCount}
+        </Button>
       </div>
 
       {loadErr && (
@@ -621,36 +641,66 @@ export default function PromptDetailPage() {
                 </div>
               </div>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <span style={{ fontSize: 12, color: "rgba(0,0,0,.55)" }}>
-                  输入数据 · 这个节点要吃的字段
+                  输入数据 · 自己填或导入
                 </span>
-                <Input.TextArea
-                  value={tvQuery}
-                  onChange={(e) => setTvQuery(e.target.value)}
-                  placeholder="用户问题（必填）"
-                  autoSize={{ minRows: 2, maxRows: 4 }}
-                />
-                <Input.TextArea
-                  value={tvHistory}
-                  onChange={(e) => setTvHistory(e.target.value)}
-                  placeholder="历史对话 · 可空"
-                  autoSize={{ minRows: 1, maxRows: 4 }}
-                />
-                {node === "reply" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 11.5, color: "rgba(0,0,0,.55)" }}>用户问题</span>
                   <Input.TextArea
-                    value={tvRetrieval}
-                    onChange={(e) => setTvRetrieval(e.target.value)}
-                    placeholder="检索到的内容 · 回复的依据，别手编"
-                    autoSize={{ minRows: 2, maxRows: 6 }}
+                    value={tvQuery}
+                    onChange={(e) => setTvQuery(e.target.value)}
+                    placeholder="填一句用户问题…"
+                    autoSize={{ minRows: 2, maxRows: 4 }}
                   />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 11.5, color: "rgba(0,0,0,.55)" }}>
+                    历史对话 <span style={{ color: "rgba(0,0,0,.35)" }}>可空</span>
+                  </span>
+                  <Input.TextArea
+                    value={tvHistory}
+                    onChange={(e) => setTvHistory(e.target.value)}
+                    placeholder="可空…"
+                    autoSize={{ minRows: 1, maxRows: 4 }}
+                  />
+                </div>
+                {node === "reply" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11.5, color: "rgba(0,0,0,.55)" }}>检索到的内容</span>
+                      <span
+                        style={{
+                          fontSize: 10.5,
+                          color: "#d48806",
+                          background: "#fffbe6",
+                          border: "1px solid #ffe58f",
+                          borderRadius: 8,
+                          padding: "0 6px",
+                          lineHeight: "16px",
+                        }}
+                      >
+                        回复的依据 · 别手编
+                      </span>
+                    </span>
+                    <Input.TextArea
+                      value={tvRetrieval}
+                      onChange={(e) => setTvRetrieval(e.target.value)}
+                      placeholder="从 Trace 导入真实召回片段，或粘贴几段…"
+                      autoSize={{ minRows: 2, maxRows: 6 }}
+                      style={{ ...mono, fontSize: 12 }}
+                    />
+                  </div>
                 )}
                 {node === "fallback" && (
-                  <Input
-                    value={tvReason}
-                    onChange={(e) => setTvReason(e.target.value)}
-                    placeholder="兜底原因（必填），如：知识库未命中"
-                  />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <span style={{ fontSize: 11.5, color: "rgba(0,0,0,.55)" }}>兜底原因</span>
+                    <Input
+                      value={tvReason}
+                      onChange={(e) => setTvReason(e.target.value)}
+                      placeholder="必填，如：知识库未命中"
+                    />
+                  </div>
                 )}
               </div>
 
@@ -758,12 +808,16 @@ export default function PromptDetailPage() {
                           border: `1px solid ${s.ok ? "#b7eb8f" : "#ffccc7"}`,
                         }}
                       >
-                        {s.step}
+                        {s.ok ? "✓" : "✕"} {STEP_LABEL[s.step] ?? s.step}
                       </span>
                     ))}
                   </div>
                   {runResult.fallbackUsed && (
-                    <Alert type="warning" showIcon message="本次结果为 Fallback 降级输出，未通过模型结构化校验" />
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="本次结果为 Fallback 降级输出，未通过模型结构化校验"
+                    />
                   )}
                 </div>
               )}
@@ -797,7 +851,10 @@ export default function PromptDetailPage() {
           点一行载入编辑（改完保存生成新版本，不动原版本）。
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {detail.versions.map((v) => {
+          {(historyExpanded
+            ? detail.versions
+            : detail.versions.slice(0, HISTORY_VISIBLE_COUNT)
+          ).map((v) => {
             const isEditing = sourceVersion?.id === v.id;
             return (
               <div
@@ -831,9 +888,7 @@ export default function PromptDetailPage() {
                       服务中 · {u.applicationName}
                     </Tag>
                   ))}
-                  {isEditing && (
-                    <span style={{ fontSize: 11, color: "#1677ff" }}>编辑中</span>
-                  )}
+                  {isEditing && <span style={{ fontSize: 11, color: "#1677ff" }}>编辑中</span>}
                   <div style={{ flex: 1 }} />
                   <Button
                     type="link"
@@ -856,6 +911,11 @@ export default function PromptDetailPage() {
               </div>
             );
           })}
+          {!historyExpanded && detail.versions.length > HISTORY_VISIBLE_COUNT && (
+            <Button type="link" onClick={() => setHistoryExpanded(true)} style={{ fontSize: 12 }}>
+              展开更早的 {detail.versions.length - HISTORY_VISIBLE_COUNT} 个版本
+            </Button>
+          )}
         </div>
       </Drawer>
     </div>
