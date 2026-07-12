@@ -49,15 +49,22 @@ export function storedMaxTokens(c: ModelCallConfig): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-// assembleMessages() 恒定产出两条消息（system/user）。anthropic/gemini 协议
-// 没有独立的第二个非 user 角色可言，两个 helper 用 .find 而不是硬编码下标读取，
-// 不依赖调用方保证数组顺序。
+// assembleMessages() 恒定产出两条消息（system/user），但 node-runtime.service.ts
+// 的修复重试路径会在其后追加第二条 user 消息（携带"上次哪里错了"的说明）——
+// userContent 必须拼接全部 user 消息而不是只取第一条，否则 anthropic/gemini
+// 协议的修复重试会静默丢掉这条追加说明，等价于把同一次请求原样重发一遍
+// （review P1：.find() 版本曾导致这个问题，已改回拼接全部 user 消息）。
+// systemContent 用 .find 是安全的——assembleMessages() 只产出一条 system 消息，
+// 全仓库没有任何调用方会追加第二条。
 export function systemContent(messages: ChatMessage[]): string {
   return messages.find((m) => m.role === "system")?.content ?? "";
 }
 
 export function userContent(messages: ChatMessage[]): string {
-  return messages.find((m) => m.role === "user")?.content ?? "";
+  return messages
+    .filter((m) => m.role === "user")
+    .map((m) => m.content)
+    .join("\n\n");
 }
 
 export const CHAT_BUILDERS: Partial<Record<ModelProtocol, ChatBuilder>> = {

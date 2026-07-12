@@ -22,6 +22,15 @@ const messages: ChatMessage[] = [
   { role: "user", content: '{"query":"q"}' },
 ];
 
+// review P1：node-runtime.service.ts 的修复重试路径会在 assembleMessages() 的两条
+// 消息之后再追加一条 user 消息（见 executeStructured 的 repairMessages），复现这个
+// 三条消息、两条 user 的形状——userContent 必须拼接全部 user 消息，不能只取第一条，
+// 否则 anthropic/gemini 会静默丢掉这条"上次哪里错了"的说明，等价于原样重发请求。
+const repairMessages: ChatMessage[] = [
+  ...messages,
+  { role: "user", content: "上一次输出未通过校验：xxx。请重新输出。" },
+];
+
 const structuredOutput: StructuredOutputSpec = {
   name: "rewrite_v1",
   schema: { type: "object", properties: { rewrittenQuery: { type: "string" } }, required: ["rewrittenQuery"] },
@@ -106,6 +115,17 @@ describe("CHAT_BUILDERS · anthropic", () => {
     expect(body.messages).toEqual([{ role: "user", content: '{"query":"q"}' }]);
   });
 
+  it("修复重试路径（两条 user 消息）：拼接全部 user 消息，不丢修复说明（review P1）", () => {
+    const req = CHAT_BUILDERS.anthropic!(anthropicConfig, repairMessages, {});
+    const body = req.body as { messages: Array<{ role: string; content: string }> };
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: '{"query":"q"}\n\n上一次输出未通过校验：xxx。请重新输出。',
+      },
+    ]);
+  });
+
   it("存量 max_tokens 沿用；temperature 覆盖优先", () => {
     const c = base({ protocol: "anthropic", params: { max_tokens: "2048", temperature: "0.2" } });
     const body = CHAT_BUILDERS.anthropic!(c, messages, { temperature: 0.9 }).body as {
@@ -160,6 +180,14 @@ describe("CHAT_BUILDERS · gemini", () => {
     expect(body.system_instruction.parts[0].text).toBe("固定 system");
     expect(body.contents[0].parts[0].text).toBe('{"query":"q"}');
     expect(body.generationConfig.temperature).toBe(0.5);
+  });
+
+  it("修复重试路径（两条 user 消息）：拼接全部 user 消息，不丢修复说明（review P1）", () => {
+    const req = CHAT_BUILDERS.gemini!(geminiConfig, repairMessages, {});
+    const body = req.body as { contents: Array<{ parts: Array<{ text: string }> }> };
+    expect(body.contents[0].parts[0].text).toBe(
+      '{"query":"q"}\n\n上一次输出未通过校验：xxx。请重新输出。',
+    );
   });
 
   it("存量 max_tokens → generationConfig.maxOutputTokens", () => {
