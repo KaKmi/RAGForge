@@ -91,6 +91,13 @@ function makeDeps() {
       title: "t",
       updatedAt: new Date().toISOString(),
     })),
+    // 默认：任意 convId 都视为属于 app1（多数用例场景）；跨 agentId 用例单独 mock 覆盖。
+    get: jest.fn(async (id: string) => ({
+      id,
+      agentId: "app1",
+      title: "t",
+      updatedAt: new Date().toISOString(),
+    })),
     appendMessage: jest.fn(async (input: object) => ({ id: "m1", ...input })),
     listMessages: jest.fn(async () => []),
   };
@@ -239,5 +246,38 @@ describe("OrchestrationService.run", () => {
     expect(r.convId).toBe("conv9");
     const rewriteCall = d.nodeRuntime.executeStructured.mock.calls.find((c) => c[0] === "rewrite")!;
     expect((rewriteCall[4] as { history?: string }).history).toContain("上一个问题");
+  });
+
+  it("convId 属于别的 agentId → 拒绝跨应用复用，不读其历史、不写其消息，改新建会话（review P2）", async () => {
+    const d = makeDeps();
+    d.conversations.get.mockResolvedValue({
+      id: "conv9",
+      agentId: "app2", // 属于另一应用
+      title: "别的应用的会话",
+      updatedAt: new Date().toISOString(),
+    });
+    d.conversations.listMessages.mockResolvedValue([
+      { id: "m0", convId: "conv9", role: "user", content: "app2 的私密问题" },
+    ]);
+    const r = await makeSvc(d).run("app1", "接着问", "conv9", "u1");
+    // 不读别的应用的历史：既不调用 listMessages("conv9")，也不把其内容注入 rewrite
+    expect(d.conversations.listMessages).not.toHaveBeenCalled();
+    const rewriteCall = d.nodeRuntime.executeStructured.mock.calls.find((c) => c[0] === "rewrite")!;
+    expect((rewriteCall[4] as { history?: string }).history).toBeUndefined();
+    // 不写别的应用的会话：改为新建会话，消息落库到新 convId
+    expect(d.conversations.createConversation).toHaveBeenCalled();
+    expect(r.convId).toBe("conv1"); // makeDeps 的 createConversation 桩固定返回 conv1
+    expect(r.convId).not.toBe("conv9");
+    const userMsg = d.conversations.appendMessage.mock.calls[0][0] as Record<string, unknown>;
+    expect(userMsg.convId).toBe("conv1");
+  });
+
+  it("新建会话后 appendMessage 失败 → 仍返回刚创建的 convId，不丢失（review P3）", async () => {
+    const d = makeDeps();
+    d.conversations.appendMessage.mockRejectedValueOnce(new Error("db down"));
+    const r = await makeSvc(d).run("app1", "怎么退货"); // 不传 convId → 触发新建
+    expect(d.conversations.createConversation).toHaveBeenCalledTimes(1);
+    expect(r.convId).toBe("conv1"); // 而非 undefined
+    expect(r.replyText).toBe("答案[1][2]"); // 边界7：仍正常返回回答
   });
 });

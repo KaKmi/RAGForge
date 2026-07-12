@@ -67,7 +67,10 @@ export class OrchestrationService {
         const traceId = span.spanContext().traceId;
         const kbRows = await this.kbs.findByIds(cfg.kbIds);
         const kbNameById = new Map(kbRows.map((k) => [k.id, k.name]));
-        const history = await this.loadHistory(convId);
+        // review P2：convId 归属校验——客户端自报的 convId 若属于别的 agentId，不得读其历史
+        // 或写入其消息（跨应用会话串号）；不属于/不存在均按未传 convId 处理，降级新建会话。
+        const validConvId = await this.resolveConvId(agentId, convId);
+        const history = await this.loadHistory(validConvId);
 
         // 1) rewrite：降级时契约 fallback 已回填原 query
         const rewrite = await this.executeNode<{ rewrittenQuery: string }>(
@@ -102,7 +105,7 @@ export class OrchestrationService {
             fallbackReasons: reasons,
             fallbackInfo,
           };
-          result.convId = await this.persist(result, { agentId, query, convId, userId });
+          result.convId = await this.persist(result, { agentId, query, convId: validConvId, userId });
           return result;
         }
 
@@ -179,7 +182,7 @@ export class OrchestrationService {
           fallbackReasons: decision.reasons,
           fallbackInfo,
         };
-        result.convId = await this.persist(result, { agentId, query, convId, userId });
+        result.convId = await this.persist(result, { agentId, query, convId: validConvId, userId });
         return result;
       },
     );
@@ -220,6 +223,28 @@ export class OrchestrationService {
     return r.text;
   }
 
+  /**
+   * review P2：校验 convId 归属当前 agentId，防跨应用会话读写（IDOR）——客户端自报的 convId
+   * 若实际属于别的 agentId，会话历史不得被读进当前应用的提示词、也不得被追加消息。
+   * 不存在/不属于/查询失败均按未传 convId 处理（降级新建会话），不冒泡为请求失败。
+   */
+  private async resolveConvId(agentId: string, convId?: string): Promise<string | undefined> {
+    if (!convId) return undefined;
+    try {
+      const conv = await this.conversations.get(convId);
+      if (conv.agentId !== agentId) {
+        this.logger.warn(
+          `convId ${convId} 不属于 agentId ${agentId}（实际属于 ${conv.agentId}）——拒绝跨应用复用，按新会话处理`,
+        );
+        return undefined;
+      }
+      return convId;
+    } catch (err) {
+      this.logger.warn(`convId ${convId} 校验失败（${(err as Error).message}），按新会话处理`);
+      return undefined;
+    }
+  }
+
   /** 历史注入：读会话既有消息（尾部 N 条）拼接为 "role: content" 行；失败降级 undefined。 */
   private async loadHistory(convId?: string): Promise<string | undefined> {
     if (!convId) return undefined;
@@ -241,16 +266,20 @@ export class OrchestrationService {
     result: OrchestrationResult,
     a: { agentId: string; query: string; convId?: string; userId?: string },
   ): Promise<string | undefined> {
+    // review P3：convId 声明在 try 外层（非 const）——若 createConversation 已成功但后续
+    // appendMessage 失败，catch 分支能返回这个刚创建的会话 id，而不是回退到调用方原始
+    // 入参（新会话场景下是 undefined），避免已落库的会话在异常路径里“丢失”。
+    let convId = a.convId;
     try {
-      const convId =
-        a.convId ??
-        (
+      if (!convId) {
+        convId = (
           await this.conversations.createConversation({
             agentId: a.agentId,
             userId: a.userId,
             title: a.query.slice(0, TITLE_MAX),
           })
         ).id;
+      }
       await this.conversations.appendMessage({ convId, role: "user", content: a.query });
       await this.conversations.appendMessage({
         convId,
@@ -266,7 +295,7 @@ export class OrchestrationService {
       return convId;
     } catch (err) {
       this.logger.error(`会话落库失败（降级继续返回回答）：${(err as Error).message}`);
-      return a.convId;
+      return convId;
     }
   }
 }
