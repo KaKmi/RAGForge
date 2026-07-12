@@ -398,18 +398,22 @@ describe("PromptsService · 删除与跨域元数据", () => {
     expect(deletePrompt).toHaveBeenCalledWith("p1");
   });
 
-  it("getVersionMeta 扩展返回 {promptId, node, version}；不存在 → null", async () => {
+  it("getVersionMeta 扩展返回 {promptId, node, version, contractVersion, compileStatus}；不存在 → null", async () => {
     const repo = makeRepo({
       findVersionById: jest.fn(async (id: string) =>
         id === "pv1" ? { ...versionRow, version: 5 } : undefined,
       ),
     });
     const service = new PromptsService(repo, fakeModels);
-    expect(await service.getVersionMeta("pv1")).toEqual({
+    // M7b：扩展了 contractVersion/compileStatus（ReleaseCheck 静态门禁需要），旧三字段仍在
+    expect(await service.getVersionMeta("pv1")).toMatchObject({
       promptId: "p1",
       node: "reply",
       version: 5,
     });
+    const meta = await service.getVersionMeta("pv1");
+    expect(meta).toHaveProperty("contractVersion");
+    expect(meta).toHaveProperty("compileStatus");
     expect(await service.getVersionMeta("nope")).toBeNull();
   });
 });

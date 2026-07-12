@@ -25,6 +25,7 @@ import {
   type ApplicationDetail,
   type ApplicationTag,
   type PromptUsageEntry,
+  type ReleaseCheck,
 } from "@codecrush/contracts";
 import type { AuthenticatedUser } from "../../platform/security/authenticated-user";
 import { ApplicationsService } from "./applications.service";
@@ -104,5 +105,20 @@ export class ApplicationsController {
     @Param("name") name: string,
   ): Promise<void> {
     return this.service.removeTag(id, name);
+  }
+
+  // —— M7b ReleaseCheck（静态失败 422；否则 201 建异步检查 + 轮询）——
+  @Post(":id/config-versions/:versionId/release-checks") @HttpCode(201) startReleaseCheck(
+    @Param("id") id: string,
+    @Param("versionId") versionId: string,
+    @Req() req: AuthedRequest,
+  ): Promise<ReleaseCheck> {
+    return this.service.startReleaseCheck(id, versionId, req.user.email);
+  }
+  @Get(":id/release-checks/:checkId") getReleaseCheck(
+    @Param("id") id: string,
+    @Param("checkId") checkId: string,
+  ): Promise<ReleaseCheck> {
+    return this.service.getReleaseCheck(id, checkId);
   }
 }

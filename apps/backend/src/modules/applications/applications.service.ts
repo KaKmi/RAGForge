@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
   UnprocessableEntityException,
@@ -15,18 +16,41 @@ import type {
   CreateApplicationConfigVersionRequest,
   CreateApplicationRequest,
   PromptUsageEntry,
+  ReleaseCheck,
+  ReleaseCheckIssue,
   UpdateApplicationRequest,
 } from "@codecrush/contracts";
+import { KnowledgeBasesService } from "../knowledge-bases/knowledge-bases.service";
+import { ModelsService } from "../models/models.service";
+import { NodeContractRegistry } from "../node-runtime/contracts/registry";
+import { PromptsService } from "../prompts/prompts.service";
+import { RELEASE_CHECK_JOB, RELEASE_CHECK_QUEUE } from "../../platform/queue/queue.constants";
+import type { Queue } from "../../platform/queue/queue.port";
+import { ApplicationsRepository, type ApplicationListRow } from "./applications.repository";
+import { computeFingerprint, type FingerprintInput } from "./fingerprint";
+import type { ApplicationConfigVersionRow, ReleaseCheckRow } from "./schema";
 
 const APPLICATION_TAG_CAP = 20;
 const APPLICATION_TAG_RESERVED = ["production", "v"];
-import { KnowledgeBasesService } from "../knowledge-bases/knowledge-bases.service";
-import { ModelsService } from "../models/models.service";
-import { PromptsService } from "../prompts/prompts.service";
-import { ApplicationsRepository, type ApplicationListRow } from "./applications.repository";
-import type { ApplicationConfigVersionRow } from "./schema";
-
 const nodes = ["rewrite", "intent", "reply", "fallback"] as const;
+type NodeKey = (typeof nodes)[number];
+
+// 四节点 → 配置版本行的 (prompt 版本列, 模型列) 映射
+const NODE_COLUMNS: Record<NodeKey, { prompt: keyof ApplicationConfigVersionRow; model: keyof ApplicationConfigVersionRow }> = {
+  rewrite: { prompt: "promptRewriteVersionId", model: "rewriteModelId" },
+  intent: { prompt: "promptIntentVersionId", model: "intentModelId" },
+  reply: { prompt: "promptReplyVersionId", model: "replyModelId" },
+  fallback: { prompt: "promptFallbackVersionId", model: "fallbackModelId" },
+};
+
+type ModelMeta = Awaited<ReturnType<ModelsService["get"]>> | null;
+interface ReleaseContext {
+  kbIds: string[];
+  kbRows: Awaited<ReturnType<KnowledgeBasesService["findByIds"]>>;
+  promptMetas: Map<NodeKey, Awaited<ReturnType<PromptsService["getVersionMeta"]>>>;
+  modelMetas: Map<NodeKey, ModelMeta>;
+  rerank: ModelMeta;
+}
 
 @Injectable()
 export class ApplicationsService {
@@ -35,6 +59,7 @@ export class ApplicationsService {
     private readonly knowledgeBases: KnowledgeBasesService,
     private readonly models: ModelsService,
     private readonly prompts: PromptsService,
+    @Inject(RELEASE_CHECK_QUEUE) private readonly releaseQueue: Queue,
   ) {}
   async list(): Promise<Application[]> {
     const rows = await this.repo.findApplications();
@@ -117,20 +142,24 @@ export class ApplicationsService {
     actor: string,
   ): Promise<ApplicationTag[]> {
     await this.mustFind(id);
-    // 契约 refine 已前置拒绝；service 二次防（直接调用方）
-    if (APPLICATION_TAG_RESERVED.includes(name))
+    // review P2-1：service 二次防（直接调用方）必须先归一小写——否则 "Production" 绕过
+    // 保留字检查、tagExists（比 lower）漏判，upsert 落 name='Production'（lower='production'）
+    // = 事实上的 production 标签行，破坏红线不变量 1。HTTP 路径已被契约 refine 归一拦下，
+    // 此处是 in-process 调用方的真实防线。
+    const tag = name.toLowerCase();
+    if (APPLICATION_TAG_RESERVED.includes(tag))
       throw new BadRequestException(`${name} 是保留字，不能作自定义标签`);
     const v = await this.repo.findVersionById(versionId);
     if (!v || v.applicationId !== id)
       throw new NotFoundException(`version ${versionId} 不存在或不属于该应用`);
     // 20 上限只对新名；移动已存在标签（upsert 到别版本）不占额度
     if (
-      !(await this.repo.tagExists(id, name)) &&
+      !(await this.repo.tagExists(id, tag)) &&
       (await this.repo.countTags(id)) >= APPLICATION_TAG_CAP
     )
       throw new UnprocessableEntityException(`自定义标签数已达上限 ${APPLICATION_TAG_CAP}`);
     try {
-      await this.repo.upsertTag(id, versionId, name, actor);
+      await this.repo.upsertTag(id, versionId, tag, actor);
     } catch (e) {
       // 复合 FK 兜底并发窗口（预检后版本被删/换主）→ 23503 转 404
       if (pgCode(e) === "23503")
@@ -150,6 +179,172 @@ export class ApplicationsService {
     await this.mustFind(id);
     return this.repo.findTagsWithVersion(id);
   }
+
+  // —— M7b ReleaseCheck（静态门禁同步 + 异步真实 NodeRuntime 预演入队）——
+  async startReleaseCheck(id: string, versionId: string, actor: string): Promise<ReleaseCheck> {
+    await this.mustFind(id);
+    const version = await this.mustFindVersion(id, versionId);
+    const ctx = await this.buildReleaseContext(version);
+    const issues = this.staticGate(version, ctx);
+    // 静态失败 422（携 issues）——不入队，current production 不受影响
+    if (issues.length > 0)
+      throw new UnprocessableEntityException({ message: "发布静态门禁未通过", issues });
+    const fingerprint = computeFingerprint(this.fingerprintInput(version, ctx));
+    const row = await this.repo.insertReleaseCheck({
+      applicationId: id,
+      configVersionId: versionId,
+      configFingerprint: fingerprint,
+      createdBy: actor,
+    });
+    // 幂等：singletonKey=checkId；retryLimit=0（预演调真实模型，失败不自动重试，避免重复计费）
+    await this.releaseQueue.publish(
+      RELEASE_CHECK_JOB,
+      { checkId: row.id },
+      { singletonKey: row.id, retryLimit: 0 },
+    );
+    return this.toReleaseCheck(row);
+  }
+
+  async getReleaseCheck(id: string, checkId: string): Promise<ReleaseCheck> {
+    await this.mustFind(id);
+    const row = await this.repo.findReleaseCheckById(checkId);
+    if (!row || row.applicationId !== id)
+      throw new NotFoundException(`release check ${checkId} not found`);
+    return this.toReleaseCheck(row);
+  }
+
+  /** 同一函数供上线校验重算 fingerprint（S5）——保证 start 与 publish 用同一算法。 */
+  async computeVersionFingerprint(version: ApplicationConfigVersionRow): Promise<string> {
+    return computeFingerprint(this.fingerprintInput(version, await this.buildReleaseContext(version)));
+  }
+
+  private async buildReleaseContext(version: ApplicationConfigVersionRow): Promise<ReleaseContext> {
+    const kbIds = await this.repo.findVersionKbIds(version.id);
+    const kbRows = await this.knowledgeBases.findByIds(kbIds);
+    const promptMetas = new Map<NodeKey, Awaited<ReturnType<PromptsService["getVersionMeta"]>>>();
+    const modelMetas = new Map<NodeKey, ModelMeta>();
+    for (const node of nodes) {
+      promptMetas.set(node, await this.prompts.getVersionMeta(version[NODE_COLUMNS[node].prompt] as string));
+      modelMetas.set(node, await this.safeGetModel(version[NODE_COLUMNS[node].model] as string));
+    }
+    const rerank = version.rerankModelId ? await this.safeGetModel(version.rerankModelId) : null;
+    return { kbIds, kbRows, promptMetas, modelMetas, rerank };
+  }
+
+  private async safeGetModel(modelId: string): Promise<ModelMeta> {
+    try {
+      return await this.models.get(modelId);
+    } catch {
+      return null; // 缺失/失败在静态门禁里作为 issue，不抛断请求
+    }
+  }
+
+  // 上线门禁第一层：静态检查（只读 DB + 纯逻辑，不调用模型）——7 项，返回空数组=通过
+  private staticGate(version: ApplicationConfigVersionRow, ctx: ReleaseContext): ReleaseCheckIssue[] {
+    const issues: ReleaseCheckIssue[] = [];
+    // 1. ≥1 KB 且 embedding 模型一致
+    if (ctx.kbIds.length === 0) issues.push({ code: "NO_KB", message: "至少需要一个知识库" });
+    else if (new Set(ctx.kbRows.map((k) => k.embeddingModelId)).size > 1)
+      issues.push({ code: "KB_EMBEDDING_MISMATCH", message: "知识库 embedding 模型不一致" });
+    // 2/3/7. 四 PromptVersion 存在 + 节点归属 + 编译无错 + NodeRuntime 支持 contract
+    for (const node of nodes) {
+      const promptVersionId = version[NODE_COLUMNS[node].prompt] as string;
+      const meta = ctx.promptMetas.get(node);
+      if (!meta) {
+        issues.push({ code: "PROMPT_VERSION_MISSING", node, promptVersionId, message: `${node} 的 PromptVersion 不存在` });
+        continue;
+      }
+      if (meta.node !== node)
+        issues.push({ code: "PROMPT_NODE_MISMATCH", node, promptVersionId, message: `PromptVersion 归属 ${meta.node}，与 ${node} 不匹配` });
+      if (meta.compileStatus === "has_errors")
+        issues.push({ code: "PROMPT_COMPILE_ERROR", node, promptVersionId, action: "OPEN_PROMPT_TRY_RUN", message: `${node} 的 Prompt 存在编译错误` });
+      try {
+        NodeContractRegistry.resolve(node, meta.contractVersion);
+      } catch {
+        issues.push({ code: "CONTRACT_UNSUPPORTED", node, promptVersionId, message: `NodeRuntime 不支持 ${node} 的 contractVersion ${meta.contractVersion}` });
+      }
+    }
+    // 4. 四 LLM 模型存在 + 启用 + 类型
+    for (const node of nodes) {
+      const model = ctx.modelMetas.get(node);
+      if (!model) issues.push({ code: "MODEL_MISSING", node, message: `${node} 模型不存在` });
+      else if (model.type !== "llm" || !model.enabled)
+        issues.push({ code: "MODEL_INVALID", node, message: `${node} 模型必须是启用的 llm` });
+    }
+    // 5. rerank 开启则模型合法
+    if (version.rerankModelId) {
+      if (!ctx.rerank) issues.push({ code: "RERANK_MISSING", message: "rerank 模型不存在" });
+      else if (ctx.rerank.type !== "rerank" || !ctx.rerank.enabled)
+        issues.push({ code: "RERANK_INVALID", message: "rerank 模型必须是启用的 rerank" });
+    }
+    // 6. 值域（对存量版本再查一遍，防旧版本越界）
+    const r = version.retrievalParams;
+    if (r.topN > r.topK) issues.push({ code: "TOPN_GT_TOPK", message: "topN 不能大于 topK" });
+    if (r.vectorWeight < 0 || r.vectorWeight > 1)
+      issues.push({ code: "VECTOR_WEIGHT_RANGE", message: "vectorWeight 越界 [0,1]" });
+    if (r.rerankThreshold != null && (r.rerankThreshold < 0 || r.rerankThreshold > 1))
+      issues.push({ code: "RERANK_THRESHOLD_RANGE", message: "rerankThreshold 越界 [0,1]" });
+    for (const node of nodes) {
+      const p = version.nodeParams[node];
+      if (p.temperature < 0 || p.temperature > 2)
+        issues.push({ code: "TEMPERATURE_RANGE", node, message: `${node} temperature 越界 [0,2]` });
+      if (p.topP < 0 || p.topP > 1)
+        issues.push({ code: "TOPP_RANGE", node, message: `${node} topP 越界 [0,1]` });
+    }
+    return issues;
+  }
+
+  private fingerprintInput(version: ApplicationConfigVersionRow, ctx: ReleaseContext): FingerprintInput {
+    return {
+      configVersionId: version.id,
+      prompts: nodes.map((node) => ({
+        node,
+        promptVersionId: version[NODE_COLUMNS[node].prompt] as string,
+        contractVersion: ctx.promptMetas.get(node)?.contractVersion ?? 0,
+      })),
+      models: nodes.map((node) => ({
+        node,
+        modelId: version[NODE_COLUMNS[node].model] as string,
+        providerRevision: this.modelRevision(ctx.modelMetas.get(node)),
+      })),
+      rerankModelId: version.rerankModelId ?? null,
+      rerankProviderRevision: version.rerankModelId ? this.modelRevision(ctx.rerank) : null,
+      nodeParams: version.nodeParams,
+      retrievalParams: version.retrievalParams,
+      fallbackParams: version.fallbackParams,
+      kbs: ctx.kbRows.map((k) => ({ kbId: k.id, activeVersion: k.activeVersion })),
+    };
+  }
+
+  // provider revision = 模型配置相关字段（比 updated_at 更语义、且不越界读 models schema）
+  private modelRevision(m: ModelMeta): string {
+    if (!m) return "missing";
+    return JSON.stringify({
+      params: m.params,
+      baseUrl: m.baseUrl,
+      deploymentId: m.deploymentId,
+      enabled: m.enabled,
+      protocol: m.protocol,
+      type: m.type,
+    });
+  }
+
+  private toReleaseCheck(row: ReleaseCheckRow): ReleaseCheck {
+    return {
+      id: row.id,
+      applicationId: row.applicationId,
+      configVersionId: row.configVersionId,
+      configFingerprint: row.configFingerprint,
+      status: row.status,
+      issues: row.issues,
+      sampleSummary: row.sampleSummary,
+      startedAt: row.startedAt?.toISOString() ?? null,
+      finishedAt: row.finishedAt?.toISOString() ?? null,
+      expiresAt: row.expiresAt?.toISOString() ?? null,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
   async delete(id: string): Promise<void> {
     if ((await this.repo.deleteApplication(id)) === 0)
       throw new NotFoundException(`application ${id} not found`);
@@ -161,6 +356,7 @@ export class ApplicationsService {
     return Promise.all(versions.map((v) => this.toVersion(v, kbIds.get(v.id) ?? [])));
   }
   async getVersion(id: string, versionId: string): Promise<ApplicationConfigVersion> {
+    await this.mustFind(id); // review P3-1：软删应用的版本详情也应 404（与 detail/列表一致）
     const v = await this.mustFindVersion(id, versionId);
     return this.toVersion(v);
   }
@@ -195,6 +391,7 @@ export class ApplicationsService {
     throw new ConflictException("版本号冲突");
   }
   async tryVersionChat(id: string, versionId: string): Promise<ApplicationChatResult> {
+    await this.mustFind(id); // review P3-1：软删应用不可测试
     await this.mustFindVersion(id, versionId);
     return { mode: "unavailable", reason: "pending_orchestration" };
   }

@@ -82,7 +82,7 @@ import { MODEL_PROVIDER_PORT } from "../src/modules/models/model-provider.consta
 import type { ModelProviderRow, NewModelProvider } from "../src/modules/models/schema";
 import { AppConfigModule } from "../src/platform/config/config.module";
 import { BLOB_STORE } from "../src/platform/storage/blob-store.constants";
-import { INGESTION_QUEUE } from "../src/platform/queue/queue.constants";
+import { INGESTION_QUEUE, RELEASE_CHECK_QUEUE } from "../src/platform/queue/queue.constants";
 import { KnowledgeBasesRepository } from "../src/modules/knowledge-bases/knowledge-bases.repository";
 import type { KnowledgeBaseRow } from "../src/modules/knowledge-bases/schema";
 import { DocumentsRepository } from "../src/modules/documents/documents.repository";
@@ -653,6 +653,9 @@ const inMemoryAppTags: {
   createdBy: string;
 }[] = [];
 
+let appReleaseCheckSeq = 0;
+const inMemoryReleaseChecks: Record<string, unknown>[] = [];
+
 const inMemoryApplicationsRepo: Partial<ApplicationsRepository> = {
   findApplications: async () =>
     inMemoryApplications.filter((a) => !a.deletedAt).map(toAppListRow),
@@ -791,6 +794,28 @@ const inMemoryApplicationsRepo: Partial<ApplicationsRepository> = {
     inMemoryAppTags.filter((t) => t.applicationId === appId).length,
   tagExists: async (appId: string, lowerName: string) =>
     inMemoryAppTags.some((t) => t.applicationId === appId && t.name.toLowerCase() === lowerName),
+  // M7b S4 ReleaseCheck（worker 在 e2e 不跑——fakeQueue.subscribe 是 no-op，故只留 queued 态）
+  insertReleaseCheck: async (row: {
+    applicationId: string;
+    configVersionId: string;
+    configFingerprint: string;
+    createdBy: string;
+  }) => {
+    const check = {
+      id: `rc${++appReleaseCheckSeq}`,
+      ...row,
+      status: "queued",
+      issues: [],
+      sampleSummary: {},
+      startedAt: null,
+      finishedAt: null,
+      expiresAt: null,
+      createdAt: new Date(),
+    };
+    inMemoryReleaseChecks.push(check);
+    return check;
+  },
+  findReleaseCheckById: async (id: string) => inMemoryReleaseChecks.find((c) => c.id === id),
 };
 
 const inMemoryBlobs = new Map<string, Buffer>();
@@ -857,6 +882,8 @@ describe("M2 domain skeleton", () => {
       .overrideProvider(BLOB_STORE)
       .useValue(fakeBlobStore)
       .overrideProvider(INGESTION_QUEUE)
+      .useValue(fakeQueue)
+      .overrideProvider(RELEASE_CHECK_QUEUE)
       .useValue(fakeQueue)
       .compile();
     app = ref.createNestApplication();
@@ -1831,6 +1858,43 @@ describe("M2 domain skeleton", () => {
         .put(`/api/applications/${appId}/config-version-tags`)
         .set(auth())
         .send({ name: "qa2", versionId: other.versions[0].id })
+        .expect(404);
+    });
+
+    it("release-checks（M7b）：静态门禁通过 → 201 queued + fingerprint + 轮询；坏版本 404", async () => {
+      const created = (
+        await request(app.getHttpServer())
+          .post("/api/applications")
+          .set(auth())
+          .send(validCreate())
+          .expect(201)
+      ).body;
+      const appId = created.id as string;
+      const v1 = created.versions[0].id as string;
+
+      const check = (
+        await request(app.getHttpServer())
+          .post(`/api/applications/${appId}/config-versions/${v1}/release-checks`)
+          .set(auth())
+          .expect(201)
+      ).body;
+      expect(check.status).toBe("queued");
+      expect(check.configFingerprint).toEqual(expect.any(String));
+      expect(check.configVersionId).toBe(v1);
+
+      // 轮询检查状态
+      const polled = (
+        await request(app.getHttpServer())
+          .get(`/api/applications/${appId}/release-checks/${check.id}`)
+          .set(auth())
+          .expect(200)
+      ).body;
+      expect(polled.id).toBe(check.id);
+
+      // 不存在的版本 → 404
+      await request(app.getHttpServer())
+        .post(`/api/applications/${appId}/config-versions/does-not-exist/release-checks`)
+        .set(auth())
         .expect(404);
     });
 

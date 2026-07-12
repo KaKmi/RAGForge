@@ -89,20 +89,57 @@ function service(overrides: Record<string, unknown> = {}) {
     deleteTag: jest.fn(async () => 1),
     countTags: jest.fn(async () => 0),
     tagExists: jest.fn(async () => false),
+    insertReleaseCheck: jest.fn(async (row: Record<string, unknown>) => ({
+      id: "rc1",
+      status: "queued",
+      issues: [],
+      sampleSummary: {},
+      startedAt: null,
+      finishedAt: null,
+      expiresAt: null,
+      createdAt: now,
+      ...row,
+    })),
+    findReleaseCheckById: jest.fn(async () => undefined),
     ...overrides,
   };
-  const kbs = { findByIds: jest.fn(async () => [{ id: "kb", embeddingModelId: "embed" }]) };
-  const models = { get: jest.fn(async () => ({ type: "llm", enabled: true })) };
+  const kbs = {
+    findByIds: jest.fn(async () => [{ id: "kb", embeddingModelId: "embed", activeVersion: 1 }]),
+  };
+  const models = {
+    get: jest.fn(async () => ({
+      id: "llm",
+      type: "llm",
+      enabled: true,
+      params: {},
+      baseUrl: "http://x",
+      protocol: "openai_compat",
+    })),
+  };
   const prompts = {
-    getVersionMeta: jest.fn(async (id: string) => ({ promptId: "p", node: id.slice(2) })),
+    getVersionMeta: jest.fn(async (id: string) => ({
+      promptId: "p",
+      node: id.slice(2),
+      version: 1,
+      contractVersion: 1,
+      compileStatus: "ok",
+    })),
     listVersions: jest.fn(async () => []),
   };
+  const releaseQueue = { publish: jest.fn(async () => undefined), subscribe: jest.fn(async () => undefined) };
   return {
-    app: new ApplicationsService(repo as never, kbs as never, models as never, prompts as never),
+    app: new ApplicationsService(
+      repo as never,
+      kbs as never,
+      models as never,
+      prompts as never,
+      releaseQueue as never,
+    ),
     repo,
     kbs,
     models,
     prompts,
+    releaseQueue,
   };
 }
 describe("ApplicationsService", () => {
@@ -221,5 +258,52 @@ describe("ApplicationsService", () => {
     expect(repo.deleteTag).toHaveBeenCalledWith("a1", "qa1");
     const absent = service({ deleteTag: jest.fn(async () => 0) });
     await expect(absent.app.removeTag("a1", "nope")).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  // review P2-1：直接调用方（大写保留字）必须被 service 归一后拦下，不得落 production 等价标签行
+  it("normalizes a direct-caller uppercase reserved word and rejects it", async () => {
+    const { app, repo } = service();
+    await expect(app.moveTag("a1", "Production", "v1", "u")).rejects.toBeInstanceOf(BadRequestException);
+    expect(repo.upsertTag).not.toHaveBeenCalled();
+  });
+
+  // —— M7b S4 ReleaseCheck ——
+  it("startReleaseCheck：静态门禁通过 → 建 queued check 并入队（幂等 singletonKey）", async () => {
+    const { app, repo, releaseQueue } = service();
+    const check = await app.startReleaseCheck("a1", "v1", "u");
+    expect(check.status).toBe("queued");
+    expect(repo.insertReleaseCheck).toHaveBeenCalled();
+    expect(releaseQueue.publish).toHaveBeenCalledWith(
+      "application.release_check",
+      { checkId: "rc1" },
+      { singletonKey: "rc1", retryLimit: 0 },
+    );
+  });
+  it("startReleaseCheck：无知识库 → 422 且不入队", async () => {
+    const { app, releaseQueue } = service({ findVersionKbIds: jest.fn(async () => []) });
+    await expect(app.startReleaseCheck("a1", "v1", "u")).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
+    expect(releaseQueue.publish).not.toHaveBeenCalled();
+  });
+  it("getReleaseCheck：归属校验 + 返回 DTO；异应用 → 404", async () => {
+    const row = {
+      id: "rc1",
+      applicationId: "a1",
+      configVersionId: "v1",
+      configFingerprint: "fp",
+      status: "passed",
+      issues: [],
+      sampleSummary: {},
+      startedAt: now,
+      finishedAt: now,
+      expiresAt: now,
+      createdBy: "u",
+      createdAt: now,
+    };
+    const ok = service({ findReleaseCheckById: jest.fn(async () => row) });
+    await expect(ok.app.getReleaseCheck("a1", "rc1")).resolves.toMatchObject({ status: "passed" });
+    const wrong = service({ findReleaseCheckById: jest.fn(async () => ({ ...row, applicationId: "other" })) });
+    await expect(wrong.app.getReleaseCheck("a1", "rc1")).rejects.toBeInstanceOf(NotFoundException);
   });
 });

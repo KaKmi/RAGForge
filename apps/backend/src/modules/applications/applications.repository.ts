@@ -2,15 +2,18 @@ import { Inject, Injectable } from "@nestjs/common";
 import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
+import type { ReleaseCheckIssue } from "@codecrush/contracts";
 import {
   applicationConfigVersionKbs,
   applicationConfigVersionTags,
   applicationConfigVersions,
+  applicationReleaseChecks,
   applications,
   type ApplicationConfigVersionRow,
   type ApplicationRow,
   type NewApplication,
   type NewApplicationConfigVersion,
+  type ReleaseCheckRow,
 } from "./schema";
 
 export type ApplicationListRow = ApplicationRow & {
@@ -283,5 +286,58 @@ export class ApplicationsRepository {
       )
       .limit(1);
     return rows.length > 0;
+  }
+
+  // —— M7b ReleaseCheck ——
+  async insertReleaseCheck(row: {
+    applicationId: string;
+    configVersionId: string;
+    configFingerprint: string;
+    createdBy: string;
+  }): Promise<ReleaseCheckRow> {
+    return (
+      await this.db
+        .insert(applicationReleaseChecks)
+        .values({ ...row, status: "queued", issues: [], sampleSummary: {} })
+        .returning()
+    )[0];
+  }
+
+  async findReleaseCheckById(id: string): Promise<ReleaseCheckRow | undefined> {
+    return (
+      await this.db
+        .select()
+        .from(applicationReleaseChecks)
+        .where(eq(applicationReleaseChecks.id, id))
+        .limit(1)
+    )[0];
+  }
+
+  async markReleaseCheckRunning(id: string): Promise<void> {
+    await this.db
+      .update(applicationReleaseChecks)
+      .set({ status: "running", startedAt: new Date() })
+      .where(eq(applicationReleaseChecks.id, id));
+  }
+
+  async markReleaseCheckResult(
+    id: string,
+    result: {
+      status: "passed" | "failed";
+      issues: ReleaseCheckIssue[];
+      sampleSummary: Record<string, unknown>;
+      expiresAt: Date | null;
+    },
+  ): Promise<void> {
+    await this.db
+      .update(applicationReleaseChecks)
+      .set({
+        status: result.status,
+        issues: result.issues,
+        sampleSummary: result.sampleSummary,
+        finishedAt: new Date(),
+        expiresAt: result.expiresAt,
+      })
+      .where(eq(applicationReleaseChecks.id, id));
   }
 }

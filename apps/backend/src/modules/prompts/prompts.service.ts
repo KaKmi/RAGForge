@@ -313,15 +313,37 @@ export class PromptsService {
     }
   }
 
-  // 供跨域（agents）调用：给定 prompt_version id，反查所属 prompt/node/版本号
-  async getVersionMeta(
-    versionId: string,
-  ): Promise<{ promptId: string; node: string; version: number } | null> {
+  // 供跨域（applications）调用：给定 prompt_version id，反查所属 prompt/node/版本号 +
+  // 运行时元数据（contractVersion/compileStatus，M7b ReleaseCheck 静态门禁需要）。
+  async getVersionMeta(versionId: string): Promise<{
+    promptId: string;
+    node: string;
+    version: number;
+    contractVersion: number;
+    compileStatus: string;
+  } | null> {
     const version = await this.repo.findVersionById(versionId);
     if (!version) return null;
     const prompt = await this.repo.findPromptById(version.promptId);
     if (!prompt) return null;
-    return { promptId: version.promptId, node: prompt.node, version: version.version };
+    return {
+      promptId: version.promptId,
+      node: prompt.node,
+      version: version.version,
+      contractVersion: version.contractVersion,
+      compileStatus: version.compileStatus,
+    };
+  }
+
+  // 供 M7b ReleaseCheck worker：取版本可执行内容（body + contractVersion + node）
+  async getVersionExecutable(
+    versionId: string,
+  ): Promise<{ node: string; contractVersion: number; body: string } | null> {
+    const version = await this.repo.findVersionById(versionId);
+    if (!version) return null;
+    const prompt = await this.repo.findPromptById(version.promptId);
+    if (!prompt) return null;
+    return { node: prompt.node, contractVersion: version.contractVersion, body: version.body };
   }
 
   private async mustFindPrompt(id: string): Promise<PromptListRow> {
