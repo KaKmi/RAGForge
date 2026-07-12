@@ -1,6 +1,6 @@
 ---
 title: "Prompt 组装与 LLM 节点契约（NodeContract 执行引擎）"
-description: "四个固定节点的完整 NodeContract 数据、三层 Prompt 组装与 NodeRuntimeService 执行/校验/Fallback 设计，本轮写死代码。"
+description: "四个固定节点的完整 NodeContract 数据、两层 Prompt 组装与 NodeRuntimeService 执行/校验/Fallback 设计，本轮写死代码。"
 category: "design"
 number: "011"
 status: draft
@@ -19,7 +19,7 @@ last_modified: "2026-07-11"
 
 ## Summary
 
-定义四个固定 LLM 节点（问题改写 `rewrite` / 意图识别 `intent` / 回复生成 `reply` / 兜底 `fallback`）v1 版本的完整 NodeContract 内容，把原型里已经写好的平台固定 System 外壳文案、输入/保留字段、输出 Schema、动态校验规则、Fallback 行为落地为代码定义的 `NodeContractRegistry`。设计三层 Prompt 组装（平台固定 System + 管理员 Instructions[复用 012 §5 的 `compilePromptBody`，新增严格渲染 `renderTemplateStrict`] + 平台运行时数据 JSON）与统一执行入口 `NodeRuntimeService`：`executeStructured()` 服务 rewrite/intent（等待完整响应 → Zod Schema 校验 → `extraValidate` 动态值域校验 → 失败修复一次 → 仍失败走确定性 Fallback），`streamText()` 服务 reply/fallback（流式转发 + 首 token 超时/断流边界处理，不做 JSON 修复重试）。
+定义四个固定 LLM 节点（问题改写 `rewrite` / 意图识别 `intent` / 回复生成 `reply` / 兜底 `fallback`）v1 版本的完整 NodeContract 内容，把原型里已经写好的平台固定 System 外壳文案、输入/保留字段、输出 Schema、动态校验规则、Fallback 行为落地为代码定义的 `NodeContractRegistry`。设计两层 Prompt 组装（平台固定 System + 管理员 Instructions 拼接为一条 system 消息[复用 012 §5 的 `compilePromptBody`，新增严格渲染 `renderTemplateStrict`] + 平台运行时数据 JSON 作为 user 消息）与统一执行入口 `NodeRuntimeService`：`executeStructured()` 服务 rewrite/intent（等待完整响应 → Zod Schema 校验 → `extraValidate` 动态值域校验 → 失败修复一次 → 仍失败走确定性 Fallback），`streamText()` 服务 reply/fallback（流式转发 + 首 token 超时/断流边界处理，不做 JSON 修复重试）。
 
 为此扩展 `ModelProviderPort`：新增 `chat()`/`chatStream()` 方法与中性 `structuredOutput` 参数，按 `(type=llm, protocol)` 适配 `openai_compat`/`anthropic`/`gemini` 三种协议各自的原生结构化输出机制；无论模型是否声称支持原生能力，后端 Zod 终审永远执行。
 
@@ -34,7 +34,7 @@ last_modified: "2026-07-11"
 - 四个节点 v1 NodeContract 的完整具体内容（System 外壳文案、`inputs`、`reserved`、`outSchema` 字段定义与示例、`extraValidate` 规则、`fallback` 行为），数据来源于原型 `NODE_CONTRACT` 对象。
 - `NodeContractRegistry`：代码定义（非 DB 表），按 `(node, contractVersion)` 解析。
 - `ModelProviderPort` 扩展：新增 `chat()`（非流式，供结构化节点用）与 `chatStream()`（流式，供文本节点用），新增中性 `structuredOutput` 参数；`openai_compat`/`anthropic`/`gemini` 三种协议的结构化输出适配映射；后端 Zod 终审永不因原生能力而跳过。
-- 三层 Prompt 组装：平台固定 System + 管理员 Instructions（复用 012 §5 的 `compilePromptBody`，新增 `renderTemplateStrict` 严格渲染）+ 平台运行时数据 JSON envelope。
+- 两层 Prompt 组装：平台固定 System + 管理员 Instructions 拼接为一条 system 消息（复用 012 §5 的 `compilePromptBody`，新增 `renderTemplateStrict` 严格渲染）+ 平台运行时数据 JSON envelope 作为 user 消息。
 - `NodeRuntimeService.executeStructured()` / `streamText()` 两个独立入口及其内部归一化 → 校验 → 修复一次 → Fallback 全流程。
 - 模块文件组织：`apps/backend/src/modules/node-runtime/{contracts,compiler,executor}/`，落实 003 已定义的模块边界。
 - Prompt 预览端点从 012 §6 的 `mode:'unavailable'` 占位升级为真实 `mode:'structured'`/`mode:'text'`。
@@ -218,7 +218,7 @@ interface NodeContract<TInput, TOutput, TReserved = Record<string, never>> {
 
 ```ts
 interface ChatMessage {
-  role: 'system' | 'developer' | 'user' | 'assistant';
+  role: 'system' | 'user';
   content: string;
 }
 
@@ -272,16 +272,18 @@ interface ModelProviderPort {
 
 模型能力（走哪条首选机制）由协议默认值决定，可被 `model_providers.params` 里的显式标记覆盖；连接测试可以探测但不能当永久保证——任何路径都不能因为"模型声称支持"而跳过 Zod 终审（Invariant 4）。
 
-### 3. 三层 Prompt 组装
+### 3. 两层 Prompt 组装
 
 复用 012 §5 的字段契约与编译规则，新增"严格渲染"步骤 `renderTemplateStrict`——区别于现有 `packages/contracts/src/prompt-template.ts` 里较宽松的 `renderTemplate`（其注释已写明"只适用于预览"）。本文的严格版本才是真正进入模型请求的路径：
 
 ```ts
 {
   messages: [
-    { role: "system",    content: contract.systemInstructions },   // 平台固定，管理员不可覆盖
-    { role: "developer", content: renderedAdminInstructions },     // 管理员 Instructions 渲染结果，低于 system 一级
-    { role: "user",      content: JSON.stringify(runtimeEnvelope) }, // 平台运行时数据，先过 inputSchema 再 JSON.stringify
+    { role: "system", content: `${contract.systemInstructions}\n\n${renderedAdminInstructions}` },
+    // 平台固定指令在前、管理员 Instructions 渲染结果在后，拼接顺序由服务端代码
+    // 保证——管理员正文内容本身无法把自己挪到 systemInstructions 之前，也无法让
+    // 自己被解释成平台指令，因为这是字符串模板决定的，不依赖模型对 role 的理解。
+    { role: "user", content: JSON.stringify(runtimeEnvelope) }, // 平台运行时数据，先过 inputSchema 再 JSON.stringify
   ],
   structuredOutput: contract.runtimeMode === 'structured'
     ? { name: `${contract.key}_v${contract.version}`, schema: contract.outputSchema, strict: true }
@@ -289,7 +291,7 @@ interface ModelProviderPort {
 }
 ```
 
-协议适配器可以把 `developer` 角色合并为等价的高优先级消息，但管理员内容不得与运行时数据混为同一个自由文本字段——这是为了防止管理员 Instructions 与用户输入的边界被模糊，降低 Prompt Injection 改变消息结构的风险。
+不再需要区分 `developer` 角色：唯一需要用消息角色隔离的边界是"用户输入（不可信运行时数据）不能和管理员/平台内容混在同一个自由文本字段"，单独一条 `user` 消息已经覆盖这个边界。管理员 Instructions 与平台固定指令都是服务端可信内容，靠拼接顺序而非协议层 role 保证优先级，三个协议（openai_compat/anthropic/gemini）都能直接映射这两层消息，不需要任何按协议差异化的折叠逻辑。
 
 ### 4. `NodeRuntimeService` 两个入口
 
@@ -299,7 +301,7 @@ interface ModelProviderPort {
 解析 Contract
   → 校验 runtime input（inputSchema）
   → 严格渲染管理员模板（renderTemplateStrict）
-  → 组装三层消息
+  → 组装两层消息
   → 调用 chat() 带 structuredOutput
   → 归一化原始响应（剥离代码围栏等）
   → outputSchema 校验
@@ -403,7 +405,7 @@ compileAndSample(request: NodeSampleRequest): Promise<NodeSampleResult>
 
 ## Security
 
-- 管理员 Instructions 按低于平台 System 的消息角色（`developer`）发送，即使正文要求"忽略格式"也不能绕过 API 层 Structured Output 约束与后端 Schema 终审。
+- 管理员 Instructions 拼接在平台 System 指令之后、同一条 `system` 消息内，拼接顺序由服务端代码保证，管理员正文内容无法改变这个顺序；即使正文要求"忽略格式"也不能绕过 API 层 Structured Output 约束与后端 Schema 终审——这条防护本来就不依赖消息角色区分，只依赖 outputSchema/extraValidate/Fallback 在生成之后无条件执行。
 - `availableRoutes`/`citations` 等保留数据由服务端生成，管理员不能在模板变量里伪造。
 - C 端 `query`/`history` 作为已校验 JSON Runtime Data 发送，不与管理员模板手工字符串拼接，降低 Prompt Injection 改变消息边界的风险。
 - 编译/预览请求限制正文、字段数、历史长度和输出大小，未知字段不从任意对象反射取值。
