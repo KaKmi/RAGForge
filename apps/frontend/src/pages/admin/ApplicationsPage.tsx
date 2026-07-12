@@ -426,15 +426,19 @@ export default function ApplicationsPage() {
       ),
     },
     {
-      // M7a 仅有 production 一个标识；M7b 引入自定义命名标签（qa20260707 等）后此列展示锚点
+      // M7b：展示应用的自定义命名锚点标签（qa20260707 等）；「是否上线」由 production 指针独立成列
       title: "标识",
       key: "tags",
-      width: 130,
+      width: 160,
       render: (_: unknown, r: Application) =>
-        r.productionVersion != null ? (
-          <Tag color="green" style={mono}>
-            production
-          </Tag>
+        r.tags.length > 0 ? (
+          <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4 }}>
+            {r.tags.map((t) => (
+              <Tag key={t} color="geekblue" style={mono}>
+                {t}
+              </Tag>
+            ))}
+          </span>
         ) : (
           <span style={{ color: "rgba(0,0,0,.35)" }}>—</span>
         ),
@@ -495,7 +499,7 @@ export default function ApplicationsPage() {
       </div>
       <div style={{ fontSize: 13, color: "rgba(0,0,0,.45)", marginBottom: 16, lineHeight: 1.7 }}>
         一个应用 = 知识库 + 四个节点各自用哪个 Prompt 版本、配什么模型，打包成一份可对外服务的配置。
-        配置版本是不可变快照序列；上线 / 回滚统一为移动 production 标识（M7b 开放）。
+        配置版本是不可变快照序列；上线前自动核对四节点，通过才对外服务，回滚 = 把 production 移回旧版本。
       </div>
 
       {listErr && (

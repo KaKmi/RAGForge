@@ -23,6 +23,15 @@ import {
   type ApplicationConfigVersion,
   ApplicationChatResultSchema,
   type ApplicationChatResult,
+  ApplicationTagListResponseSchema,
+  type ApplicationTagListResponse,
+  type MoveApplicationTagRequest,
+  ReleaseCheckSchema,
+  type ReleaseCheck,
+  PublishProductionRequestSchema,
+  type PublishProductionRequest,
+  UnpublishProductionRequestSchema,
+  type UnpublishProductionRequest,
   CreateApplicationRequestSchema,
   type CreateApplicationRequest,
   CreateApplicationConfigVersionRequestSchema,
@@ -293,6 +302,82 @@ export const getPromptUsage = (promptId: string): Promise<PromptUsageResponse> =
   getJson(
     `/api/applications/prompt-usage?promptId=${encodeURIComponent(promptId)}`,
     PromptUsageResponseSchema,
+  );
+
+// —— M7b 应用发布闭环：命名标签 / ReleaseCheck / production CAS ——
+// 非 2xx 透出服务端 message（400 保留字/归属、404 跨应用/标签缺失、409 CAS 冲突/过期/依赖变化、422 静态门禁/cap）
+async function applicationActionJson<T>(
+  path: string,
+  init: RequestInit,
+  parse: (data: unknown) => T,
+): Promise<T> {
+  const resp = await apiFetch(path, init);
+  if (!resp.ok) {
+    let msg = `${resp.status} ${resp.statusText}`;
+    try {
+      const body = (await resp.json()) as { message?: string | string[] };
+      const m = Array.isArray(body.message) ? body.message.join("；") : body.message;
+      if (m) msg = m;
+    } catch {
+      /* 非 JSON 错误体，保留状态行 */
+    }
+    throw new Error(msg);
+  }
+  return parse(await resp.json());
+}
+
+export const listApplicationTags = (id: string): Promise<ApplicationTagListResponse> =>
+  getJson(
+    `/api/applications/${encodeURIComponent(id)}/config-version-tags`,
+    ApplicationTagListResponseSchema,
+  );
+export const moveApplicationTag = (
+  id: string,
+  req: MoveApplicationTagRequest,
+): Promise<ApplicationTagListResponse> =>
+  applicationActionJson(
+    `/api/applications/${encodeURIComponent(id)}/config-version-tags`,
+    { method: "PUT", body: JSON.stringify(req) },
+    (d) => ApplicationTagListResponseSchema.parse(d),
+  );
+export async function removeApplicationTag(id: string, name: string): Promise<void> {
+  const resp = await apiFetch(
+    `/api/applications/${encodeURIComponent(id)}/config-version-tags/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  if (!resp.ok) throw new Error(`remove application tag failed: ${resp.status} ${resp.statusText}`);
+}
+export const startApplicationReleaseCheck = (
+  id: string,
+  versionId: string,
+): Promise<ReleaseCheck> =>
+  applicationActionJson(
+    `/api/applications/${encodeURIComponent(id)}/config-versions/${encodeURIComponent(versionId)}/release-checks`,
+    { method: "POST" },
+    (d) => ReleaseCheckSchema.parse(d),
+  );
+export const getApplicationReleaseCheck = (id: string, checkId: string): Promise<ReleaseCheck> =>
+  getJson(
+    `/api/applications/${encodeURIComponent(id)}/release-checks/${encodeURIComponent(checkId)}`,
+    ReleaseCheckSchema,
+  );
+export const publishApplicationProduction = (
+  id: string,
+  req: PublishProductionRequest,
+): Promise<Application> =>
+  applicationActionJson(
+    `/api/applications/${encodeURIComponent(id)}/production`,
+    { method: "PUT", body: JSON.stringify(PublishProductionRequestSchema.parse(req)) },
+    (d) => ApplicationSchema.parse(d),
+  );
+export const unpublishApplicationProduction = (
+  id: string,
+  req: UnpublishProductionRequest,
+): Promise<Application> =>
+  applicationActionJson(
+    `/api/applications/${encodeURIComponent(id)}/production`,
+    { method: "DELETE", body: JSON.stringify(UnpublishProductionRequestSchema.parse(req)) },
+    (d) => ApplicationSchema.parse(d),
   );
 
 // models — @Controller("models")（M3 真实 CRUD + 连通性测试）

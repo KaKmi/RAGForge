@@ -25,6 +25,13 @@ vi.mock("../../api/client", () => ({
   getKnowledgeBases: vi.fn(),
   getModels: vi.fn(),
   getPromptNodeVersions: vi.fn(),
+  listApplicationTags: vi.fn(),
+  moveApplicationTag: vi.fn(),
+  removeApplicationTag: vi.fn(),
+  startApplicationReleaseCheck: vi.fn(),
+  getApplicationReleaseCheck: vi.fn(),
+  publishApplicationProduction: vi.fn(),
+  unpublishApplicationProduction: vi.fn(),
 }));
 
 const mocked = vi.mocked(client);
@@ -122,6 +129,7 @@ const application = (over: Partial<Application> = {}): Application => ({
   productionConfigVersionId: null,
   latestVersion: 1,
   versionCount: 1,
+  tags: [],
   createdAt: "2026-07-01T00:00:00.000Z",
   updatedAt: "2026-07-10T08:00:00.000Z",
   updatedBy: "demo@codecrush.local",
@@ -157,6 +165,7 @@ beforeEach(() => {
     mode: "unavailable",
     reason: "pending_orchestration",
   });
+  mocked.listApplicationTags.mockResolvedValue([]);
 });
 
 describe("buildDefaultConfig", () => {
@@ -194,16 +203,25 @@ describe("buildDefaultConfig", () => {
 });
 
 describe("应用列表页", () => {
-  it("标识列与是否上线列拆开：未上线 → 「未上线」，已上线 → 「production」+「已上线 · vN」", async () => {
+  it("标识列展示自定义锚点标签，是否上线列独立（M7b）", async () => {
     mocked.getApplications.mockResolvedValue([
       application(),
-      application({ id: "app2", name: "已上线应用", slug: "live-bot", productionVersion: 3 }),
+      application({
+        id: "app2",
+        name: "已上线应用",
+        slug: "live-bot",
+        productionVersion: 3,
+        tags: ["qa20260707", "beta"],
+      }),
     ]);
     renderRoutes("/admin/applications");
     expect(await screen.findByText("售后助手")).toBeInTheDocument();
+    // 「是否上线」列：未上线应用 → 「未上线」，已上线 → 「已上线 · v3」
     expect(screen.getByText("未上线")).toBeInTheDocument();
-    expect(screen.getByText("production")).toBeInTheDocument();
     expect(screen.getByText("已上线 · v3")).toBeInTheDocument();
+    // 「标识」列：展示自定义命名锚点（不再硬编码 production）
+    expect(screen.getByText("qa20260707")).toBeInTheDocument();
+    expect(screen.getByText("beta")).toBeInTheDocument();
   });
 
   it("点行导航到详情", async () => {
@@ -287,10 +305,31 @@ describe("应用详情骨架", () => {
     expect(screen.getByText("还没上线")).toBeInTheDocument();
   });
 
-  it("「上线这个版本」禁用（M7b）", async () => {
+  it("「上线这个版本」启用并触发上线核对（M7b）", async () => {
+    mocked.startApplicationReleaseCheck.mockResolvedValue({
+      id: "rc1",
+      applicationId: "app1",
+      configVersionId: "appv1",
+      configFingerprint: "fp",
+      status: "passed",
+      issues: [],
+      sampleSummary: { rewrite: { ok: 10, total: 10 }, intent: { ok: 10, total: 10 }, reply: { ok: 1, total: 1 }, fallback: { ok: 1, total: 1 } },
+      startedAt: "2026-07-12T00:00:00.000Z",
+      finishedAt: "2026-07-12T00:00:12.000Z",
+      expiresAt: "2026-07-12T00:15:12.000Z",
+      createdBy: "demo@codecrush.local",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    });
     renderRoutes("/admin/applications/app1");
     const btn = await screen.findByRole("button", { name: /上线这个版本/ });
-    expect(btn).toBeDisabled();
+    expect(btn).toBeEnabled();
+    fireEvent.click(btn);
+    // 触发异步 ReleaseCheck，核对弹窗出现，通过后可确认上线
+    await waitFor(() =>
+      expect(mocked.startApplicationReleaseCheck).toHaveBeenCalledWith("app1", "appv1"),
+    );
+    expect(await screen.findByText("上线前自动核对一遍")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /核对通过 · 上线/ })).toBeInTheDocument();
   });
 
   it("改配置产生 dirty，保存调 createApplicationConfigVersion 并切到新版本", async () => {

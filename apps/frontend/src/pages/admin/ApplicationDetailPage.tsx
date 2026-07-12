@@ -6,6 +6,7 @@ import {
   Drawer,
   Input,
   InputNumber,
+  Modal,
   Select,
   Slider,
   Spin,
@@ -18,19 +19,28 @@ import type {
   ApplicationConfigFields,
   ApplicationConfigVersion,
   ApplicationDetail,
+  ApplicationTag,
   Freedom,
   KnowledgeBase,
   ModelProvider,
   PromptNode,
   PromptNodeVersionCandidate,
+  ReleaseCheck,
 } from "@codecrush/contracts";
 import {
   createApplicationConfigVersion,
   getApplicationDetail,
+  getApplicationReleaseCheck,
   getKnowledgeBases,
   getModels,
   getPromptNodeVersions,
+  listApplicationTags,
+  moveApplicationTag,
+  publishApplicationProduction,
+  removeApplicationTag,
+  startApplicationReleaseCheck,
   tryApplicationVersionChat,
+  unpublishApplicationProduction,
 } from "../../api/client";
 
 /**
@@ -160,6 +170,21 @@ export default function ApplicationDetailPage() {
   const [chatBusy, setChatBusy] = useState(false);
   const [chatUnavailable, setChatUnavailable] = useState(false);
 
+  // —— M7b：命名标签 +「管理标识」面板 + 上线核对（gate2）——
+  const [tags, setTags] = useState<ApplicationTag[]>([]);
+  const [tagPanelFor, setTagPanelFor] = useState<ApplicationConfigVersion | null>(null);
+  const [tagNewName, setTagNewName] = useState("");
+  const [tagErr, setTagErr] = useState("");
+  const [tagBusy, setTagBusy] = useState(false);
+  const [gate, setGate] = useState<null | {
+    version: ApplicationConfigVersion;
+    phase: "checking" | "done";
+    check: ReleaseCheck | null;
+    error: string;
+  }>(null);
+  const [publishing, setPublishing] = useState(false);
+  const gateSession = useRef(0);
+
   const activeAppId = useRef(appId);
   useEffect(() => {
     activeAppId.current = appId;
@@ -170,6 +195,15 @@ export default function ApplicationDetailPage() {
     setDraft(versionToFields(v));
     setNote("");
   }, []);
+
+  const loadTags = useCallback(async () => {
+    try {
+      const list = await listApplicationTags(appId);
+      setTags(Array.isArray(list) ? list : []);
+    } catch {
+      /* 标签加载失败不阻塞详情主体 */
+    }
+  }, [appId]);
 
   const refresh = useCallback(
     async (loadLatest: boolean, focusVersionId?: string) => {
@@ -199,7 +233,8 @@ export default function ApplicationDetailPage() {
   useEffect(() => {
     setLoading(true);
     void refresh(true);
-  }, [refresh]);
+    void loadTags();
+  }, [refresh, loadTags]);
 
   useEffect(() => {
     let active = true;
@@ -308,6 +343,108 @@ export default function ApplicationDetailPage() {
       message.error("对话测试请求失败");
     } finally {
       setChatBusy(false);
+    }
+  };
+
+  // —— M7b 标签 ——
+  const openTagPanel = (v: ApplicationConfigVersion) => {
+    setTagPanelFor(v);
+    setTagNewName("");
+    setTagErr("");
+    void loadTags();
+  };
+
+  const moveTagTo = async (name: string, versionId: string) => {
+    setTagBusy(true);
+    try {
+      setTags(await moveApplicationTag(appId, { name, versionId }));
+      message.success(`标识「${name}」已指向该版本`);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "移动失败");
+    } finally {
+      setTagBusy(false);
+    }
+  };
+  const dropTag = async (name: string) => {
+    setTagBusy(true);
+    try {
+      await removeApplicationTag(appId, name);
+      setTags((prev) => prev.filter((t) => t.name !== name));
+      message.success(`已摘除标识「${name}」`);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "摘除失败");
+    } finally {
+      setTagBusy(false);
+    }
+  };
+  const createTag = async () => {
+    const name = tagNewName.trim();
+    if (!name || !tagPanelFor) return;
+    setTagErr("");
+    setTagBusy(true);
+    try {
+      setTags(await moveApplicationTag(appId, { name, versionId: tagPanelFor.id }));
+      setTagNewName("");
+      message.success(`已创建标识「${name}」并打上`);
+    } catch (e) {
+      setTagErr(e instanceof Error ? e.message : "创建失败");
+    } finally {
+      setTagBusy(false);
+    }
+  };
+
+  // —— M7b 上线核对（gate2）+ CAS 上线/下线 ——
+  const startPublish = async (v: ApplicationConfigVersion) => {
+    const session = ++gateSession.current;
+    setGate({ version: v, phase: "checking", check: null, error: "" });
+    try {
+      let check = await startApplicationReleaseCheck(appId, v.id);
+      const deadline = Date.now() + 90_000;
+      while ((check.status === "queued" || check.status === "running") && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1200));
+        check = await getApplicationReleaseCheck(appId, check.id);
+      }
+      if (gateSession.current !== session) return;
+      setGate({ version: v, phase: "done", check, error: "" });
+    } catch (e) {
+      // 静态门禁 422 在此抛出（携 message）
+      if (gateSession.current !== session) return;
+      setGate({ version: v, phase: "done", check: null, error: e instanceof Error ? e.message : "核对失败" });
+    }
+  };
+  const confirmPublish = async () => {
+    if (!gate?.check || gate.check.status !== "passed" || !detail) return;
+    setPublishing(true);
+    try {
+      await publishApplicationProduction(appId, {
+        versionId: gate.version.id,
+        releaseCheckId: gate.check.id,
+        expectedProductionVersionId: detail.productionConfigVersionId,
+      });
+      message.success(`已上线 v${gate.version.version}，对外服务已切换`);
+      setGate(null);
+      setTagPanelFor(null);
+      await refresh(false);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "上线失败");
+    } finally {
+      setPublishing(false);
+    }
+  };
+  const unpublish = async () => {
+    if (!detail) return;
+    setPublishing(true);
+    try {
+      await unpublishApplicationProduction(appId, {
+        expectedProductionVersionId: detail.productionConfigVersionId,
+      });
+      message.success("已下线，公开地址将显示未上线");
+      setTagPanelFor(null);
+      await refresh(false);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "下线失败");
+    } finally {
+      setPublishing(false);
     }
   };
 
@@ -686,8 +823,21 @@ export default function ApplicationDetailPage() {
             <Button block disabled={!dirty} loading={saving} onClick={() => void save()}>
               保存为新版本
             </Button>
-            <Tooltip title="上线核对（ReleaseCheck）将在 M7b 开放">
-              <Button block type="primary" disabled>
+            <Tooltip
+              title={
+                dirty
+                  ? "有未保存修改，先「保存为新版本」再上线"
+                  : basedOnVersion
+                    ? undefined
+                    : "先载入一个已保存版本"
+              }
+            >
+              <Button
+                block
+                type="primary"
+                disabled={dirty || !basedOnVersion}
+                onClick={() => basedOnVersion && void startPublish(basedOnVersion)}
+              >
                 上线这个版本
               </Button>
             </Tooltip>
@@ -696,7 +846,7 @@ export default function ApplicationDetailPage() {
           <div style={{ ...cardStyle, padding: "14px 16px", display: "flex", gap: 9, alignItems: "flex-start" }}>
             <span style={{ flex: "none", fontSize: 12, color: "rgba(0,0,0,.35)", marginTop: 1 }}>ⓘ</span>
             <div style={{ fontSize: 11.5, color: "rgba(0,0,0,.5)", lineHeight: 1.7 }}>
-              上线前会自动核对一遍：确认四个节点和知识库都配好了、能正常工作，有问题会直接告诉你（M7b 开放）。
+              上线前会自动核对一遍：确认四个节点和知识库都配好了、能正常工作，有问题会直接告诉你，不会把有问题的版本放出去。
             </div>
           </div>
 
@@ -732,9 +882,16 @@ export default function ApplicationDetailPage() {
                   padding: "11px 13px",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, flexWrap: "wrap" }}>
                   <span style={{ ...mono, fontSize: 13.5, fontWeight: 700 }}>v{v.version}</span>
                   {serving && <Tag color="green">服务中</Tag>}
+                  {tags
+                    .filter((t) => t.versionId === v.id)
+                    .map((t) => (
+                      <Tag key={t.name} color="geekblue" style={mono}>
+                        {t.name}
+                      </Tag>
+                    ))}
                   {editing && <Tag color="blue">编辑中</Tag>}
                   <div style={{ flex: 1 }} />
                   <span style={{ fontSize: 12, color: "rgba(0,0,0,.4)" }}>
@@ -771,12 +928,259 @@ export default function ApplicationDetailPage() {
                   >
                     对话测试
                   </Button>
+                  <Button size="small" onClick={() => openTagPanel(v)}>
+                    管理标识
+                  </Button>
                 </div>
               </div>
             );
           })}
         </div>
       </Drawer>
+
+      {/* 管理标识弹窗（M7b）：production = 上线/下线走门禁；自定义标识即时排他移动 */}
+      <Modal
+        open={tagPanelFor !== null}
+        onCancel={() => setTagPanelFor(null)}
+        footer={null}
+        width={460}
+        title={
+          tagPanelFor
+            ? `管理标识 · ${detail.name} v${tagPanelFor.version}`
+            : "管理标识"
+        }
+      >
+        {tagPanelFor &&
+          (() => {
+            const isProd = detail.productionConfigVersionId === tagPanelFor.id;
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {/* production 行：走受门禁上线/下线，与自定义标识分流程 */}
+                <div
+                  style={{
+                    border: `1px solid ${isProd ? "#b7eb8f" : "#f0f0f0"}`,
+                    background: isProd ? "#f6ffed" : "#fff",
+                    borderRadius: 8,
+                    padding: "12px 14px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                  }}
+                >
+                  <Tag color={isProd ? "green" : "default"} style={mono}>
+                    production
+                  </Tag>
+                  <span style={{ fontSize: 12, color: "rgba(0,0,0,.5)" }}>
+                    {isProd ? "= 当前对外服务" : "上线 = 移动 production 到本版本（先自动核对）"}
+                  </span>
+                  <div style={{ flex: 1 }} />
+                  {isProd ? (
+                    <Button danger size="small" loading={publishing} onClick={() => void unpublish()}>
+                      下线
+                    </Button>
+                  ) : (
+                    <Button
+                      type="primary"
+                      size="small"
+                      onClick={() => void startPublish(tagPanelFor)}
+                    >
+                      上线这个版本
+                    </Button>
+                  )}
+                </div>
+
+                <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>
+                  自定义标识在应用内排他——勾选会从原版本移动到本版本，即时生效、不影响上线。
+                </div>
+                {tags.length === 0 && (
+                  <div style={{ fontSize: 12, color: "rgba(0,0,0,.35)", padding: "4px 0" }}>
+                    还没有自定义标识
+                  </div>
+                )}
+                {tags.map((t) => {
+                  const onThis = t.versionId === tagPanelFor.id;
+                  return (
+                    <div
+                      key={t.name}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "9px 12px",
+                        border: "1px solid #f0f0f0",
+                        borderRadius: 8,
+                      }}
+                    >
+                      <Tag color="geekblue" style={mono}>
+                        {t.name}
+                      </Tag>
+                      {onThis ? (
+                        <span style={{ fontSize: 11.5, color: "#389e0d" }}>已指向本版本</span>
+                      ) : (
+                        <span style={{ fontSize: 11.5, color: "#d48806" }}>
+                          当前指向 v{t.version}，勾选将移动到本版本
+                        </span>
+                      )}
+                      <div style={{ flex: 1 }} />
+                      {onThis ? (
+                        <Button size="small" loading={tagBusy} onClick={() => void dropTag(t.name)}>
+                          摘除
+                        </Button>
+                      ) : (
+                        <Button
+                          size="small"
+                          type="primary"
+                          ghost
+                          loading={tagBusy}
+                          onClick={() => void moveTagTo(t.name, tagPanelFor.id)}
+                        >
+                          移动到此
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+
+                <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ fontSize: 12, color: "rgba(0,0,0,.55)" }}>创建自定义标识</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Input
+                      value={tagNewName}
+                      onChange={(e) => {
+                        setTagNewName(e.target.value);
+                        setTagErr("");
+                      }}
+                      onPressEnter={() => void createTag()}
+                      placeholder="字母 / 数字 / . _ -（保留字 production、v 除外）"
+                    />
+                    <Button type="primary" ghost loading={tagBusy} onClick={() => void createTag()}>
+                      创建并打上
+                    </Button>
+                  </div>
+                  {tagErr && <div style={{ fontSize: 12, color: "#ff4d4f" }}>{tagErr}</div>}
+                </div>
+              </div>
+            );
+          })()}
+      </Modal>
+
+      {/* 上线核对弹窗（gate2）：异步 ReleaseCheck，通过才允许确认上线 */}
+      <Modal
+        open={gate !== null}
+        onCancel={() => {
+          gateSession.current++;
+          setGate(null);
+        }}
+        width={560}
+        title="上线前自动核对一遍"
+        footer={
+          gate?.phase === "done" && gate.check?.status === "passed"
+            ? [
+                <Button
+                  key="cancel"
+                  onClick={() => {
+                    gateSession.current++;
+                    setGate(null);
+                  }}
+                >
+                  取消
+                </Button>,
+                <Button
+                  key="ok"
+                  type="primary"
+                  loading={publishing}
+                  onClick={() => void confirmPublish()}
+                >
+                  核对通过 · 上线 v{gate.version.version}
+                </Button>,
+              ]
+            : null
+        }
+      >
+        {gate && (
+          <div style={{ minHeight: 90 }}>
+            <div style={{ fontSize: 12.5, color: "rgba(0,0,0,.5)", lineHeight: 1.7, marginBottom: 14 }}>
+              确认「{detail.name}」v{gate.version.version} 的四个节点和知识库都配好了、能正常工作；有问题就不会放出去。
+            </div>
+            {gate.phase === "checking" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "center", padding: "20px 0", color: "rgba(0,0,0,.55)" }}>
+                <Spin size="small" /> 正在核对四个节点…
+              </div>
+            )}
+            {gate.phase === "done" && gate.error && (
+              <Alert type="error" showIcon title="静态核对未通过" description={gate.error} />
+            )}
+            {gate.phase === "done" && gate.check && (
+              <ReleaseCheckResult check={gate.check} />
+            )}
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+/** 上线核对结果：按节点展示样例通过情况 + 失败 issue（携跳 Prompt 试运行的锚点）。 */
+function ReleaseCheckResult({ check }: { check: ReleaseCheck }) {
+  const summary = check.sampleSummary as Record<string, { ok: number; total: number }>;
+  const nodeLabels: Record<string, string> = NODE_LABELS as Record<string, string>;
+  const passed = check.status === "passed";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontSize: 12.5, color: passed ? "#389e0d" : "#cf1322", fontWeight: 600 }}>
+        {passed ? "核对通过，可以上线" : check.status === "failed" ? "还有问题没解决，暂不能上线" : `检查状态：${check.status}`}
+      </div>
+      {PROMPT_NODES.map((node) => {
+        const s = summary?.[node];
+        const nodeIssues = check.issues.filter((i) => i.node === node);
+        const ok = s ? s.ok === s.total && s.total > 0 : nodeIssues.length === 0;
+        return (
+          <div
+            key={node}
+            style={{
+              border: `1px solid ${ok ? "#b7eb8f" : "#ffccc7"}`,
+              background: ok ? "#f6ffed" : "#fff2f0",
+              borderRadius: 8,
+              padding: "9px 12px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span
+                style={{
+                  width: 18,
+                  height: 18,
+                  flex: "none",
+                  borderRadius: "50%",
+                  background: ok ? "#52c41a" : "#cf1322",
+                  color: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                {ok ? "✓" : "✕"}
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{nodeLabels[node]}</span>
+              <div style={{ flex: 1 }} />
+              {s && (
+                <span style={{ fontSize: 12, color: "rgba(0,0,0,.5)", ...mono }}>
+                  {s.ok}/{s.total} 样例通过
+                </span>
+              )}
+            </div>
+            {nodeIssues.map((i, idx) => (
+              <div key={idx} style={{ fontSize: 11.5, color: "#cf1322", marginTop: 4, paddingLeft: 26 }}>
+                · {i.message}
+                {i.action === "OPEN_PROMPT_TRY_RUN" && i.promptVersionId && (
+                  <span style={{ color: "#1677ff" }}>（可去 Prompt 试运行修复）</span>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
