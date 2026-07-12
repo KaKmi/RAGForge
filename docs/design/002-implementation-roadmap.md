@@ -125,6 +125,19 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
 | **M8** | 问答 / RAG 编排 | 编排:改写→意图→多路召回→重排→生成→引用→兜底；所有 LLM 节点只消费 NodeRuntime typed output；SSE 流式；会话/消息；C 端问答页；每阶段一个 span，产出完整 OTLP trace | M7b,M8.0,M5,M3,M6 | 问一句带引用回答；非法节点输出可观测并降级；ClickHouse 出现完整 span 树；`message.trace_id` 写入 |
 | **M9** | Trace 追踪(完整版) | 列表(采样/失败率/P95/筛选) + 详情(瀑布图/Span 树、命中分块及分数、引用溯源、token/cost、OTLP JSON 导出、重放、跳 Prompt 版本) | M8, M0.5 | 从一条回答一键跳其 trace 详情，信息齐全 |
 
+#### M8 分波交付进度
+
+M8 按 013 拆四波（T2/T3/T4 = 013「非目标」节列出的三块），逐波 design→dev 闭环，非一次做完：
+
+| 波 | 范围 | 状态 |
+|---|---|---|
+| **T1** | 后端编排内核 `OrchestrationService`（改写→意图→检索→生成/兜底，非流式返回完整结果）+ 会话/消息 greenfield 持久化 + production(slug/id) 解析 + chain 根 span + 意图路由（014：大分类 enum + KB 外挂 `intent_key` 绑定）+ 前端 KB 意图 Select | **已交付**（PR #16，2026-07-13 合并） |
+| **T2** | SSE 逐 token 真流式：`run()` 改 `AsyncGenerator<ChatStreamEvent>`，reply 逐 token flush；流式 span 生命周期（013 §4 P1-①，需跨 yield 存活） | 待做（下一波） |
+| **T3** | trace 写侧富化：检索 span 三拆（embedding/rerank）、LLM `gen_ai.usage.*`（token/cost）、命中分表、质量信号、落库 PII 脱敏（跨模块，013 §11 登记） | 待做 |
+| **T4** | C 端问答页（`/chat` 真实接 `/api/chat`）：三栏、行内角标 ⇄ 右栏原文、可信度/引用完整度、兜底卡、复制/反馈/转人工（先 1:1 读原型再还原） | 待做 |
+
+> 提示（给后续会话）：M8 代码虽已在 main，但**仅完成 T1**；判断「下一步」应从 T2 起，勿据「M8 代码已合并」推断 M8 完结。
+
 #### M8.0 需求记录
 
 **状态：已完成架构设计，待实施。** 正式设计见 011；`docs/design/proposals/m8-node-contract-design.md` 作为产品/技术输入保留，但其“运行当前 Contract”版本策略不再作为权威结论。
