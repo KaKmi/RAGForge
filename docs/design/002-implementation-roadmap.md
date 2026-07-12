@@ -5,22 +5,47 @@ category: "design"
 number: "002"
 status: draft
 services: [backend, frontend, observability, deploy]
-related: ["design/001", "design/007", "design/009", "design/010", "design/011", "design/012"]
-last_modified: "2026-07-11"
+related: ["design/001", "design/004", "design/005", "design/006", "design/007", "design/008", "design/009", "design/010", "design/011", "design/012", "design/013", "design/014"]
+last_modified: "2026-07-13"
 ---
 
 # 002 — RAG 平台实现路线图（模块级）
 
 ## Status
 
-`draft` — 大块模块级路线图，承接 `001-rag-platform-architecture` 的架构决策。用于统筹执行顺序；**每一波再用 `/ship:design` 拆成可执行 spec + plan**。随各波落地，将对应模块状态在本文更新，并把细粒度产物记入各自 plan。
-2026-07-10：在已落地 M4 基础上新增 M4.1 文档处理 Profile，不阻塞既有 M5；该增强先复用现有解析/分块行为完成兼容迁移，再接版面解析与 OCR，详见 010。
-2026-07-10：在 M8 前新增 M8.0 NodeContract 地基：PromptVersion 固定 ContractVersion，预览/Agent 激活/C 端共用 NodeRuntime，非法模型输出不得进入编排，详见 011。
-2026-07-11：M7 产品语义改为“应用管理”：移除配置版本发布状态机和 Eval stub，新增不可变版本、单一 production 指针、异步真实 ReleaseCheck、停用/恢复与删除，详见 009。旧 M7 已实现代码需要作为迁移输入重做，本里程碑重新打开。
+`draft` — 大块模块级路线图，承接 `001-rag-platform-architecture` 的架构决策，用于统筹执行顺序。**每一波再用 `/ship:design` 拆成可执行 spec + plan**，细粒度产物记入各自 `.ship/tasks/<task>/`。
+
+**进度维护约定**：本文的「交付状态总览」是里程碑进度的**唯一权威视图**——每波 handoff 收口时必须回写对应行（哪波已交付 + PR / 哪波待做），详见 `CLAUDE.md`。历史决策变更记录在文末「变更记录」。
 
 ## Summary
 
 把 001 的架构拆成 M0–M12 主里程碑，并在真实需求出现后插入 M4.1 文档处理与 M8.0 NodeContract 两个兼容增强，**严格按依赖先行排序**。核心策略：**M2 先把所有页面骨架（含首页、应用配置）1:1 布局搭出（空态/mock），让全貌可见可点；M3+ 再按依赖顺序往骨架里填真实逻辑**。最没底的 OTLP→ClickHouse 链路在 M0.5 第一个验证掉。
+
+## 交付状态总览
+
+> ✅ 已交付　🔄 进行中（分波，见备注）　⬜ 未开始　图标 = 主状态；「下一步」看第一个非 ✅ 行。
+
+| # | 模块 | 状态 | 备注 / 分波进度 | 设计文档 |
+|---|---|---|---|---|
+| **M0** | 工程地基 | ✅ | | 001 / 003 |
+| **M0.5** | 可观测最小闭环 | ✅ | | 004 |
+| **M1** | 用户 / 认证 | ✅ | | 005 |
+| **M2** | 前后端页面骨架 | ✅ | 15 屏骨架 | 006 |
+| **M3** | 模型接入 | ✅ | | — |
+| **M6** | Prompt 管理 | ✅ | | 012 |
+| **M4** | 知识库 / 文档 / 切片 / 入库 | ✅ | | 007 |
+| **M4.1** | 文档处理 Profile | 🔄 | Rollout 1–4 已落地；**Docling / OCR / 结构块 = M4.1b 待做** | 010 |
+| **M5** | 检索 | ✅ | | 008 |
+| **M7a** | 应用配置基础 | ✅ | | 009 |
+| **M8.0** | Prompt 组装 / NodeContract | ✅ | | 011 |
+| **M7b** | 应用发布闭环 | ✅ | | 009 |
+| **M8** | 问答 / RAG 编排 | 🔄 | **T1 已交付**（PR #16，2026-07-13）；**T2/T3/T4 待做**（见附录 A） | 013 / 014 |
+| **M9** | Trace 追踪（完整版） | ⬜ | 下一大里程碑 | 待设计 |
+| **M10** | 运行看板 | ⬜ | 里程碑 2（首期不做） | — |
+| **M11** | 评测集 / 管理 / 报告 | ⬜ | 里程碑 2（首期不做） | — |
+| **M12** | RBAC 权限 | ⬜ | 里程碑 2（首期不做） | — |
+
+**当前下一步**：M8 T2（SSE 逐 token 流式）——见附录 A「M8 分波交付进度」。
 
 ## Boundaries
 
@@ -70,7 +95,9 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
         M10 运行看板    ·    M11 评测集/管理/报告    ·    M12 RBAC 权限
 ```
 
-## 模块清单（按执行顺序）
+## 模块清单（按执行顺序 · 验收标准）
+
+> 状态见上方「交付状态总览」；本节只列每个里程碑的范围与可证伪验收。分波进度与需求记录见附录 A。
 
 ### 波次 A — 地基
 
@@ -92,13 +119,54 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
 |---|---|---|---|---|
 | **M3** | 模型接入 | model_providers CRUD、密钥加密、连通性测试、**协议适配层**(LLM: OpenAI 兼容/Anthropic/Gemini；Embedding: 自部署/OpenAI 兼容/Gemini/Cohere/Jina；Rerank: 自部署/OpenAI 兼容(/v1/reranks)/Cohere/Jina/DashScope 原生；`(type,protocol)` 为请求构造路由键)、按类型可编辑参数(params jsonb) | M2 | 注册模型并"测试"通过；key 前端掩码、只写不回显 |
 | **M6** | Prompt 管理 | prompts + 版本 + diff + 发布/回滚 + 变量抽取(`{var}`) | M2 | 建 Prompt、出新版本、diff、发布切生产、回滚 |
-| **M4** | 知识库/文档/切片/入库 | KB CRUD(名称查重、分块模板 通用/问答/定制、绑 M3 embedding 创建后锁定)、文档上传(BlobStore 本地卷、单文件/文件夹批量、自动/手动解析)、四阶段管线(解析→清洗→分块→向量化，pg-boss 异步)、切片版本化蓝绿重建、切片查看/搜索/批量删除、文档元数据(jsonb)、生命周期状态——设计见 007 | M3 | 传 PDF 走到"就绪"；切片可见可删~~可开关~~(2026-07-08 改删除制)；改分块模板全库重建且重建期检索不空窗；失败可重试 |
+| **M4** | 知识库/文档/切片/入库 | KB CRUD(名称查重、分块模板 通用/问答/定制、绑 M3 embedding 创建后锁定)、文档上传(BlobStore 本地卷、单文件/文件夹批量、自动/手动解析)、四阶段管线(解析→清洗→分块→向量化，pg-boss 异步)、切片版本化蓝绿重建、切片查看/搜索/批量删除、文档元数据(jsonb)、生命周期状态——设计见 007 | M3 | 传 PDF 走到"就绪"；切片可见可删（2026-07-08：由开关制改为删除制）；改分块模板全库重建且重建期检索不空窗；失败可重试 |
 | **M4.1** | 文档处理 Profile | 知识库默认 Profile + 文档覆盖；版本化 Profile Snapshot；Canonical Document(Markdown+Blocks+Assets)；处理 Run 历史；快速/版面/OCR PDF；表格、图片和页码溯源；前端 Profile 选择——设计见 010 | M4 | 现有 general/qa/custom 无损迁移；排队任务配置不漂移；扫描 PDF 可 OCR；重解析失败旧切片仍可检索 |
 | **M5** | 检索 | `RetrieverPort`:向量召回 + 关键词召回 + 融合 + 重排；检索测试台(与 chat 共用) | M4, M3 | 测试台输入问题出命中分块 + 三种分数 |
 
 > M3 与 M6 独立、可并行；M4 在 M3 后；M5 在 M4 后。M4.1 是 M4 的兼容增强，不反向阻塞已落地 M5；其 Chunk 仍遵守 `version = kb.activeVersion` 的既有检索契约。
 
-#### M4.1 需求记录与暂停点
+### 波次 D — 汇聚 & 可追踪
+
+| # | 模块 | 大块内容 | 依赖 | 验收 |
+|---|---|---|---|---|
+| **M7a** | 应用配置基础 | application CRUD；不可变配置版本；版本级知识库/四节点模型/4 个 Prompt/检索参数快照；版本历史、载入编辑与未上线版本对话测试骨架；从旧 agents schema 开始迁移——设计见 009 | M3,M4,M5,M6 | 新建 v1 默认未上线；保存只追加版本；Prompt 标签变化不影响应用 |
+| **M8.0** | Prompt 组装 / NodeContract | 独立 `node-runtime`；四节点版本化 Contract；Prompt 三层组装；字段编译；Structured Output；Prompt 试运行；真实样例预演接口；运行时校验、修复一次与 Fallback——设计见 011 | M3,M6 | 无字段模板仍可运行；非法 JSON/越权 routeId 不进入编排；预览/预演/chat 共用执行器 |
+| **M7b** | 应用发布闭环 | 单一 production 指针；异步真实 NodeRuntime ReleaseCheck；fingerprint/过期；问题跳 Prompt 试运行；passed check + CAS 上线/回滚；停用/恢复与删除——设计见 009 | M7a,M8.0 | 检查失败不改变线上；并发发布冲突可见；停用优先于 production |
+| **M8** | 问答 / RAG 编排 | 编排:改写→意图→多路召回→重排→生成→引用→兜底；所有 LLM 节点只消费 NodeRuntime typed output；SSE 流式；会话/消息；C 端问答页；每阶段一个 span，产出完整 OTLP trace——设计见 013/014，分波见附录 A | M7b,M8.0,M5,M3,M6 | 问一句带引用回答；非法节点输出可观测并降级；ClickHouse 出现完整 span 树；`message.trace_id` 写入 |
+| **M9** | Trace 追踪(完整版) | 列表(采样/失败率/P95/筛选) + 详情(瀑布图/Span 树、命中分块及分数、引用溯源、token/cost、OTLP JSON 导出、重放、跳 Prompt 版本) | M8, M0.5 | 从一条回答一键跳其 trace 详情，信息齐全 |
+
+### 里程碑 2（首期不做，数据模型预留不堵死）
+
+| # | 模块 | 说明 |
+|---|---|---|
+| **M10** | 运行看板 | 问答量/应用分布/热门问题等聚合图表 |
+| **M11** | 评测集 / 管理 / 报告 | 召回命中率、回答准确率、引用正确率、耗时 |
+| **M12** | RBAC 权限 | 多角色/多团队，承接 M1 用户体系 |
+
+## 各波交付方式
+
+每一波 = 一次 `/ship:design`（产出该波的 `spec.md` + `plan.md`）→ `/ship:dev`（按 plan 落地 + 测试 + 提交）→ handoff（回写本文「交付状态总览」）。**第一波 = M0 + M0.5**（地基 + 可观测最小闭环）。
+
+---
+
+## 附录 A — 里程碑需求记录
+
+主清单只列范围与验收；以下是范围较大、分波或有暂停点的里程碑的详细记录。
+
+### M8 分波交付进度
+
+M8 按 013 拆四波（T2/T3/T4 = 013「非目标」节列出的三块），逐波 design→dev 闭环，非一次做完：
+
+| 波 | 范围 | 状态 |
+|---|---|---|
+| **T1** | 后端编排内核 `OrchestrationService`（改写→意图→检索→生成/兜底，非流式返回完整结果）+ 会话/消息 greenfield 持久化 + production(slug/id) 解析 + chain 根 span + 意图路由（014：大分类 enum + KB 外挂 `intent_key` 绑定）+ 前端 KB 意图 Select | **已交付**（PR #16，2026-07-13 合并） |
+| **T2** | SSE 逐 token 真流式：`run()` 改 `AsyncGenerator<ChatStreamEvent>`，reply 逐 token flush；流式 span 生命周期（013 §4 P1-①，需跨 yield 存活） | 待做（下一波） |
+| **T3** | trace 写侧富化：检索 span 三拆（embedding/rerank）、LLM `gen_ai.usage.*`（token/cost）、命中分表、质量信号、落库 PII 脱敏（跨模块，013 §11 登记） | 待做 |
+| **T4** | C 端问答页（`/chat` 真实接 `/api/chat`）：三栏、行内角标 ⇄ 右栏原文、可信度/引用完整度、兜底卡、复制/反馈/转人工（先 1:1 读原型再还原） | 待做 |
+
+> 提示（给后续会话）：M8 代码虽已在 main，但**仅完成 T1**；判断「下一步」应从 T2 起，勿据「M8 代码已合并」推断 M8 完结。
+
+### M4.1 需求记录与暂停点
 
 **状态：第一波（Rollout 1–4）已落地，Docling/OCR 待 M4.1b。** 2026-07-10 经 `/ship:design`+`/ship:dev` 实现：Profile 注册表、`document_processing_runs` + 冻结快照、Canonical Document（Markdown + paragraph blocks + 页码溯源）、三段质量门、Run 编排（含 retry/僵尸兜底/409）、双队列迁移窗口 + 特性开关、蓝绿重建 scope、REST 端点、前端 Profile 选择（创建/编辑/上传覆盖/处理历史/重解析）；现有 `general/qa/custom` golden 无损迁移。首期 auto 仅快速解析（`pdf-parse` 逐页）。**版面解析（Docling）、OCR、表格/图片结构块、资源归档（Rollout 5–6）留 M4.1b**；真实文档验收与真 pg-boss/迁移回放留 QA 波。详见 010 Status。
 
@@ -115,19 +183,9 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
 
 恢复实施前的最小验收语料：普通单栏 PDF、带表格/多栏 PDF、扫描 PDF、FAQ、课程/公众号文章各至少 3 份；必须比较 Canonical Markdown、表格结构、页码、Chunk 和总耗时，不能只以“任务到 ready”作为通过标准。
 
-### 波次 D — 汇聚 & 可追踪
+### M8.0 需求记录
 
-| # | 模块 | 大块内容 | 依赖 | 验收 |
-|---|---|---|---|---|
-| **M7a** | 应用配置基础 | application CRUD；不可变配置版本；版本级知识库/四节点模型/4 个 Prompt/检索参数快照；版本历史、载入编辑与未上线版本对话测试骨架；从旧 agents schema 开始迁移——设计见 009 | M3,M4,M5,M6 | 新建 v1 默认未上线；保存只追加版本；Prompt 标签变化不影响应用 |
-| **M8.0** | Prompt 组装 / NodeContract | 独立 `node-runtime`；四节点版本化 Contract；Prompt 三层组装；字段编译；Structured Output；Prompt 试运行；真实样例预演接口；运行时校验、修复一次与 Fallback——设计见 011 | M3,M6 | 无字段模板仍可运行；非法 JSON/越权 routeId 不进入编排；预览/预演/chat 共用执行器 |
-| **M7b** | 应用发布闭环 | 单一 production 指针；异步真实 NodeRuntime ReleaseCheck；fingerprint/过期；问题跳 Prompt 试运行；passed check + CAS 上线/回滚；停用/恢复与删除——设计见 009 | M7a,M8.0 | 检查失败不改变线上；并发发布冲突可见；停用优先于 production |
-| **M8** | 问答 / RAG 编排 | 编排:改写→意图→多路召回→重排→生成→引用→兜底；所有 LLM 节点只消费 NodeRuntime typed output；SSE 流式；会话/消息；C 端问答页；每阶段一个 span，产出完整 OTLP trace | M7b,M8.0,M5,M3,M6 | 问一句带引用回答；非法节点输出可观测并降级；ClickHouse 出现完整 span 树；`message.trace_id` 写入 |
-| **M9** | Trace 追踪(完整版) | 列表(采样/失败率/P95/筛选) + 详情(瀑布图/Span 树、命中分块及分数、引用溯源、token/cost、OTLP JSON 导出、重放、跳 Prompt 版本) | M8, M0.5 | 从一条回答一键跳其 trace 详情，信息齐全 |
-
-#### M8.0 需求记录
-
-**状态：已完成架构设计，待实施。** 正式设计见 011；`docs/design/proposals/m8-node-contract-design.md` 作为产品/技术输入保留，但其“运行当前 Contract”版本策略不再作为权威结论。
+**状态：已交付。** 正式设计见 011；`docs/design/proposals/m8-node-contract-design.md` 作为产品/技术输入保留，但其“运行当前 Contract”版本策略不再作为权威结论。
 
 1. 管理员只编辑节点策略 Instructions；平台固定职责、输入/输出 Schema、保留数据、动态校验和 Fallback。
 2. `query/history/availableRoutes` 等 Runtime Data 始终由平台注入；管理员无占位符时仍可运行。
@@ -138,17 +196,15 @@ M0 工程地基 ─┬─► M0.5 可观测最小闭环 ────────
 7. 结构失败最多修复一次；仍失败降级，非法原始输出不得流入检索、路由或最终回答。
 8. Trace 记录 PromptVersion、ContractVersion、校验错误、结构化输出模式、修复次数和 Fallback。
 
-### 里程碑 2（首期不做，数据模型预留不堵死）
+---
 
-| # | 模块 | 说明 |
-|---|---|---|
-| **M10** | 运行看板 | 问答量/应用分布/热门问题等聚合图表 |
-| **M11** | 评测集 / 管理 / 报告 | 召回命中率、回答准确率、引用正确率、耗时 |
-| **M12** | RBAC 权限 | 多角色/多团队，承接 M1 用户体系 |
+## 变更记录
 
-## 各波交付方式
-
-每一波 = 一次 `/ship:design`（产出该波的 `spec.md` + `plan.md`）→ `/ship:dev`（按 plan 落地 + 测试 + 提交）。**第一波 = M0 + M0.5**（地基 + 可观测最小闭环）。
+- **2026-07-13**：M8 T1（编排内核 + 持久化 + production 解析 + 意图路由）交付合并（PR #16）；新增「交付状态总览」与「变更记录」，需求记录归并附录 A；约定每波 handoff 回写本文进度（`.ship/` 仍本地忽略，跨会话进度以本文为准）。
+- **2026-07-12**：M8 意图路由重设计（014）——意图节点只输出大分类 enum，路由靠 KB 外挂 `intent_key` 绑定，取代 013 的 KB-UUID 路由。
+- **2026-07-11**：M7 产品语义改为“应用管理”：移除配置版本发布状态机和 Eval stub，新增不可变版本、单一 production 指针、异步真实 ReleaseCheck、停用/恢复与删除，详见 009。旧 M7 已实现代码作为迁移输入重做。
+- **2026-07-10**：在 M8 前新增 M8.0 NodeContract 地基：PromptVersion 固定 ContractVersion，预览/Agent 激活/C 端共用 NodeRuntime，非法模型输出不得进入编排，详见 011。
+- **2026-07-10**：在已落地 M4 基础上新增 M4.1 文档处理 Profile，不阻塞既有 M5；先复用现有解析/分块行为完成兼容迁移，再接版面解析与 OCR，详见 010。
 
 ## References
 
