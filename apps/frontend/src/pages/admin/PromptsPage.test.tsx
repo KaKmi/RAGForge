@@ -228,7 +228,7 @@ describe("Prompt 详情 Playground（012）", () => {
     expect(await screen.findByTestId("try-run-panel")).toBeInTheDocument();
     const runBtn = await screen.findByRole("button", { name: /运行 v2/ });
     expect(runBtn).toBeDisabled();
-    fireEvent.change(screen.getByPlaceholderText("用户问题（必填）"), {
+    fireEvent.change(screen.getByPlaceholderText("填一句用户问题…"), {
       target: { value: "怎么退货" },
     });
     expect(runBtn).toBeEnabled();
@@ -326,7 +326,7 @@ describe("Prompt 详情 · 试运行（012 Story 7）", () => {
   it("运行成功：mode:text 渲染模型输出", async () => {
     mocked.tryRunPromptVersion.mockResolvedValue({ mode: "text", text: "模型的回答" });
     renderRoutes("/admin/prompts/p1");
-    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+    fireEvent.change(await screen.findByPlaceholderText("填一句用户问题…"), {
       target: { value: "怎么退货" },
     });
     fireEvent.click(screen.getByRole("button", { name: /运行 v2/ }));
@@ -347,7 +347,7 @@ describe("Prompt 详情 · 试运行（012 Story 7）", () => {
       reason: "unsupported_protocol",
     });
     renderRoutes("/admin/prompts/p1");
-    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+    fireEvent.change(await screen.findByPlaceholderText("填一句用户问题…"), {
       target: { value: "q" },
     });
     fireEvent.click(screen.getByRole("button", { name: /运行 v2/ }));
@@ -360,7 +360,7 @@ describe("Prompt 详情 · 试运行（012 Story 7）", () => {
       .mockRejectedValueOnce(new Error("模型调用失败：HTTP 500"))
       .mockResolvedValueOnce({ mode: "text", text: "重试成功" });
     renderRoutes("/admin/prompts/p1");
-    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+    fireEvent.change(await screen.findByPlaceholderText("填一句用户问题…"), {
       target: { value: "q" },
     });
     fireEvent.click(screen.getByRole("button", { name: /运行 v2/ }));
@@ -381,14 +381,15 @@ describe("Prompt 详情 · 试运行（012 Story 7）", () => {
       fallbackUsed: false,
     });
     renderRoutes("/admin/prompts/p1");
-    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+    fireEvent.change(await screen.findByPlaceholderText("填一句用户问题…"), {
       target: { value: "怎么退货" },
     });
     fireEvent.click(screen.getByRole("button", { name: /运行 v2/ }));
     const output = await screen.findByTestId("try-run-output");
     expect(output).toHaveTextContent("rewrittenQuery");
     expect(output).toHaveTextContent("改写后的问题");
-    expect(screen.getByText("output_schema")).toBeInTheDocument();
+    // 校验步骤徽标以中文标签渲染（STEP_LABEL：output_schema → 输出结构），带 ✓ 前缀故用 substring 匹配
+    expect(screen.getByText("输出结构", { exact: false })).toBeInTheDocument();
     expect(screen.queryByText("本次试运行不可用")).not.toBeInTheDocument();
   });
 
@@ -405,7 +406,7 @@ describe("Prompt 详情 · 试运行（012 Story 7）", () => {
     renderRoutes("/admin/prompts/p1");
     // 闸门拆除前这条会直接失败：找不到「用户问题」输入框，只有「结构化预览暂不可用」
     expect(screen.queryByText("结构化预览暂不可用")).not.toBeInTheDocument();
-    fireEvent.change(await screen.findByPlaceholderText("用户问题（必填）"), {
+    fireEvent.change(await screen.findByPlaceholderText("填一句用户问题…"), {
       target: { value: "怎么退货" },
     });
     fireEvent.click(screen.getByRole("button", { name: /^运行/ }));
