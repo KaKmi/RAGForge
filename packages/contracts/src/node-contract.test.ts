@@ -19,7 +19,7 @@ describe("NODE_CONTRACTS 静态字段表", () => {
     ["rewrite", ["query", "history"], []],
     ["intent", ["query", "history"], ["availableRoutes"]],
     ["reply", ["query", "history", "retrievalContext"], ["citations"]],
-    ["fallback", ["query", "reason"], []],
+    ["fallback", [], []],
   ] as const)("%s 节点字段表对齐 012", (node, templateFields, reservedFields) => {
     expect(NODE_CONTRACTS[node].templateFields).toEqual(templateFields);
     expect(NODE_CONTRACTS[node].reservedFields).toEqual(reservedFields);
@@ -46,7 +46,7 @@ describe("compilePromptBody · 合法输入", () => {
     ["rewrite", "结合 {history} 改写 {query}"],
     ["intent", "根据 {history} 判断 {query} 意图"],
     ["reply", "依据 {retrievalContext} 回答 {query}，参考 {history}"],
-    ["fallback", "{query} 因为 {reason} 无法回答"],
+    ["fallback", "固定兜底话术"],
   ] as const)("%s 节点引用本节点合法字段返回 ok", (node, body) => {
     expect(compilePromptBody(body, node)).toEqual({ status: "ok", issues: [] });
   });
@@ -56,9 +56,9 @@ describe("compilePromptBody · 模板语法错误", () => {
   it("未闭合的 { 报 INVALID_TEMPLATE_SYNTAX", () => {
     const r = compilePromptBody("回答 {query 的问题", "reply");
     expect(r.status).toBe("has_errors");
-    expect(r.issues.some((i) => i.code === "INVALID_TEMPLATE_SYNTAX" && i.severity === "error")).toBe(
-      true,
-    );
+    expect(
+      r.issues.some((i) => i.code === "INVALID_TEMPLATE_SYNTAX" && i.severity === "error"),
+    ).toBe(true);
   });
 
   it("多余的 } 报 INVALID_TEMPLATE_SYNTAX", () => {
@@ -104,9 +104,15 @@ describe("compilePromptBody · 字段归属错误", () => {
     expect(issue?.message).toContain("reply");
   });
 
-  it("reason 在非 fallback 节点报 FIELD_NOT_AVAILABLE_FOR_NODE", () => {
+  it("reason 已从纯文本 fallback 契约移除，所有节点均报 UNKNOWN_VARIABLE", () => {
     const r = compilePromptBody("{reason}", "reply");
-    expect(r.issues.find((i) => i.code === "FIELD_NOT_AVAILABLE_FOR_NODE")?.field).toBe("reason");
+    expect(r.issues.find((i) => i.code === "UNKNOWN_VARIABLE")?.field).toBe("reason");
+  });
+
+  it("fallback 不接受任何模板字段", () => {
+    const r = compilePromptBody("抱歉，无法回答 {query}", "fallback");
+    expect(r.status).toBe("has_errors");
+    expect(r.issues.find((i) => i.code === "FIELD_NOT_AVAILABLE_FOR_NODE")?.field).toBe("query");
   });
 
   it("未知字段报 UNKNOWN_VARIABLE", () => {
@@ -185,9 +191,9 @@ describe("compilePromptBody · 顺序稳定性与 extractVars 兼容", () => {
 describe("compilePromptBody · 跨节点表驱动", () => {
   // 每个节点引用其余节点的可引用字段 → FIELD_NOT_AVAILABLE_FOR_NODE（防字段表漂移）
   const foreignTemplate: Record<PromptNode, string[]> = {
-    rewrite: ["retrievalContext", "reason"],
-    intent: ["retrievalContext", "reason"],
-    reply: ["reason"],
+    rewrite: ["retrievalContext"],
+    intent: ["retrievalContext"],
+    reply: [],
     fallback: ["history", "retrievalContext"],
   };
   it.each(Object.entries(foreignTemplate) as [PromptNode, string[]][])(

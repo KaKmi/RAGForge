@@ -258,7 +258,9 @@ describe("新建应用抽屉", () => {
     );
     renderRoutes("/admin/applications");
     await openDrawer();
-    expect(await screen.findByText(/请先到「Prompt 管理」为 意图识别 创建 Prompt/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/请先到「Prompt 管理」为 意图识别 创建 Prompt/),
+    ).toBeInTheDocument();
   });
 
   it("填 name/slug + 选知识库后提交调 createApplication 并跳详情", async () => {
@@ -313,7 +315,12 @@ describe("应用详情骨架", () => {
       configFingerprint: "fp",
       status: "passed",
       issues: [],
-      sampleSummary: { rewrite: { ok: 10, total: 10 }, intent: { ok: 10, total: 10 }, reply: { ok: 1, total: 1 }, fallback: { ok: 1, total: 1 } },
+      sampleSummary: {
+        rewrite: { ok: 10, total: 10 },
+        intent: { ok: 10, total: 10 },
+        reply: { ok: 1, total: 1 },
+        fallback: { ok: 1, total: 1 },
+      },
       startedAt: "2026-07-12T00:00:00.000Z",
       finishedAt: "2026-07-12T00:00:12.000Z",
       expiresAt: "2026-07-12T00:15:12.000Z",
@@ -332,17 +339,28 @@ describe("应用详情骨架", () => {
     expect(await screen.findByRole("button", { name: /核对通过 · 上线/ })).toBeInTheDocument();
   });
 
+  it("静态门禁失败时显示中文节点名和 Prompt 修复建议", async () => {
+    mocked.startApplicationReleaseCheck.mockRejectedValue(
+      new Error("reply 的 Prompt 存在编译错误，请前往 Prompt 试运行修复"),
+    );
+    renderRoutes("/admin/applications/app1");
+    const btn = await screen.findByRole("button", { name: /上线这个版本/ });
+    fireEvent.click(btn);
+
+    expect(
+      await screen.findByText("回复生成节点的 Prompt 存在编译错误，请前往 Prompt 试运行修复"),
+    ).toBeInTheDocument();
+  });
+
   it("改配置产生 dirty，保存调 createApplicationConfigVersion 并切到新版本", async () => {
     mocked.createApplicationConfigVersion.mockResolvedValue(version({ id: "appv2", version: 2 }));
-    mocked.getApplicationDetail
-      .mockResolvedValueOnce(detail())
-      .mockResolvedValueOnce(
-        detail({
-          latestVersion: 2,
-          versionCount: 2,
-          versions: [version({ id: "appv2", version: 2 }), version()],
-        }),
-      );
+    mocked.getApplicationDetail.mockResolvedValueOnce(detail()).mockResolvedValueOnce(
+      detail({
+        latestVersion: 2,
+        versionCount: 2,
+        versions: [version({ id: "appv2", version: 2 }), version()],
+      }),
+    );
     renderRoutes("/admin/applications/app1");
     await screen.findByText("售后助手");
     // 保存按钮初始禁用（无修改）
@@ -362,6 +380,28 @@ describe("应用详情骨架", () => {
       ),
     );
     expect(await screen.findByText(/正在编辑/)).toHaveTextContent("v2");
+  });
+
+  it("保存配置校验失败时显示简短中文业务提示，不展示结构化错误", async () => {
+    mocked.createApplicationConfigVersion.mockRejectedValue(
+      new Error(
+        JSON.stringify([
+          {
+            code: "custom",
+            path: ["config", "retrieval", "rerankModelId"],
+            message: "启用模型精排后，请选择精排模型",
+          },
+        ]),
+      ),
+    );
+    renderRoutes("/admin/applications/app1");
+    await screen.findByText("售后助手");
+    const switches = screen.getAllByRole("switch");
+    fireEvent.click(switches[switches.length - 1]);
+    fireEvent.click(screen.getByRole("button", { name: /保存为新版本/ }));
+
+    expect(await screen.findByText("启用模型精排后，请选择精排模型")).toBeInTheDocument();
+    expect(screen.queryByText(/rerankModelId/)).not.toBeInTheDocument();
   });
 
   it("版本历史抽屉降序展示 + 服务中标记，点行载入编辑", async () => {

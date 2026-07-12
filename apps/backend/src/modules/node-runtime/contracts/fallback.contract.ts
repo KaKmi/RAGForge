@@ -2,10 +2,8 @@ import { z } from "zod";
 import { NODE_CONTRACTS } from "@codecrush/contracts";
 import type { NodeContract } from "./types";
 
-const InputSchema = z.object({
-  query: z.string().min(1),
-  reason: z.string().optional(),
-});
+// fallback 是纯文本契约，用户保存的 Prompt 正文就是最终输出，不消费运行时字段。
+const InputSchema = z.object({});
 const OutputSchema = z.object({
   text: z.string().min(1),
 });
@@ -28,10 +26,8 @@ export const FALLBACK_CONTRACT: NodeContract<
   reservedDataSchema: z.object({}),
   outputSchema: OutputSchema,
   templateFields: NODE_CONTRACTS.fallback.templateFields,
-  systemInstructions:
-    "你是 RAG 流程中的「兜底」节点。当问题超出知识库范围或上游失败时，礼貌说明暂时无法回答，" +
-    "并引导用户后续动作。",
-  // 011 Design §1：fallback 节点自己的 fallback 不再调用模型，直接用代码内固定文案
+  systemInstructions: "兜底节点直接返回管理员配置的纯文本，不调用模型。",
+  // 仅在存量/异常数据正文为空时使用平台保底文案。
   fallback: () => ({
     text: "很抱歉，这个问题暂时没有在知识库中找到答案，您可以联系人工客服获取进一步帮助。",
   }),

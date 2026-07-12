@@ -135,6 +135,22 @@ interface ZodSchema<T> {
   parse(input: unknown): T;
 }
 
+async function responseError(resp: Response, fallback: string): Promise<Error> {
+  try {
+    const body = (await resp.json()) as { message?: unknown };
+    if (typeof body.message === "string" && body.message.trim()) {
+      return new Error(body.message);
+    }
+    if (Array.isArray(body.message)) {
+      const messages = body.message.filter((item): item is string => typeof item === "string");
+      if (messages.length > 0) return new Error(messages.join("；"));
+    }
+  } catch {
+    // 非 JSON 错误响应使用调用方提供的中文兜底文案。
+  }
+  return new Error(fallback);
+}
+
 /**
  * 通用 fetch 封装：自动注入 `Authorization: Bearer <token>`（来自 localStorage），
  * 401 时清 token 并重定向到 /login。`/health` 等无鉴权端点应直接用 fetch 而非本函数。
@@ -161,7 +177,7 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
 async function getJson<T>(path: string, schema: ZodSchema<T>, opts?: RequestInit): Promise<T> {
   const resp = await apiFetch(path, { ...opts, method: opts?.method ?? "GET" });
   if (!resp.ok) {
-    throw new Error(`${path} failed: ${resp.status} ${resp.statusText}`);
+    throw await responseError(resp, `请求失败（${resp.status}）`);
   }
   return schema.parse(await resp.json());
 }
@@ -178,7 +194,7 @@ async function postJson<TReq, TRes>(
     body: JSON.stringify(reqSchema.parse(body)),
   });
   if (!resp.ok) {
-    throw new Error(`${path} failed: ${resp.status} ${resp.statusText}`);
+    throw await responseError(resp, `提交失败（${resp.status}）`);
   }
   return resSchema.parse(await resp.json());
 }
@@ -209,9 +225,7 @@ export async function updateAgent(id: string, req: UpdateAgentRequest): Promise<
   if (!resp.ok) throw new Error(`update agent failed: ${resp.status} ${resp.statusText}`);
   return AgentSchema.parse(await resp.json());
 }
-export const getAgentConfigVersions = (
-  agentId: string,
-): Promise<AgentConfigVersionListResponse> =>
+export const getAgentConfigVersions = (agentId: string): Promise<AgentConfigVersionListResponse> =>
   getJson(
     `/api/agents/${encodeURIComponent(agentId)}/config-versions`,
     AgentConfigVersionListResponseSchema,
@@ -313,13 +327,26 @@ async function applicationActionJson<T>(
 ): Promise<T> {
   const resp = await apiFetch(path, init);
   if (!resp.ok) {
-    let msg = `${resp.status} ${resp.statusText}`;
+    let msg = `操作失败（${resp.status}）`;
     try {
-      const body = (await resp.json()) as { message?: string | string[] };
+      const body = (await resp.json()) as {
+        message?: string | string[];
+        issues?: Array<{ message?: unknown; action?: unknown }>;
+      };
+      const issueMessages = Array.isArray(body.issues)
+        ? body.issues
+            .filter((issue) => typeof issue.message === "string")
+            .map((issue) =>
+              issue.action === "OPEN_PROMPT_TRY_RUN"
+                ? `${issue.message as string}，请前往 Prompt 试运行修复`
+                : (issue.message as string),
+            )
+        : [];
       const m = Array.isArray(body.message) ? body.message.join("；") : body.message;
-      if (m) msg = m;
+      if (issueMessages.length > 0) msg = issueMessages.join("；");
+      else if (m) msg = m;
     } catch {
-      /* 非 JSON 错误体，保留状态行 */
+      /* 非 JSON 错误体，保留中文状态文案 */
     }
     throw new Error(msg);
   }
@@ -572,7 +599,10 @@ export const getPromptDetail = (promptId: string): Promise<PromptDetail> =>
   getJson(`/api/prompts/${encodeURIComponent(promptId)}`, PromptDetailSchema);
 // 节点下全部具体版本（012 版本平权：应用/旧 Agent 表单候选，不按标签过滤）
 export const getPromptNodeVersions = (node: PromptNode): Promise<PromptNodeVersionListResponse> =>
-  getJson(`/api/prompts/versions?node=${encodeURIComponent(node)}`, PromptNodeVersionListResponseSchema);
+  getJson(
+    `/api/prompts/versions?node=${encodeURIComponent(node)}`,
+    PromptNodeVersionListResponseSchema,
+  );
 export const getPromptVersions = (promptId: string): Promise<PromptVersionListResponse> =>
   getJson(`/api/prompts/${encodeURIComponent(promptId)}/versions`, PromptVersionListResponseSchema);
 
@@ -625,9 +655,7 @@ export async function tryRunPromptVersion(
   );
   if (!resp.ok) {
     const j = (await resp.json().catch(() => undefined)) as { message?: unknown } | undefined;
-    throw new Error(
-      typeof j?.message === "string" ? j.message : `try-run failed: ${resp.status}`,
-    );
+    throw new Error(typeof j?.message === "string" ? j.message : `try-run failed: ${resp.status}`);
   }
   return TryRunResultSchema.parse(await resp.json());
 }

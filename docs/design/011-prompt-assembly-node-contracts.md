@@ -84,14 +84,14 @@ last_modified: "2026-07-11"
 
 延续 001 的整体规模假设（≤10 QPS）。
 
-| 维度 | 设计值 | 依据/影响 |
-|---|---:|---|
-| 结构化节点修复预算 | 每节点最多 1 次修复重试 | 最坏增加 1 次额外 LLM 调用；正常问答不增加调用 |
-| 本地编译/Schema 校验预算 | p95 < 5ms/节点 | 不涉及网络调用，相对模型延迟可忽略 |
-| Prompt 正文上限 | 沿用 009 已有编辑约束 | 防止无界配置 |
-| 单节点原始模型输出上限 | 64KB | 超限直接判定失败，避免下游 JSON parser/日志压力 |
-| 应用发布预演样例数 | rewrite/intent 各 10 例 + reply/fallback 各 1 冒烟 = 22 次 | 低频操作可接受；具体触发时机属于 009-m7-application-management |
-| 线上目标 | 非法结构化输出下游泄漏 0；修复率 <1%；Fallback 率 <1% | 连续 100 次同节点调用中修复率或 Fallback 率 >3% 告警 |
+| 维度                     |                                                     设计值 | 依据/影响                                                      |
+| ------------------------ | ---------------------------------------------------------: | -------------------------------------------------------------- |
+| 结构化节点修复预算       |                                    每节点最多 1 次修复重试 | 最坏增加 1 次额外 LLM 调用；正常问答不增加调用                 |
+| 本地编译/Schema 校验预算 |                                             p95 < 5ms/节点 | 不涉及网络调用，相对模型延迟可忽略                             |
+| Prompt 正文上限          |                                      沿用 009 已有编辑约束 | 防止无界配置                                                   |
+| 单节点原始模型输出上限   |                                                       64KB | 超限直接判定失败，避免下游 JSON parser/日志压力                |
+| 应用发布预演样例数       | rewrite/intent 各 10 例 + reply/fallback 各 1 冒烟 = 22 次 | 低频操作可接受；具体触发时机属于 009-m7-application-management |
+| 线上目标                 |      非法结构化输出下游泄漏 0；修复率 <1%；Fallback 率 <1% | 连续 100 次同节点调用中修复率或 Fallback 率 >3% 告警           |
 
 ## Design
 
@@ -99,99 +99,103 @@ last_modified: "2026-07-11"
 
 #### 问题改写 `rewrite`
 
-| 属性 | 值 |
-|---|---|
-| key / consumer | `rewrite` / 编排代码 · 拿去检索 |
+| 属性                 | 值                                                     |
+| -------------------- | ------------------------------------------------------ |
+| key / consumer       | `rewrite` / 编排代码 · 拿去检索                        |
 | weight / runtimeMode | 重契约 / `structured`（`structuredMode: json_schema`） |
-| contractVersion | 1 |
+| contractVersion      | 1                                                      |
 
 平台固定 System：
+
 > 你是 RAG 流程中的「问题改写」节点。将当前问题改写成可独立理解、适合知识库检索的问题。不要回答问题，不要添加输入中不存在的事实。输出必须符合平台提供的 JSON Schema。
 
-| 分类 | 字段 | 说明 |
-|---|---|---|
-| inputs | `query` | 当前问题，不可空 |
-| inputs | `history` | 历史对话，可空 |
-| reserved | — | 无 |
-| outSchema | `rewrittenQuery` | `string`·非空·≤1000，示例 `"Python 入门课程 7 天内未学习是否可全额退款"` |
-| outSchema | `keywords` | `string[]`·≤20，示例 `["退款","七天无理由","学习进度"]` |
-| extraValidate | — | 无 |
-| fallback | — | 直接用原始 `query` 去检索，`keywords` 置空 |
+| 分类          | 字段             | 说明                                                                     |
+| ------------- | ---------------- | ------------------------------------------------------------------------ |
+| inputs        | `query`          | 当前问题，不可空                                                         |
+| inputs        | `history`        | 历史对话，可空                                                           |
+| reserved      | —                | 无                                                                       |
+| outSchema     | `rewrittenQuery` | `string`·非空·≤1000，示例 `"Python 入门课程 7 天内未学习是否可全额退款"` |
+| outSchema     | `keywords`       | `string[]`·≤20，示例 `["退款","七天无理由","学习进度"]`                  |
+| extraValidate | —                | 无                                                                       |
+| fallback      | —                | 直接用原始 `query` 去检索，`keywords` 置空                               |
 
 #### 意图识别 `intent`
 
-| 属性 | 值 |
-|---|---|
-| key / consumer | `intent` / 编排代码 · 拿去路由 |
+| 属性                 | 值                                                                  |
+| -------------------- | ------------------------------------------------------------------- |
+| key / consumer       | `intent` / 编排代码 · 拿去路由                                      |
 | weight / runtimeMode | 重契约 / `structured`（`structuredMode: json_schema`，`dyn: true`） |
-| contractVersion | 1 |
+| contractVersion      | 1                                                                   |
 
 平台固定 System：
+
 > 你是 RAG 流程中的「意图识别」节点。从平台在运行时注入的候选路由中，选出与用户问题最匹配的意图与路由，并给出置信度。只做判断，不回答问题。输出必须符合平台提供的 JSON Schema。
 
-| 分类 | 字段 | 说明 |
-|---|---|---|
-| inputs | `query` | 不可空 |
-| inputs | `history` | 可空 |
-| reserved | `availableRoutes` | 候选路由，由应用绑定的知识库运行时派生，只读注入 |
-| outSchema | `intent` | `enum`：售前/售后/学习/unknown |
-| outSchema | `routeIds` | `string[]`·须 ∈ `availableRoutes`，示例 `["kb_aftersales"]` |
-| outSchema | `confidence` | `number`·0–1，示例 `0.92` |
-| extraValidate | — | `routeIds` 的每个值必须属于本次 `availableRoutes`；模型即使返回合法 JSON，也不能路由到应用未绑定的知识库，越权即拒绝 |
-| fallback | — | `intent=unknown`、`routeIds` 置空，走默认库或直接进兜底 |
+| 分类          | 字段              | 说明                                                                                                                 |
+| ------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
+| inputs        | `query`           | 不可空                                                                                                               |
+| inputs        | `history`         | 可空                                                                                                                 |
+| reserved      | `availableRoutes` | 候选路由，由应用绑定的知识库运行时派生，只读注入                                                                     |
+| outSchema     | `intent`          | `enum`：售前/售后/学习/unknown                                                                                       |
+| outSchema     | `routeIds`        | `string[]`·须 ∈ `availableRoutes`，示例 `["kb_aftersales"]`                                                          |
+| outSchema     | `confidence`      | `number`·0–1，示例 `0.92`                                                                                            |
+| extraValidate | —                 | `routeIds` 的每个值必须属于本次 `availableRoutes`；模型即使返回合法 JSON，也不能路由到应用未绑定的知识库，越权即拒绝 |
+| fallback      | —                 | `intent=unknown`、`routeIds` 置空，走默认库或直接进兜底                                                              |
 
 #### 回复生成 `reply`
 
-| 属性 | 值 |
-|---|---|
-| key / consumer | `reply` / 终端用户直接看 |
-| weight / runtimeMode | 轻契约 / `stream` |
-| contractVersion | 1 |
+| 属性                 | 值                       |
+| -------------------- | ------------------------ |
+| key / consumer       | `reply` / 终端用户直接看 |
+| weight / runtimeMode | 轻契约 / `stream`        |
+| contractVersion      | 1                        |
 
 平台固定 System：
+
 > 你是 RAG 流程中的「回复生成」节点。只依据平台提供的检索内容回答，不得编造；引用某段知识时在句末标注对应角标 [n]。以自然语言流式回答，不要输出 JSON。
 
-| 分类 | 字段 | 说明 |
-|---|---|---|
-| inputs | `query` | 不可空 |
-| inputs | `history` | 可空 |
-| inputs | `retrievalContext` | 可空 |
-| reserved | `citations` | 引用来源，平台注入，用于角标 [n] 与出处 |
-| outSchema | `text` | `string`·非空·流式，示例 `"您购买的 Python 入门课程在 7 天内且学习进度为 0 时可申请全额退款 [1]…"` |
-| extraValidate | — | 无 |
-| fallback | — | 平台固定兜底文案/触发转人工，不做 JSON 修复重试 |
+| 分类          | 字段               | 说明                                                                                               |
+| ------------- | ------------------ | -------------------------------------------------------------------------------------------------- |
+| inputs        | `query`            | 不可空                                                                                             |
+| inputs        | `history`          | 可空                                                                                               |
+| inputs        | `retrievalContext` | 可空                                                                                               |
+| reserved      | `citations`        | 引用来源，平台注入，用于角标 [n] 与出处                                                            |
+| outSchema     | `text`             | `string`·非空·流式，示例 `"您购买的 Python 入门课程在 7 天内且学习进度为 0 时可申请全额退款 [1]…"` |
+| extraValidate | —                  | 无                                                                                                 |
+| fallback      | —                  | 平台固定兜底文案/触发转人工，不做 JSON 修复重试                                                    |
 
 #### 兜底 `fallback`
 
-| 属性 | 值 |
-|---|---|
-| key / consumer | `fallback` / 终端用户直接看 |
+| 属性                 | 值                                |
+| -------------------- | --------------------------------- |
+| key / consumer       | `fallback` / 终端用户直接看       |
 | weight / runtimeMode | 轻契约 / `stream`（`last: true`） |
-| contractVersion | 1 |
+| contractVersion      | 1                                 |
 
 平台固定 System：
+
 > 你是 RAG 流程中的「兜底」节点。当问题超出知识库范围或上游失败时，礼貌说明暂时无法回答，并引导用户后续动作。
 
-| 分类 | 字段 | 说明 |
-|---|---|---|
-| inputs | `query` | 不可空 |
-| inputs | `reason` | 触发兜底的原因，可空 |
-| reserved | — | 无 |
-| outSchema | `text` | `string`·非空，示例 `"很抱歉，这个问题暂时没有在知识库中找到答案，您可以联系人工客服…"` |
-| extraValidate | — | 无 |
-| fallback | — | 使用代码内硬编码的最后一道固定文案（优先直接用平台固定文本，不再调用模型） |
+| 分类          | 字段    | 说明                                                                                          |
+| ------------- | ------- | --------------------------------------------------------------------------------------------- |
+| inputs        | `query` | 不可空                                                                                        |
+| inputs        | —       | 无；PromptVersion 正文即最终返回的纯文本                                                      |
+| reserved      | —       | 无                                                                                            |
+| outSchema     | `text`  | `string`·非空，示例 `"很抱歉，这个问题暂时没有在知识库中找到答案，您可以联系人工客服…"`       |
+| extraValidate | —       | 无                                                                                            |
+| fallback      | —       | 正常路径直接返回管理员保存的 PromptVersion 正文；仅正文为空时使用代码内保底文案，均不调用模型 |
 
 #### TypeScript 接口形状
 
 ```ts
 interface NodeContract<TInput, TOutput, TReserved = Record<string, never>> {
-  node: PromptNode;                // rewrite | intent | reply | fallback
-  version: number;                 // contractVersion
+  node: PromptNode; // rewrite | intent | reply | fallback
+  version: number; // contractVersion
   key: string;
   consumer: string;
-  weight: '重契约' | '轻契约';
-  runtimeMode: 'structured' | 'stream';
-  structuredMode?: 'json_schema';
+  weight: "重契约" | "轻契约";
+  runtimeMode: "structured" | "stream";
+  structuredMode?: "json_schema";
 
   inputSchema: z.ZodType<TInput>;
   reservedDataSchema: z.ZodType<TReserved>;
@@ -202,9 +206,9 @@ interface NodeContract<TInput, TOutput, TReserved = Record<string, never>> {
     label: string;
     description: string;
     requiredAtRuntime: boolean;
-  }>;                              // 复用 012 §5 的静态字段契约
+  }>; // 复用 012 §5 的静态字段契约
 
-  systemInstructions: string;      // 平台固定 System 外壳文案 —— 未来可配置化候选（见 §7）
+  systemInstructions: string; // 平台固定 System 外壳文案 —— 未来可配置化候选（见 §7）
   extraValidate?: (output: TOutput, context: RuntimeContext) => ValidationIssue[];
   fallback: (input: TInput, context: RuntimeContext) => TOutput;
 }
@@ -218,13 +222,13 @@ interface NodeContract<TInput, TOutput, TReserved = Record<string, never>> {
 
 ```ts
 interface ChatMessage {
-  role: 'system' | 'user';
+  role: "system" | "user";
   content: string;
 }
 
 interface StructuredOutputSpec {
   name: string;
-  schema: Record<string, unknown>;  // JSON Schema，从 Zod 转换
+  schema: Record<string, unknown>; // JSON Schema，从 Zod 转换
   strict?: boolean;
 }
 
@@ -251,11 +255,24 @@ interface ChatStreamChunk {
 interface ModelProviderPort {
   testConnection(config: ModelCallConfig): Promise<TestModelResult>;
   embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult>;
-  rerank(config: ModelCallConfig, query: string, documents: string[], topN?: number): Promise<RerankResult>;
+  rerank(
+    config: ModelCallConfig,
+    query: string,
+    documents: string[],
+    topN?: number,
+  ): Promise<RerankResult>;
 
   // 新增
-  chat(config: ModelCallConfig, messages: ChatMessage[], options?: ChatOptions): Promise<ChatResult>;
-  chatStream(config: ModelCallConfig, messages: ChatMessage[], options?: ChatOptions): AsyncIterable<ChatStreamChunk>;
+  chat(
+    config: ModelCallConfig,
+    messages: ChatMessage[],
+    options?: ChatOptions,
+  ): Promise<ChatResult>;
+  chatStream(
+    config: ModelCallConfig,
+    messages: ChatMessage[],
+    options?: ChatOptions,
+  ): AsyncIterable<ChatStreamChunk>;
 }
 ```
 
@@ -263,12 +280,12 @@ interface ModelProviderPort {
 
 结构化输出的协议适配表（llm 类型下 001 已定义的三种协议）：
 
-| 协议 | 首选机制 | 说明 | 后端终审 |
-|---|---|---|---|
-| `openai_compat` | JSON Schema（`response_format: {type:"json_schema", json_schema, strict:true}`），不支持严格模式的厂商降级为 `json_object` | 覆盖 DeepSeek/Qwen/GPT/vLLM 等，实际支持程度因厂商而异，由模型注册时的连通性测试或 `model_providers.params` 里的能力标记决定走哪条子路径 | 必须继续 Zod + extraValidate |
-| `anthropic` | Tool Calling（强制单一结果工具，`tool_choice: {type:"tool", name:...}`，读取 `input` 字段作为结构化结果） | Anthropic 无独立 JSON Schema response_format，标准做法是强制工具调用 | 必须继续 Zod + extraValidate |
-| `gemini` | 原生 `responseSchema` + `responseMimeType: "application/json"` | Gemini 原生支持 JSON Schema 约束输出 | 必须继续 Zod + extraValidate |
-| 无法探测/未知能力 | 追加格式要求到 Instructions，容忍单层代码围栏后解析（prompt-only 兜底） | 保底路径，供不支持任何原生机制的模型使用 | 必须继续 Zod + extraValidate |
+| 协议              | 首选机制                                                                                                                   | 说明                                                                                                                                     | 后端终审                     |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `openai_compat`   | JSON Schema（`response_format: {type:"json_schema", json_schema, strict:true}`），不支持严格模式的厂商降级为 `json_object` | 覆盖 DeepSeek/Qwen/GPT/vLLM 等，实际支持程度因厂商而异，由模型注册时的连通性测试或 `model_providers.params` 里的能力标记决定走哪条子路径 | 必须继续 Zod + extraValidate |
+| `anthropic`       | Tool Calling（强制单一结果工具，`tool_choice: {type:"tool", name:...}`，读取 `input` 字段作为结构化结果）                  | Anthropic 无独立 JSON Schema response_format，标准做法是强制工具调用                                                                     | 必须继续 Zod + extraValidate |
+| `gemini`          | 原生 `responseSchema` + `responseMimeType: "application/json"`                                                             | Gemini 原生支持 JSON Schema 约束输出                                                                                                     | 必须继续 Zod + extraValidate |
+| 无法探测/未知能力 | 追加格式要求到 Instructions，容忍单层代码围栏后解析（prompt-only 兜底）                                                    | 保底路径，供不支持任何原生机制的模型使用                                                                                                 | 必须继续 Zod + extraValidate |
 
 模型能力（走哪条首选机制）由协议默认值决定，可被 `model_providers.params` 里的显式标记覆盖；连接测试可以探测但不能当永久保证——任何路径都不能因为"模型声称支持"而跳过 Zod 终审（Invariant 4）。
 
@@ -313,7 +330,7 @@ interface ModelProviderPort {
 
 **`streamText(node, contractVersion, promptBody, modelId, input, context)`**（reply/fallback）：
 
-同样的组装步骤，调用 `chatStream()`；缓冲到首个非空 token（或很短的首段）才向调用方转发；首 token 前超时/空响应/报错则无痕切换到 `contract.fallback()` 的固定文本；已经转发 token 后若上游断流，不可撤回已展示内容，向上层发出 `error`/`done(partial=true)` 事件并记录 Trace；不做 JSON 修复重试（避免用户等待两次完整生成）。
+`reply` 走组装与 `chatStream()`；缓冲到首个非空 token（或很短的首段）才向调用方转发，首 token 前失败切换到 `contract.fallback()`。`fallback` 不走组装、不调用模型、不消费运行时字段，直接返回 `promptBody`；正文为空时才使用代码内保底文案。已经转发 token 后若上游断流，不可撤回已展示内容，向上层发出 `error`/`done(partial=true)` 事件并记录 Trace。
 
 ### 5. Prompt 预览端点升级
 
@@ -352,31 +369,31 @@ compileAndSample(request: NodeSampleRequest): Promise<NodeSampleResult>
 
 ### 7. "写死代码 vs 未来可配置"的具体边界
 
-| NodeContract 字段 | 未来是否适合下沉为可配置数据 | 理由 |
-|---|---|---|
-| `systemInstructions`（平台固定 System 文案） | 适合 | 纯文本，改错了最坏是文案不准确，不影响类型安全 |
-| `templateFields[].label`/`description`（字段展示文案） | 适合 | 同上，纯展示层 |
-| `fallback` 对应的固定兜底提示文案（如兜底节点"很抱歉…"这句话） | 适合 | 纯文本，可以做成 DB 里的一个字符串字段 |
-| `inputSchema`/`outputSchema`（Zod 结构定义） | **不适合**（本轮及可预见未来都不适合） | 结构定义直接决定运行时类型安全和下游代码能否正确消费，UI 自由编辑等于允许运行时任意改变接口形状，需要一整套 Schema Builder DSL + 沙箱校验才可能安全做到，成本和收益不匹配 |
-| `extraValidate` 逻辑（如 routeIds 越权校验） | **不适合** | 是业务逻辑代码，不是数据 |
-| `fallback` 函数本身（如何从 input 构造降级 output 的算法） | **不适合** | 同上，是代码不是数据 |
-| `contractVersion` 升级判定规则 | **不适合** | 版本语义必须严格，不能由配置页面随意触发 |
+| NodeContract 字段                                              | 未来是否适合下沉为可配置数据           | 理由                                                                                                                                                                      |
+| -------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `systemInstructions`（平台固定 System 文案）                   | 适合                                   | 纯文本，改错了最坏是文案不准确，不影响类型安全                                                                                                                            |
+| `templateFields[].label`/`description`（字段展示文案）         | 适合                                   | 同上，纯展示层                                                                                                                                                            |
+| `fallback` 对应的固定兜底提示文案（如兜底节点"很抱歉…"这句话） | 适合                                   | 纯文本，可以做成 DB 里的一个字符串字段                                                                                                                                    |
+| `inputSchema`/`outputSchema`（Zod 结构定义）                   | **不适合**（本轮及可预见未来都不适合） | 结构定义直接决定运行时类型安全和下游代码能否正确消费，UI 自由编辑等于允许运行时任意改变接口形状，需要一整套 Schema Builder DSL + 沙箱校验才可能安全做到，成本和收益不匹配 |
+| `extraValidate` 逻辑（如 routeIds 越权校验）                   | **不适合**                             | 是业务逻辑代码，不是数据                                                                                                                                                  |
+| `fallback` 函数本身（如何从 input 构造降级 output 的算法）     | **不适合**                             | 同上，是代码不是数据                                                                                                                                                      |
+| `contractVersion` 升级判定规则                                 | **不适合**                             | 版本语义必须严格，不能由配置页面随意触发                                                                                                                                  |
 
 结论：未来那个"应用配置"页面如果要做，边界应该卡在"文案/展示层可配置，Schema/校验/降级逻辑仍是代码"——这条边界写进 Invariant 6，防止未来实现时把它做成一个无边界的通用 JSON 编辑器。
 
 ## Failure modes
 
-| 场景 | 系统行为 |
-|---|---|
-| 模型返回非法 JSON / Markdown 代码围栏包裹 | 归一化失败 → 修复一次 → 仍失败 Fallback |
-| JSON 形状合法但 `routeId` 越权 | `extraValidate` 拒绝 → intent Fallback 为 `unknown` |
-| 模型声称支持结构化输出但实际不遵守 | Zod 捕获 → 记录 capability mismatch 指标 → 当前请求降级、后续触发模型配置检查 |
-| 模型输出超过 64KB / 被截断 | 直接判定失败 → 修复一次后 Fallback |
-| 固定 ContractVersion 缺失（理论上因固定引用不应发生，但防御性处理） | 服务 readiness 失败，不允许"用最新版本替代" |
-| C 端修复调用超时 | 不继续重试，立即 Fallback |
-| reply 首 token 前失败 | 不发送空/半成品，直接切固定 Fallback |
-| reply 已发送 token 后断流 | 不可撤回；发送 `partial=true` 终态并记录 Trace |
-| Trace/Collector 不可用 | 丢观测，不改变节点结果（承接 001 Invariant 1） |
+| 场景                                                                | 系统行为                                                                      |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 模型返回非法 JSON / Markdown 代码围栏包裹                           | 归一化失败 → 修复一次 → 仍失败 Fallback                                       |
+| JSON 形状合法但 `routeId` 越权                                      | `extraValidate` 拒绝 → intent Fallback 为 `unknown`                           |
+| 模型声称支持结构化输出但实际不遵守                                  | Zod 捕获 → 记录 capability mismatch 指标 → 当前请求降级、后续触发模型配置检查 |
+| 模型输出超过 64KB / 被截断                                          | 直接判定失败 → 修复一次后 Fallback                                            |
+| 固定 ContractVersion 缺失（理论上因固定引用不应发生，但防御性处理） | 服务 readiness 失败，不允许"用最新版本替代"                                   |
+| C 端修复调用超时                                                    | 不继续重试，立即 Fallback                                                     |
+| reply 首 token 前失败                                               | 不发送空/半成品，直接切固定 Fallback                                          |
+| reply 已发送 token 后断流                                           | 不可撤回；发送 `partial=true` 终态并记录 Trace                                |
+| Trace/Collector 不可用                                              | 丢观测，不改变节点结果（承接 001 Invariant 1）                                |
 
 ## Rollout & operations
 
@@ -391,15 +408,15 @@ compileAndSample(request: NodeSampleRequest): Promise<NodeSampleResult>
 
 沿用 001 已确立的 `gen_ai.*`/`rag.*` 属性体系，每个 LLM 节点 span 新增：
 
-| 属性 | 用途 |
-|---|---|
-| `rag.node.name` | rewrite / intent / reply / fallback |
-| `rag.prompt.version_id` | 实际 PromptVersion |
-| `rag.prompt.contract_version` | 实际 ContractVersion |
-| `rag.validation.error_code` | 输出或动态值域失败码，不记录完整敏感正文 |
-| `rag.repair.retry_count` | 0 或 1 |
-| `rag.fallback.used` | 是否执行 Fallback |
-| `rag.structured_output.mode` | `json_schema` / `tool_call` / `json_object` / `prompt_only` |
+| 属性                          | 用途                                                        |
+| ----------------------------- | ----------------------------------------------------------- |
+| `rag.node.name`               | rewrite / intent / reply / fallback                         |
+| `rag.prompt.version_id`       | 实际 PromptVersion                                          |
+| `rag.prompt.contract_version` | 实际 ContractVersion                                        |
+| `rag.validation.error_code`   | 输出或动态值域失败码，不记录完整敏感正文                    |
+| `rag.repair.retry_count`      | 0 或 1                                                      |
+| `rag.fallback.used`           | 是否执行 Fallback                                           |
+| `rag.structured_output.mode`  | `json_schema` / `tool_call` / `json_object` / `prompt_only` |
 
 告警初值：连续 100 次同节点调用中修复率或 Fallback 率 >3%，按 `model_id + prompt_version_id + contract_version` 聚合，区分模型能力问题/Prompt 策略问题/契约升级问题。试运行调用需要打区别于正式问答的标记（承接 009 Observability），避免污染正式指标。
 
@@ -414,13 +431,13 @@ compileAndSample(request: NodeSampleRequest): Promise<NodeSampleResult>
 
 ## Alternatives considered
 
-| 决策点 | 选择 | 拒绝 | 放弃了什么 |
-|---|---|---|---|
-| 结构化输出保证方式 | API 原生 Structured Output + 后端 Schema 终审 | 只在管理员 Prompt 里写"返回 JSON" | 更简单的实现——换来输出真正可信 |
-| 运行时数据提供方式 | 始终注入，不依赖管理员写占位符 | 强制管理员必须写 `{query}`/`{history}` | 一点点上下文冗余——换来管理员漏写字段不失效 |
-| 执行能力归属 | 独立 `node-runtime` 域 | `prompts`/`chat` 各自实现一套 | 更快的短期实现——换来预览等于生产、无重复逻辑 |
-| 失败策略 | 修复一次后确定性 Fallback | 无限重试 / 直接让整轮失败 | 部分请求质量降级——换来延迟和成本上界 |
-| NodeContract 存储 | 代码常量（本轮） | 现在就做 DB + 可配置页 | 短期的可配置灵活性——换来先把结构和安全边界想清楚，用户明确要求本轮先写死 |
+| 决策点             | 选择                                          | 拒绝                                   | 放弃了什么                                                               |
+| ------------------ | --------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------ |
+| 结构化输出保证方式 | API 原生 Structured Output + 后端 Schema 终审 | 只在管理员 Prompt 里写"返回 JSON"      | 更简单的实现——换来输出真正可信                                           |
+| 运行时数据提供方式 | 始终注入，不依赖管理员写占位符                | 强制管理员必须写 `{query}`/`{history}` | 一点点上下文冗余——换来管理员漏写字段不失效                               |
+| 执行能力归属       | 独立 `node-runtime` 域                        | `prompts`/`chat` 各自实现一套          | 更快的短期实现——换来预览等于生产、无重复逻辑                             |
+| 失败策略           | 修复一次后确定性 Fallback                     | 无限重试 / 直接让整轮失败              | 部分请求质量降级——换来延迟和成本上界                                     |
+| NodeContract 存储  | 代码常量（本轮）                              | 现在就做 DB + 可配置页                 | 短期的可配置灵活性——换来先把结构和安全边界想清楚，用户明确要求本轮先写死 |
 
 ## Assumptions
 

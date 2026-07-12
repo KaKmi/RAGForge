@@ -4,7 +4,7 @@ import type { RuntimeContext } from "../node-runtime/compiler/runtime-context";
 // M7b ReleaseCheck 内置固定冒烟样例（D2）：M7b 无评测集（M11），Postgres 不存真实用户问题，
 // 故用一组代表性问题做「真实节点结果」冒烟。rewrite/intent 各跑全部 10 条，reply/fallback 各 1 条。
 // input/reserved 形状取自各 NodeContract（rewrite/intent {query,history}；reply +retrievalContext；
-// fallback {query,reason}；intent reserved.availableRoutes 由 kbIds 派生，reply reserved.citations=[]）。
+// fallback 为无字段纯文本；intent reserved.availableRoutes 由 kbIds 派生，reply reserved.citations=[]）。
 const SMOKE_QUERIES = [
   "怎么退货",
   "订单多久发货",
@@ -35,7 +35,7 @@ export function buildSamples(node: PromptNode, availableRoutes: string[]): NodeS
   return queries.map((query) => ({
     input:
       node === "fallback"
-        ? { query, reason: "用户问题超出知识库范围" }
+        ? {}
         : node === "reply"
           ? { query, history: "", retrievalContext: "（冒烟预演占位检索内容）" }
           : { query, history: "" },

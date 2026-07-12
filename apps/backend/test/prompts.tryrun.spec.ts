@@ -62,7 +62,8 @@ function makeService(over: {
   const executeStructured =
     over.executeStructured ??
     jest.fn(async () => ({ output: {}, fallbackUsed: false, validateSteps: [] }));
-  const streamText = over.streamText ?? jest.fn(async () => ({ text: "模型输出", fallbackUsed: false }));
+  const streamText =
+    over.streamText ?? jest.fn(async () => ({ text: "模型输出", fallbackUsed: false }));
   const nodeRuntime = { executeStructured, streamText } as unknown as NodeRuntimeService;
   return { service: new PromptsService(repo, nodeRuntime), executeStructured, streamText };
 }
@@ -89,16 +90,16 @@ describe("PromptsService.tryRun · 前置校验", () => {
     expect(streamText).not.toHaveBeenCalled();
   });
 
-  it("reply 缺 query → 400；fallback 缺 reason → 400", async () => {
+  it("reply 缺 query → 400；fallback 无需任何字段", async () => {
     const { service } = makeService({});
     await expect(
       service.tryRun("p1", "pv1", { modelId: "m1", testVars: { query: "  " } }),
     ).rejects.toBeInstanceOf(BadRequestException);
 
-    const fb = makeService({ prompt: { node: "fallback" } });
+    const fb = makeService({ prompt: { node: "fallback" }, version: { body: "固定话术" } });
     await expect(
-      fb.service.tryRun("p1", "pv1", { modelId: "m1", testVars: { query: "q" } }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+      fb.service.tryRun("p1", "pv1", { modelId: "m1", testVars: { query: "" } }),
+    ).resolves.toMatchObject({ mode: "text" });
   });
 });
 
@@ -145,19 +146,19 @@ describe("PromptsService.tryRun · reply/fallback 走 NodeRuntime.streamText", (
     expect(streamText.mock.calls[0][6]).toEqual({ temperature: 1.2 });
   });
 
-  it("fallback 成功：reason 参与 input", async () => {
-    const streamText = jest.fn(async () => ({ text: "兜底文案", fallbackUsed: true }));
+  it("fallback 成功：正文直接返回，运行输入为空", async () => {
+    const streamText = jest.fn(async () => ({ text: "兜底文案", fallbackUsed: false }));
     const { service } = makeService({
       prompt: { node: "fallback" },
-      version: { body: "因 {reason} 无法回答 {query}" },
+      version: { body: "兜底文案" },
       streamText,
     });
     const res = await service.tryRun("p1", "pv1", {
       modelId: "m1",
-      testVars: { query: "q", reason: "未命中知识" },
+      testVars: { query: "" },
     });
     expect(res.mode).toBe("text");
-    expect(streamText.mock.calls[0][4]).toMatchObject({ query: "q", reason: "未命中知识" });
+    expect(streamText.mock.calls[0][4]).toEqual({});
   });
 });
 

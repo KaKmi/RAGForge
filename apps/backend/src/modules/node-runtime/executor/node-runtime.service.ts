@@ -243,7 +243,11 @@ export class NodeRuntimeService {
     );
   }
 
-  async streamText<TInput extends Record<string, unknown>, TOutput extends { text: string }, TReserved>(
+  async streamText<
+    TInput extends Record<string, unknown>,
+    TOutput extends { text: string },
+    TReserved,
+  >(
     node: PromptNode,
     contractVersion: number,
     promptBody: string,
@@ -257,9 +261,13 @@ export class NodeRuntimeService {
       TOutput,
       TReserved
     >;
-    // fallback 节点自己的 fallback 路径永不调用模型（011 Design §1）——不查模型行，不受 opts 影响
+    // fallback 是版本化纯文本：Prompt 正文就是最终回复，永不调用模型、不渲染字段。
+    // 空正文仅用于兼容存量/异常数据，降级到平台固定文案并标记 fallbackUsed，供门禁阻断。
     if (contract.node === "fallback") {
-      return { text: contract.fallback(input, reserved).text, fallbackUsed: true };
+      const text = promptBody.trim();
+      return text.length > 0
+        ? { text, fallbackUsed: false }
+        : { text: contract.fallback(input, reserved).text, fallbackUsed: true };
     }
 
     // review P2：streamText 此前对 input/reserved 零校验，直接把调用方的原始值传进
@@ -288,10 +296,17 @@ export class NodeRuntimeService {
         },
       },
       async (span) => {
-        const messages = assembleMessages({ contract, promptBody, input: validInput, reserved: validReserved });
+        const messages = assembleMessages({
+          contract,
+          promptBody,
+          input: validInput,
+          reserved: validReserved,
+        });
         let text = "";
         try {
-          const stream = await this.models.chatStream(modelId, messages, { temperature: opts?.temperature });
+          const stream = await this.models.chatStream(modelId, messages, {
+            temperature: opts?.temperature,
+          });
           for await (const chunk of stream) {
             if (chunk.error) {
               // review round 1：报错时不再无条件清空 text——011 Design 明确区分"首 token
@@ -372,7 +387,9 @@ export class NodeRuntimeService {
           sampleIndex: i,
           ok: false,
           fallbackUsed: false,
-          issues: [{ code: "INTERNAL_ERROR", message: err instanceof Error ? err.message : String(err) }],
+          issues: [
+            { code: "INTERNAL_ERROR", message: err instanceof Error ? err.message : String(err) },
+          ],
         });
       }
     }

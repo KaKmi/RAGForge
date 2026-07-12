@@ -29,11 +29,7 @@ import {
   NodeRuntimeService,
   UnsupportedChatProtocolError,
 } from "../node-runtime/executor/node-runtime.service";
-import {
-  PromptsRepository,
-  type PromptListRow,
-  type TagRow,
-} from "./prompts.repository";
+import { PromptsRepository, type PromptListRow, type TagRow } from "./prompts.repository";
 import type { PromptVersionRow } from "./schema";
 
 @Injectable()
@@ -225,21 +221,19 @@ export class PromptsService {
     }
     const node = prompt.node as PromptNode;
 
-    // 字段要求（drill 收口）：reply 需 query（history/retrievalContext 缺省空串）；
-    // fallback 需 query + reason
-    if (!req.testVars.query.trim()) {
+    // fallback 是无字段纯文本；其余节点试运行仍需要 query。
+    if (node !== "fallback" && !req.testVars.query.trim()) {
       throw new BadRequestException("试运行需要 query");
     }
-    if (node === "fallback" && !(req.testVars.reason ?? "").trim()) {
-      throw new BadRequestException("fallback 节点试运行需要 reason");
-    }
 
-    const input = {
-      query: req.testVars.query,
-      history: req.testVars.history ?? "",
-      retrievalContext: req.testVars.retrievalContext ?? "",
-      reason: req.testVars.reason ?? "",
-    };
+    const input =
+      node === "fallback"
+        ? {}
+        : {
+            query: req.testVars.query,
+            history: req.testVars.history ?? "",
+            retrievalContext: req.testVars.retrievalContext ?? "",
+          };
     // 试运行场景无真实应用上下文：intent 候选路由给空数组（越权校验天然全拒，
     // 符合"试运行不代表真实上线路由"语义）；reply 引用来源同样给空数组。
     const reserved =
@@ -305,9 +299,7 @@ export class PromptsService {
       await this.repo.deletePrompt(promptId);
     } catch (err) {
       if (isForeignKeyViolation(err)) {
-        throw new ConflictException(
-          `prompt ${promptId} 的某个版本仍被 Agent 配置引用，无法删除`,
-        );
+        throw new ConflictException(`prompt ${promptId} 的某个版本仍被 Agent 配置引用，无法删除`);
       }
       throw err;
     }
@@ -410,8 +402,7 @@ function isForeignKeyViolation(e: unknown): boolean {
 // drizzle 把底层 pg 错误包在 e.cause 里（models.service.ts 实测模式）；
 // 直连 pg/execute 路径则在顶层 code——两处都查（peer review 采纳项）
 function hasPgCode(e: unknown, code: string): boolean {
-  const top =
-    typeof e === "object" && e !== null && "code" in e && (e as { code: unknown }).code;
+  const top = typeof e === "object" && e !== null && "code" in e && (e as { code: unknown }).code;
   if (top === code) return true;
   const cause = e instanceof Error ? e.cause : undefined;
   return (

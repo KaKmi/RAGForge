@@ -456,7 +456,9 @@ export default function PromptDetailPage() {
               </span>
             </div>
             <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)", lineHeight: 1.6 }}>
-              这些信息由系统固定提供，不需要你配置。插入只是把标记放进策略里，方便指向该参考哪块信息——不插入也一样会正常提供给它。
+              {detail.node === "fallback"
+                ? "兜底话术是纯文本：这里填写的正文会直接返回给用户，不调用模型，也不需要插入字段。"
+                : "这些信息由系统固定提供，不需要你配置。插入只是把标记放进策略里，方便指向该参考哪块信息——不插入也一样会正常提供给它。"}
             </div>
             <Space size={6} wrap>
               {contract.templateFields.map((f) => (

@@ -1,6 +1,7 @@
 import {
   apiFetch,
   batchDeleteChunks,
+  createApplicationConfigVersion,
   createKnowledgeBase,
   deleteDocument,
   getDocumentChunks,
@@ -11,6 +12,7 @@ import {
   getProcessingProfiles,
   getProcessingRuns,
   rebuildKnowledgeBase,
+  startApplicationReleaseCheck,
   triggerParse,
   updateDocumentMetadata,
   updateKnowledgeBase,
@@ -132,6 +134,83 @@ describe("apiFetch", () => {
   });
 });
 
+describe("业务错误", () => {
+  it("优先透出服务端中文 message，不展示英文请求路径", async () => {
+    mockFetch(jsonResponse({ message: "应用配置已被其他人更新，请刷新后重试" }, 409));
+
+    await expect(
+      createApplicationConfigVersion("app1", {
+        config: {
+          kbIds: ["kb1"],
+          nodes: {
+            rewrite: {
+              promptVersionId: "p1",
+              modelId: "m1",
+              freedom: "balance",
+              temperature: 0.7,
+              topP: 0.9,
+            },
+            intent: {
+              promptVersionId: "p2",
+              modelId: "m1",
+              freedom: "balance",
+              temperature: 0.7,
+              topP: 0.9,
+            },
+            reply: {
+              promptVersionId: "p3",
+              modelId: "m1",
+              freedom: "balance",
+              temperature: 0.7,
+              topP: 0.9,
+            },
+            fallback: {
+              promptVersionId: "p4",
+              modelId: "m1",
+              freedom: "balance",
+              temperature: 0.7,
+              topP: 0.9,
+            },
+          },
+          retrieval: {
+            schemaVersion: 1,
+            topK: 20,
+            topN: 5,
+            hybridEnabled: true,
+            vectorWeight: 0.7,
+            rerankEnabled: false,
+          },
+          fallback: { toHuman: true },
+        },
+      }),
+    ).rejects.toThrow("应用配置已被其他人更新，请刷新后重试");
+  });
+
+  it("发布静态门禁失败时透出具体问题和处理建议", async () => {
+    mockFetch(
+      jsonResponse(
+        {
+          message: "发布静态门禁未通过",
+          issues: [
+            {
+              code: "PROMPT_COMPILE_ERROR",
+              node: "reply",
+              promptVersionId: "pv-reply",
+              action: "OPEN_PROMPT_TRY_RUN",
+              message: "reply 的 Prompt 存在编译错误",
+            },
+          ],
+        },
+        422,
+      ),
+    );
+
+    await expect(startApplicationReleaseCheck("app1", "appv1")).rejects.toThrow(
+      "reply 的 Prompt 存在编译错误，请前往 Prompt 试运行修复",
+    );
+  });
+});
+
 describe("knowledge-bases", () => {
   it("getKnowledgeBases 请求 /api/knowledge-bases", async () => {
     const fetchMock = mockFetch(jsonResponse([validKb]));
@@ -171,7 +250,10 @@ describe("knowledge-bases", () => {
 
   it("updateKnowledgeBase 传 processingProfile*", async () => {
     const fetchMock = mockFetch(jsonResponse(validKb));
-    await updateKnowledgeBase("kb1", { processingProfileId: "faq-v1", processingProfileVersion: 1 });
+    await updateKnowledgeBase("kb1", {
+      processingProfileId: "faq-v1",
+      processingProfileVersion: 1,
+    });
     const [, init] = callArgs(fetchMock);
     expect(JSON.parse(init?.body as string)).toEqual({
       processingProfileId: "faq-v1",

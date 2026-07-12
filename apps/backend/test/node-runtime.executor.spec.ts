@@ -23,7 +23,12 @@ describe("NodeRuntimeService.executeStructured · rewrite", () => {
     const chat = jest.fn(async () => ({ content: '{"rewrittenQuery":"改写后","keywords":["a"]}' }));
     const svc = makeService(chat);
     const res = await svc.executeStructured(
-      "rewrite", 1, "改写：{query}", "m1", { query: "原问题", history: "" }, {},
+      "rewrite",
+      1,
+      "改写：{query}",
+      "m1",
+      { query: "原问题", history: "" },
+      {},
     );
     expect(res.output).toEqual({ rewrittenQuery: "改写后", keywords: ["a"] });
     expect(res.fallbackUsed).toBe(false);
@@ -36,7 +41,14 @@ describe("NodeRuntimeService.executeStructured · rewrite", () => {
       .mockResolvedValueOnce({ content: "不是 JSON" })
       .mockResolvedValueOnce({ content: '{"rewrittenQuery":"改写后","keywords":[]}' });
     const svc = makeService(chat);
-    const res = await svc.executeStructured("rewrite", 1, "{query}", "m1", { query: "q", history: "" }, {});
+    const res = await svc.executeStructured(
+      "rewrite",
+      1,
+      "{query}",
+      "m1",
+      { query: "q", history: "" },
+      {},
+    );
     expect(res.fallbackUsed).toBe(false);
     expect(chat).toHaveBeenCalledTimes(2);
     expect(res.validateSteps.some((s) => s.step === "repair" && s.ok)).toBe(true);
@@ -45,7 +57,14 @@ describe("NodeRuntimeService.executeStructured · rewrite", () => {
   it("两次都非法 → fallback，最多两次调用（原始+1次修复，不递归）", async () => {
     const chat = jest.fn(async () => ({ content: "不是 JSON" }));
     const svc = makeService(chat);
-    const res = await svc.executeStructured("rewrite", 1, "{query}", "m1", { query: "原始问题", history: "" }, {});
+    const res = await svc.executeStructured(
+      "rewrite",
+      1,
+      "{query}",
+      "m1",
+      { query: "原始问题", history: "" },
+      {},
+    );
     expect(res.output).toEqual({ rewrittenQuery: "原始问题", keywords: [] });
     expect(res.fallbackUsed).toBe(true);
     expect(chat).toHaveBeenCalledTimes(2);
@@ -54,7 +73,15 @@ describe("NodeRuntimeService.executeStructured · rewrite", () => {
   it("temperature 透传给 models.chat（Playground Slider 值不能被静默丢弃）", async () => {
     const chat = jest.fn(async () => ({ content: '{"rewrittenQuery":"x","keywords":[]}' }));
     const svc = makeService(chat);
-    await svc.executeStructured("rewrite", 1, "{query}", "m1", { query: "q", history: "" }, {}, { temperature: 1.2 });
+    await svc.executeStructured(
+      "rewrite",
+      1,
+      "{query}",
+      "m1",
+      { query: "q", history: "" },
+      {},
+      { temperature: 1.2 },
+    );
     expect(chat.mock.calls[0][2]).toMatchObject({ temperature: 1.2 });
   });
 
@@ -84,7 +111,14 @@ describe("NodeRuntimeService.executeStructured · rewrite", () => {
   it("inputSchema 校验失败（空 query）→ 直接 fallback，不调用 chat", async () => {
     const chat = jest.fn();
     const svc = makeService(chat);
-    const res = await svc.executeStructured("rewrite", 1, "{query}", "m1", { query: "", history: "" }, {});
+    const res = await svc.executeStructured(
+      "rewrite",
+      1,
+      "{query}",
+      "m1",
+      { query: "", history: "" },
+      {},
+    );
     expect(res.fallbackUsed).toBe(true);
     expect(chat).not.toHaveBeenCalled();
   });
@@ -98,7 +132,12 @@ describe("NodeRuntimeService.executeStructured · reservedDataSchema 校验（re
     // 在 extraValidate 访问 reserved.availableRoutes.includes(...) 抛 TypeError 之前
     // 就被 reservedDataSchema.safeParse 拦下来。
     const res = await svc.executeStructured(
-      "intent", 1, "{query}", "m1", { query: "q", history: "" }, {} as never,
+      "intent",
+      1,
+      "{query}",
+      "m1",
+      { query: "q", history: "" },
+      {} as never,
     );
     expect(res.fallbackUsed).toBe(true);
     expect(res.output).toEqual({ intent: "unknown", routeIds: [], confidence: 0 });
@@ -109,7 +148,12 @@ describe("NodeRuntimeService.executeStructured · reservedDataSchema 校验（re
     const chat = jest.fn(async () => ({ content: '{"rewrittenQuery":"改写后","keywords":[]}' }));
     const svc = makeService(chat);
     const res = await svc.executeStructured(
-      "rewrite", 1, "{query}", "m1", { query: "q", history: "" }, { preview: true } as never,
+      "rewrite",
+      1,
+      "{query}",
+      "m1",
+      { query: "q", history: "" },
+      { preview: true } as never,
     );
     expect(chat).toHaveBeenCalledTimes(1);
     expect(res.fallbackUsed).toBe(false);
@@ -119,11 +163,23 @@ describe("NodeRuntimeService.executeStructured · reservedDataSchema 校验（re
   it("input 校验失败与 reserved 校验失败在 validateSteps 里标记为不同的 step（review round 2）", async () => {
     const chat = jest.fn();
     const svc = makeService(chat);
-    const badInput = await svc.executeStructured("rewrite", 1, "{query}", "m1", { query: "", history: "" }, {});
+    const badInput = await svc.executeStructured(
+      "rewrite",
+      1,
+      "{query}",
+      "m1",
+      { query: "", history: "" },
+      {},
+    );
     expect(badInput.validateSteps.find((s) => !s.ok)?.step).toBe("input");
 
     const badReserved = await svc.executeStructured(
-      "intent", 1, "{query}", "m1", { query: "q", history: "" }, {} as never,
+      "intent",
+      1,
+      "{query}",
+      "m1",
+      { query: "q", history: "" },
+      {} as never,
     );
     expect(badReserved.validateSteps.find((s) => !s.ok)?.step).toBe("reserved");
   });
@@ -133,7 +189,14 @@ describe("NodeRuntimeService.executeStructured · validateSteps 区分失败阶�
   it("模型输出非法 JSON → 首次失败步骤标记为 output_schema", async () => {
     const chat = jest.fn(async () => ({ content: "不是 JSON" }));
     const svc = makeService(chat);
-    const res = await svc.executeStructured("rewrite", 1, "{query}", "m1", { query: "q", history: "" }, {});
+    const res = await svc.executeStructured(
+      "rewrite",
+      1,
+      "{query}",
+      "m1",
+      { query: "q", history: "" },
+      {},
+    );
     expect(res.validateSteps.find((s) => s.ok === false)?.step).toBe("output_schema");
   });
 
@@ -143,7 +206,12 @@ describe("NodeRuntimeService.executeStructured · validateSteps 区分失败阶�
     }));
     const svc = makeService(chat);
     const res = await svc.executeStructured(
-      "intent", 1, "{query}", "m1", { query: "q", history: "" }, { availableRoutes: ["kb_a"] },
+      "intent",
+      1,
+      "{query}",
+      "m1",
+      { query: "q", history: "" },
+      { availableRoutes: ["kb_a"] },
     );
     expect(res.validateSteps.find((s) => s.step === "extra_validate")).toBeDefined();
   });
@@ -156,7 +224,10 @@ describe("NodeRuntimeService.executeStructured · intent extraValidate", () => {
     }));
     const svc = makeService(chat);
     const res = await svc.executeStructured(
-      "intent", 1, "{query}", "m1",
+      "intent",
+      1,
+      "{query}",
+      "m1",
       { query: "q", history: "" },
       { availableRoutes: ["kb_a"] },
     );
@@ -171,7 +242,10 @@ describe("NodeRuntimeService.executeStructured · intent extraValidate", () => {
     }));
     const svc = makeService(chat);
     const res = await svc.executeStructured(
-      "intent", 1, "{query}", "m1",
+      "intent",
+      1,
+      "{query}",
+      "m1",
       { query: "q", history: "" },
       { availableRoutes: ["kb_a"] },
     );
@@ -187,9 +261,15 @@ describe("NodeRuntimeService.streamText · reply/fallback", () => {
       yield { delta: "好" };
       yield { done: true };
     }
-    const svc = makeService(jest.fn(), jest.fn(() => gen()));
+    const svc = makeService(
+      jest.fn(),
+      jest.fn(() => gen()),
+    );
     const res = await svc.streamText(
-      "reply", 1, "回答：{query}", "m1",
+      "reply",
+      1,
+      "回答：{query}",
+      "m1",
       { query: "q", history: "", retrievalContext: "" },
       { citations: [] },
     );
@@ -202,9 +282,15 @@ describe("NodeRuntimeService.streamText · reply/fallback", () => {
       yield { delta: "已经生成的部分答案" };
       yield { error: "连接中断" };
     }
-    const svc = makeService(jest.fn(), jest.fn(() => gen()));
+    const svc = makeService(
+      jest.fn(),
+      jest.fn(() => gen()),
+    );
     const res = await svc.streamText(
-      "reply", 1, "{query}", "m1",
+      "reply",
+      1,
+      "{query}",
+      "m1",
       { query: "q", history: "", retrievalContext: "" },
       { citations: [] },
     );
@@ -216,9 +302,15 @@ describe("NodeRuntimeService.streamText · reply/fallback", () => {
     async function* gen() {
       yield { error: "上游超时" };
     }
-    const svc = makeService(jest.fn(), jest.fn(() => gen()));
+    const svc = makeService(
+      jest.fn(),
+      jest.fn(() => gen()),
+    );
     const res = await svc.streamText(
-      "reply", 1, "{query}", "m1",
+      "reply",
+      1,
+      "{query}",
+      "m1",
       { query: "q", history: "", retrievalContext: "" },
       { citations: [] },
     );
@@ -234,7 +326,10 @@ describe("NodeRuntimeService.streamText · reply/fallback", () => {
     const chatStream = jest.fn(() => gen());
     const svc = makeService(jest.fn(), chatStream);
     await svc.streamText(
-      "reply", 1, "{query}", "m1",
+      "reply",
+      1,
+      "{query}",
+      "m1",
       { query: "q", history: "", retrievalContext: "" },
       { citations: [] },
       { temperature: 0.3 },
@@ -242,23 +337,22 @@ describe("NodeRuntimeService.streamText · reply/fallback", () => {
     expect(chatStream.mock.calls[0][2]).toMatchObject({ temperature: 0.3 });
   });
 
-  it("fallback 节点：永不调用模型，直接返回固定文案", async () => {
+  it("fallback 节点：永不调用模型，Prompt 正文就是最终话术", async () => {
     const chatStream = jest.fn();
     const svc = makeService(jest.fn(), chatStream);
-    const res = await svc.streamText("fallback", 1, "{query}", "m1", { query: "q", reason: "超纲" }, {});
+    const res = await svc.streamText("fallback", 1, "抱歉，暂时无法回答。", "m1", {}, {});
     expect(chatStream).not.toHaveBeenCalled();
-    expect(res.fallbackUsed).toBe(true);
+    expect(res.text).toBe("抱歉，暂时无法回答。");
+    expect(res.fallbackUsed).toBe(false);
     expect(res.text.length).toBeGreaterThan(0);
   });
 
   it("reply：inputSchema 校验失败（缺必填字段）→ 直接 fallback，不调用 chatStream（review P2）", async () => {
     const chatStream = jest.fn();
     const svc = makeService(jest.fn(), chatStream);
-    const res = await svc.streamText(
-      "reply", 1, "{query}", "m1",
-      { query: "" } as never,
-      { citations: [] },
-    );
+    const res = await svc.streamText("reply", 1, "{query}", "m1", { query: "" } as never, {
+      citations: [],
+    });
     expect(chatStream).not.toHaveBeenCalled();
     expect(res.fallbackUsed).toBe(true);
     expect(res.text.length).toBeGreaterThan(0);
@@ -267,11 +361,7 @@ describe("NodeRuntimeService.streamText · reply/fallback", () => {
   it("reply：input 为 null（越过 TS 类型的运行时调用方）→ 优雅降级 fallback，不抛未捕获异常（review P2）", async () => {
     const chatStream = jest.fn();
     const svc = makeService(jest.fn(), chatStream);
-    const res = await svc.streamText(
-      "reply", 1, "{query}", "m1",
-      null as never,
-      { citations: [] },
-    );
+    const res = await svc.streamText("reply", 1, "{query}", "m1", null as never, { citations: [] });
     expect(chatStream).not.toHaveBeenCalled();
     expect(res.fallbackUsed).toBe(true);
   });
@@ -280,7 +370,10 @@ describe("NodeRuntimeService.streamText · reply/fallback", () => {
     const chatStream = jest.fn();
     const svc = makeService(jest.fn(), chatStream);
     const res = await svc.streamText(
-      "reply", 1, "{query}", "m1",
+      "reply",
+      1,
+      "{query}",
+      "m1",
       { query: "q", history: "", retrievalContext: "" },
       { citations: "not-an-array" } as never,
     );
@@ -294,8 +387,12 @@ describe("NodeRuntimeService.compileAndSample", () => {
     const chat = jest
       .fn()
       .mockResolvedValueOnce({ content: '{"intent":"售后","routeIds":["kb_a"],"confidence":0.9}' })
-      .mockResolvedValueOnce({ content: '{"intent":"售后","routeIds":["kb_illegal"],"confidence":0.9}' })
-      .mockResolvedValueOnce({ content: '{"intent":"售后","routeIds":["kb_illegal"],"confidence":0.9}' })
+      .mockResolvedValueOnce({
+        content: '{"intent":"售后","routeIds":["kb_illegal"],"confidence":0.9}',
+      })
+      .mockResolvedValueOnce({
+        content: '{"intent":"售后","routeIds":["kb_illegal"],"confidence":0.9}',
+      })
       .mockResolvedValueOnce({ content: '{"intent":"售前","routeIds":["kb_b"],"confidence":0.8}' });
     const svc = makeService(chat);
     const res = await svc.compileAndSample({
@@ -347,7 +444,10 @@ describe("NodeRuntimeService.compileAndSample", () => {
       modelId: "m1",
       modelParams: { temperature: 0.5, topP: 1 },
       samples: [
-        { input: { query: "q1", history: "", retrievalContext: "" }, runtimeContext: { citations: [] } },
+        {
+          input: { query: "q1", history: "", retrievalContext: "" },
+          runtimeContext: { citations: [] },
+        },
       ],
     });
     expect(res.results).toHaveLength(1);
@@ -405,7 +505,10 @@ describe("NodeRuntimeService.compileAndSample", () => {
       yield { delta: "答案" };
       yield { done: true };
     }
-    const svc = makeService(jest.fn(), jest.fn(() => gen()));
+    const svc = makeService(
+      jest.fn(),
+      jest.fn(() => gen()),
+    );
     const res = await svc.compileAndSample({
       node: "reply",
       contractVersion: 1,
@@ -414,7 +517,10 @@ describe("NodeRuntimeService.compileAndSample", () => {
       modelId: "m1",
       modelParams: { temperature: 0.5, topP: 1 },
       samples: [
-        { input: { query: "q1", history: "", retrievalContext: "" }, runtimeContext: { citations: [] } },
+        {
+          input: { query: "q1", history: "", retrievalContext: "" },
+          runtimeContext: { citations: [] },
+        },
       ],
     });
     expect(res.results[0].traceId).toMatch(/^[0-9a-f]{32}$/);

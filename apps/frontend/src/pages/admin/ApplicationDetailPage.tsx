@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
@@ -101,6 +108,39 @@ function formatDateTime(iso: string): string {
   const hh = String(d.getHours()).padStart(2, "0");
   const mi = String(d.getMinutes()).padStart(2, "0");
   return `${mm}-${dd} ${hh}:${mi}`;
+}
+
+interface ValidationIssueLike {
+  message?: unknown;
+}
+
+/** 把 Zod 结构化校验错误和接口业务错误收敛为适合直接展示的中文文案。 */
+export function applicationErrorMessage(error: unknown, fallback: string): string {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (!raw) return fallback;
+
+  try {
+    const issues = JSON.parse(raw) as unknown;
+    if (Array.isArray(issues)) {
+      const messages = issues
+        .map((issue) => (issue as ValidationIssueLike)?.message)
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+      if (messages.length > 0) return [...new Set(messages)].join("；");
+    }
+  } catch {
+    // 普通业务错误不是 JSON，直接进入下方映射或原样展示。
+  }
+
+  const knownMessages: Record<string, string> = {
+    "rerankModelId is required when rerank is enabled": "启用模型精排后，请选择精排模型",
+    "topN must not exceed topK": "最终保留数量不能大于初始召回数量",
+  };
+  const translated = knownMessages[raw] ?? raw;
+  return translated
+    .replaceAll("rewrite 的 Prompt", "问题改写节点的 Prompt")
+    .replaceAll("intent 的 Prompt", "意图识别节点的 Prompt")
+    .replaceAll("reply 的 Prompt", "回复生成节点的 Prompt")
+    .replaceAll("fallback 的 Prompt", "兜底话术节点的 Prompt");
 }
 
 /** version → 可编辑 config 字段（深拷贝）。 */
@@ -280,7 +320,9 @@ export default function ApplicationDetailPage() {
     patch: Partial<ApplicationConfigFields["nodes"][PromptNode]>,
   ) =>
     setDraft((prev) =>
-      prev ? { ...prev, nodes: { ...prev.nodes, [node]: { ...prev.nodes[node], ...patch } } } : prev,
+      prev
+        ? { ...prev, nodes: { ...prev.nodes, [node]: { ...prev.nodes[node], ...patch } } }
+        : prev,
     );
   const patchRetrieval = (patch: Partial<ApplicationConfigFields["retrieval"]>) =>
     setDraft((prev) => (prev ? { ...prev, retrieval: { ...prev.retrieval, ...patch } } : prev));
@@ -326,7 +368,7 @@ export default function ApplicationDetailPage() {
       message.success(`已保存为 v${created.version}（未上线，不影响正在服务的内容）`);
       await refresh(false, created.id);
     } catch (e) {
-      setSaveErr(e instanceof Error ? e.message : "保存失败");
+      setSaveErr(applicationErrorMessage(e, "保存失败，请稍后重试"));
     } finally {
       setSaving(false);
     }
@@ -360,7 +402,7 @@ export default function ApplicationDetailPage() {
       setTags(await moveApplicationTag(appId, { name, versionId }));
       message.success(`标识「${name}」已指向该版本`);
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "移动失败");
+      message.error(applicationErrorMessage(e, "移动失败，请稍后重试"));
     } finally {
       setTagBusy(false);
     }
@@ -372,7 +414,7 @@ export default function ApplicationDetailPage() {
       setTags((prev) => prev.filter((t) => t.name !== name));
       message.success(`已摘除标识「${name}」`);
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "摘除失败");
+      message.error(applicationErrorMessage(e, "摘除失败，请稍后重试"));
     } finally {
       setTagBusy(false);
     }
@@ -387,7 +429,7 @@ export default function ApplicationDetailPage() {
       setTagNewName("");
       message.success(`已创建标识「${name}」并打上`);
     } catch (e) {
-      setTagErr(e instanceof Error ? e.message : "创建失败");
+      setTagErr(applicationErrorMessage(e, "创建失败，请稍后重试"));
     } finally {
       setTagBusy(false);
     }
@@ -409,7 +451,12 @@ export default function ApplicationDetailPage() {
     } catch (e) {
       // 静态门禁 422 在此抛出（携 message）
       if (gateSession.current !== session) return;
-      setGate({ version: v, phase: "done", check: null, error: e instanceof Error ? e.message : "核对失败" });
+      setGate({
+        version: v,
+        phase: "done",
+        check: null,
+        error: applicationErrorMessage(e, "核对失败，请稍后重试"),
+      });
     }
   };
   const confirmPublish = async () => {
@@ -426,7 +473,7 @@ export default function ApplicationDetailPage() {
       setTagPanelFor(null);
       await refresh(false);
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "上线失败");
+      message.error(applicationErrorMessage(e, "上线失败，请稍后重试"));
     } finally {
       setPublishing(false);
     }
@@ -442,7 +489,7 @@ export default function ApplicationDetailPage() {
       setTagPanelFor(null);
       await refresh(false);
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "下线失败");
+      message.error(applicationErrorMessage(e, "下线失败，请稍后重试"));
     } finally {
       setPublishing(false);
     }
@@ -495,9 +542,7 @@ export default function ApplicationDetailPage() {
           🕑 版本历史 {detail.versions.length}
         </Button>
       </div>
-      <div
-        style={{ fontSize: 12.5, color: "rgba(0,0,0,.42)", marginBottom: 16, lineHeight: 1.6 }}
-      >
+      <div style={{ fontSize: 12.5, color: "rgba(0,0,0,.42)", marginBottom: 16, lineHeight: 1.6 }}>
         正在编辑基于 <b style={{ ...mono, color: "rgba(0,0,0,.6)" }}>v{editingVersion}</b> 的草稿 ·{" "}
         <span style={{ color: dirty ? "#fa8c16" : "#389e0d" }}>
           {dirty ? "有未保存修改" : "与该版本一致"}
@@ -507,7 +552,15 @@ export default function ApplicationDetailPage() {
 
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
         {/* 左栏 */}
-        <div style={{ flex: "1.3 1 460px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div
+          style={{
+            flex: "1.3 1 460px",
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            gap: 14,
+          }}
+        >
           {/* Prompt 配置 */}
           <div style={cardStyle}>
             <div style={cardHeadStyle}>Prompt 配置</div>
@@ -519,7 +572,13 @@ export default function ApplicationDetailPage() {
                   <div key={node} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span
-                        style={{ fontSize: 13, fontWeight: 600, color: "rgba(0,0,0,.8)", width: 76, flex: "none" }}
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: "rgba(0,0,0,.8)",
+                          width: 76,
+                          flex: "none",
+                        }}
                       >
                         {NODE_LABELS[node]}
                       </span>
@@ -566,7 +625,15 @@ export default function ApplicationDetailPage() {
                           options={FREEDOM_OPTIONS}
                         />
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 150 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          flex: 1,
+                          minWidth: 150,
+                        }}
+                      >
                         <span style={{ fontSize: 11.5, color: "rgba(0,0,0,.45)" }}>温度</span>
                         <Slider
                           min={0}
@@ -577,11 +644,21 @@ export default function ApplicationDetailPage() {
                           onChange={(v) => patchNode(node, { temperature: v })}
                           style={{ flex: 1, margin: 0 }}
                         />
-                        <span style={{ ...mono, fontSize: 11.5, color: "rgba(0,0,0,.6)", width: 30 }}>
+                        <span
+                          style={{ ...mono, fontSize: 11.5, color: "rgba(0,0,0,.6)", width: 30 }}
+                        >
                           {n.temperature}
                         </span>
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 150 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          flex: 1,
+                          minWidth: 150,
+                        }}
+                      >
                         <span style={{ fontSize: 11.5, color: "rgba(0,0,0,.45)" }}>Top P</span>
                         <Slider
                           min={0}
@@ -592,7 +669,9 @@ export default function ApplicationDetailPage() {
                           onChange={(v) => patchNode(node, { topP: v })}
                           style={{ flex: 1, margin: 0 }}
                         />
-                        <span style={{ ...mono, fontSize: 11.5, color: "rgba(0,0,0,.6)", width: 30 }}>
+                        <span
+                          style={{ ...mono, fontSize: 11.5, color: "rgba(0,0,0,.6)", width: 30 }}
+                        >
                           {n.topP}
                         </span>
                       </div>
@@ -633,7 +712,9 @@ export default function ApplicationDetailPage() {
                 </div>
               </div>
 
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
+              >
                 <div>
                   <div style={{ fontSize: 12.5, color: "rgba(0,0,0,.7)" }}>
                     同时用关键词 + 语义两种方式召回
@@ -670,22 +751,34 @@ export default function ApplicationDetailPage() {
 
               <div style={{ height: 1, background: "#f0f0f0" }} />
 
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ fontSize: 12.5, color: "rgba(0,0,0,.7)" }}>召回后再用模型精排一次</div>
+              <div
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
+              >
+                <div style={{ fontSize: 12.5, color: "rgba(0,0,0,.7)" }}>
+                  召回后再用模型精排一次
+                </div>
                 <Switch
                   checked={rt.rerankEnabled}
                   onChange={(v) =>
                     patchRetrieval(
                       v
                         ? { rerankEnabled: true, rerankThreshold: rt.rerankThreshold ?? 0.5 }
-                        : { rerankEnabled: false, rerankModelId: undefined, rerankThreshold: undefined },
+                        : {
+                            rerankEnabled: false,
+                            rerankModelId: undefined,
+                            rerankThreshold: undefined,
+                          },
                     )
                   }
                 />
               </div>
               {rt.rerankEnabled && (
                 <>
-                  <FieldRow label={<span style={{ fontSize: 12.5, color: "rgba(0,0,0,.55)" }}>精排模型</span>}>
+                  <FieldRow
+                    label={
+                      <span style={{ fontSize: 12.5, color: "rgba(0,0,0,.55)" }}>精排模型</span>
+                    }
+                  >
                     <Select
                       value={rt.rerankModelId}
                       onChange={(v) => patchRetrieval({ rerankModelId: v })}
@@ -717,7 +810,9 @@ export default function ApplicationDetailPage() {
 
               <div style={{ height: 1, background: "#f0f0f0" }} />
 
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
+              >
                 <div>
                   <div style={{ fontSize: 12.5, color: "rgba(0,0,0,.7)" }}>查不到答案时转人工</div>
                   <div style={{ fontSize: 11, color: "rgba(0,0,0,.4)", marginTop: 1 }}>
@@ -739,7 +834,13 @@ export default function ApplicationDetailPage() {
             <div style={cardHeadStyle}>知识库</div>
             <div style={{ ...cardBodyStyle, display: "flex", alignItems: "flex-start", gap: 10 }}>
               <span
-                style={{ fontSize: 12.5, color: "rgba(0,0,0,.55)", width: 76, flex: "none", paddingTop: 4 }}
+                style={{
+                  fontSize: 12.5,
+                  color: "rgba(0,0,0,.55)",
+                  width: 76,
+                  flex: "none",
+                  paddingTop: 4,
+                }}
               >
                 范围
               </span>
@@ -748,7 +849,12 @@ export default function ApplicationDetailPage() {
                   {draft.kbIds.map((id) => {
                     const k = kbs.find((x) => x.id === id);
                     return (
-                      <Tag key={id} closable onClose={() => removeKb(id)} style={{ marginInlineEnd: 0 }}>
+                      <Tag
+                        key={id}
+                        closable
+                        onClose={() => removeKb(id)}
+                        style={{ marginInlineEnd: 0 }}
+                      >
                         {k?.name ?? id}
                       </Tag>
                     );
@@ -801,13 +907,24 @@ export default function ApplicationDetailPage() {
         </div>
 
         {/* 右栏 */}
-        <div style={{ width: 280, flex: "none", display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ ...cardStyle, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div
+          style={{ width: 280, flex: "none", display: "flex", flexDirection: "column", gap: 14 }}
+        >
+          <div
+            style={{
+              ...cardStyle,
+              padding: "16px 18px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
             <div style={{ fontSize: 13, fontWeight: 600, color: "rgba(0,0,0,.8)" }}>上线</div>
             <div style={{ fontSize: 12, color: "rgba(0,0,0,.5)", lineHeight: 1.7 }}>
               {detail.productionVersion != null ? (
                 <>
-                  当前对外服务的是 <b style={{ ...mono, color: "rgba(0,0,0,.7)" }}>v{detail.productionVersion}</b>
+                  当前对外服务的是{" "}
+                  <b style={{ ...mono, color: "rgba(0,0,0,.7)" }}>v{detail.productionVersion}</b>
                   。上线这个版本后，用户马上会用到新的配置。
                 </>
               ) : (
@@ -843,15 +960,33 @@ export default function ApplicationDetailPage() {
             </Tooltip>
           </div>
 
-          <div style={{ ...cardStyle, padding: "14px 16px", display: "flex", gap: 9, alignItems: "flex-start" }}>
-            <span style={{ flex: "none", fontSize: 12, color: "rgba(0,0,0,.35)", marginTop: 1 }}>ⓘ</span>
+          <div
+            style={{
+              ...cardStyle,
+              padding: "14px 16px",
+              display: "flex",
+              gap: 9,
+              alignItems: "flex-start",
+            }}
+          >
+            <span style={{ flex: "none", fontSize: 12, color: "rgba(0,0,0,.35)", marginTop: 1 }}>
+              ⓘ
+            </span>
             <div style={{ fontSize: 11.5, color: "rgba(0,0,0,.5)", lineHeight: 1.7 }}>
               上线前会自动核对一遍：确认四个节点和知识库都配好了、能正常工作，有问题会直接告诉你，不会把有问题的版本放出去。
             </div>
           </div>
 
           {/* 对话测试骨架 */}
-          <div style={{ ...cardStyle, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+          <div
+            style={{
+              ...cardStyle,
+              padding: "14px 16px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
             <div style={{ fontSize: 13, fontWeight: 600, color: "rgba(0,0,0,.8)" }}>对话测试</div>
             <Button block loading={chatBusy} onClick={() => void runChatTest(basedOnVersionId)}>
               运行对话测试
@@ -866,7 +1001,8 @@ export default function ApplicationDetailPage() {
       {/* 版本历史抽屉 */}
       <Drawer title="版本历史" open={historyOpen} onClose={() => setHistoryOpen(false)} size={440}>
         <div style={{ fontSize: 11.5, color: "rgba(0,0,0,.4)", marginBottom: 12, lineHeight: 1.6 }}>
-          点「载入编辑」把这个版本的内容载入草稿；绿色 = 当前对外服务的版本。保存只会追加新版本，不改历史。
+          点「载入编辑」把这个版本的内容载入草稿；绿色 =
+          当前对外服务的版本。保存只会追加新版本，不改历史。
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {detail.versions.map((v) => {
@@ -882,7 +1018,15 @@ export default function ApplicationDetailPage() {
                   padding: "11px 13px",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, flexWrap: "wrap" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 5,
+                    flexWrap: "wrap",
+                  }}
+                >
                   <span style={{ ...mono, fontSize: 13.5, fontWeight: 700 }}>v{v.version}</span>
                   {serving && <Tag color="green">服务中</Tag>}
                   {tags
@@ -899,7 +1043,14 @@ export default function ApplicationDetailPage() {
                   </span>
                 </div>
                 {v.note && (
-                  <div style={{ fontSize: 12.5, color: "rgba(0,0,0,.6)", lineHeight: 1.5, marginBottom: 6 }}>
+                  <div
+                    style={{
+                      fontSize: 12.5,
+                      color: "rgba(0,0,0,.6)",
+                      lineHeight: 1.5,
+                      marginBottom: 6,
+                    }}
+                  >
                     {v.note}
                   </div>
                 )}
@@ -944,11 +1095,7 @@ export default function ApplicationDetailPage() {
         onCancel={() => setTagPanelFor(null)}
         footer={null}
         width={460}
-        title={
-          tagPanelFor
-            ? `管理标识 · ${detail.name} v${tagPanelFor.version}`
-            : "管理标识"
-        }
+        title={tagPanelFor ? `管理标识 · ${detail.name} v${tagPanelFor.version}` : "管理标识"}
       >
         {tagPanelFor &&
           (() => {
@@ -975,7 +1122,12 @@ export default function ApplicationDetailPage() {
                   </span>
                   <div style={{ flex: 1 }} />
                   {isProd ? (
-                    <Button danger size="small" loading={publishing} onClick={() => void unpublish()}>
+                    <Button
+                      danger
+                      size="small"
+                      loading={publishing}
+                      onClick={() => void unpublish()}
+                    >
                       下线
                     </Button>
                   ) : (
@@ -1041,7 +1193,15 @@ export default function ApplicationDetailPage() {
                   );
                 })}
 
-                <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div
+                  style={{
+                    borderTop: "1px solid #f0f0f0",
+                    paddingTop: 12,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
                   <div style={{ fontSize: 12, color: "rgba(0,0,0,.55)" }}>创建自定义标识</div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <Input
@@ -1099,20 +1259,30 @@ export default function ApplicationDetailPage() {
       >
         {gate && (
           <div style={{ minHeight: 90 }}>
-            <div style={{ fontSize: 12.5, color: "rgba(0,0,0,.5)", lineHeight: 1.7, marginBottom: 14 }}>
-              确认「{detail.name}」v{gate.version.version} 的四个节点和知识库都配好了、能正常工作；有问题就不会放出去。
+            <div
+              style={{ fontSize: 12.5, color: "rgba(0,0,0,.5)", lineHeight: 1.7, marginBottom: 14 }}
+            >
+              确认「{detail.name}」v{gate.version.version}{" "}
+              的四个节点和知识库都配好了、能正常工作；有问题就不会放出去。
             </div>
             {gate.phase === "checking" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "center", padding: "20px 0", color: "rgba(0,0,0,.55)" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  justifyContent: "center",
+                  padding: "20px 0",
+                  color: "rgba(0,0,0,.55)",
+                }}
+              >
                 <Spin size="small" /> 正在核对四个节点…
               </div>
             )}
             {gate.phase === "done" && gate.error && (
               <Alert type="error" showIcon title="静态核对未通过" description={gate.error} />
             )}
-            {gate.phase === "done" && gate.check && (
-              <ReleaseCheckResult check={gate.check} />
-            )}
+            {gate.phase === "done" && gate.check && <ReleaseCheckResult check={gate.check} />}
           </div>
         )}
       </Modal>
@@ -1128,7 +1298,11 @@ function ReleaseCheckResult({ check }: { check: ReleaseCheck }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ fontSize: 12.5, color: passed ? "#389e0d" : "#cf1322", fontWeight: 600 }}>
-        {passed ? "核对通过，可以上线" : check.status === "failed" ? "还有问题没解决，暂不能上线" : `检查状态：${check.status}`}
+        {passed
+          ? "核对通过，可以上线"
+          : check.status === "failed"
+            ? "还有问题没解决，暂不能上线"
+            : `检查状态：${check.status}`}
       </div>
       {PROMPT_NODES.map((node) => {
         const s = summary?.[node];
@@ -1171,7 +1345,10 @@ function ReleaseCheckResult({ check }: { check: ReleaseCheck }) {
               )}
             </div>
             {nodeIssues.map((i, idx) => (
-              <div key={idx} style={{ fontSize: 11.5, color: "#cf1322", marginTop: 4, paddingLeft: 26 }}>
+              <div
+                key={idx}
+                style={{ fontSize: 11.5, color: "#cf1322", marginTop: 4, paddingLeft: 26 }}
+              >
                 · {i.message}
                 {i.action === "OPEN_PROMPT_TRY_RUN" && i.promptVersionId && (
                   <span style={{ color: "#1677ff" }}>（可去 Prompt 试运行修复）</span>

@@ -33,7 +33,13 @@ describe("computeFingerprint", () => {
     expect(computeFingerprint(reordered)).toBe(computeFingerprint(base));
   });
   it("a changed KB active version changes the hash", () => {
-    const changed = { ...base, kbs: [{ kbId: "kb-a", activeVersion: 9 }, { kbId: "kb-b", activeVersion: 2 }] };
+    const changed = {
+      ...base,
+      kbs: [
+        { kbId: "kb-a", activeVersion: 9 },
+        { kbId: "kb-b", activeVersion: 2 },
+      ],
+    };
     expect(computeFingerprint(changed)).not.toBe(computeFingerprint(base));
   });
   it("a changed provider revision changes the hash", () => {
@@ -61,8 +67,10 @@ describe("buildSamples", () => {
     });
     expect(buildSamples("reply", [])[0].runtimeContext).toEqual({ citations: [] });
   });
-  it("reply input carries retrievalContext; fallback input carries reason", () => {
-    expect(buildSamples("reply", [])[0].input).toMatchObject({ retrievalContext: expect.any(String) });
-    expect(buildSamples("fallback", [])[0].input).toMatchObject({ reason: expect.any(String) });
+  it("reply input carries retrievalContext; fallback is fieldless plain text", () => {
+    expect(buildSamples("reply", [])[0].input).toMatchObject({
+      retrievalContext: expect.any(String),
+    });
+    expect(buildSamples("fallback", [])[0].input).toEqual({});
   });
 });

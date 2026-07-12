@@ -26,13 +26,17 @@ export const ApplicationRetrievalParamsSchema = z
   })
   .superRefine((value, ctx) => {
     if (value.topN > value.topK) {
-      ctx.addIssue({ code: "custom", path: ["topN"], message: "topN must not exceed topK" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["topN"],
+        message: "最终保留数量不能大于初始召回数量",
+      });
     }
     if (value.rerankEnabled && !value.rerankModelId) {
       ctx.addIssue({
         code: "custom",
         path: ["rerankModelId"],
-        message: "rerankModelId is required when rerank is enabled",
+        message: "启用模型精排后，请选择精排模型",
       });
     }
   });

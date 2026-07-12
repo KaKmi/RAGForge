@@ -31,8 +31,12 @@ export interface NodeFieldContract {
 export const NODE_CONTRACTS: Record<PromptNode, NodeFieldContract> = {
   rewrite: { templateFields: ["query", "history"], reservedFields: [] },
   intent: { templateFields: ["query", "history"], reservedFields: ["availableRoutes"] },
-  reply: { templateFields: ["query", "history", "retrievalContext"], reservedFields: ["citations"] },
-  fallback: { templateFields: ["query", "reason"], reservedFields: [] },
+  reply: {
+    templateFields: ["query", "history", "retrievalContext"],
+    reservedFields: ["citations"],
+  },
+  // fallback 是版本化纯文本：正文即最终返回内容，不接受运行时模板字段。
+  fallback: { templateFields: [], reservedFields: [] },
 };
 
 export const CompileStatusSchema = z.enum(["ok", "has_errors", "has_warnings"]);
@@ -213,11 +217,7 @@ function levenshtein(a: string, b: string): number {
   for (let i = 1; i <= m; i++) {
     const cur = [i, ...new Array<number>(n).fill(0)];
     for (let j = 1; j <= n; j++) {
-      cur[j] = Math.min(
-        prev[j] + 1,
-        cur[j - 1] + 1,
-        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
-      );
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
     }
     prev = cur;
   }
