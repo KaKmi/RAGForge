@@ -31,6 +31,11 @@ export const RAG = {
   REPAIR_RETRY_COUNT: "rag.repair.retry_count",
   FALLBACK_USED: "rag.fallback.used",
   STRUCTURED_OUTPUT_MODE: "rag.structured_output.mode",
+  // M8 T3：质量信号（供 M9 Badcase 池按布尔筛；四布尔独立可筛，避开 Map(String,String) 数组字符串化）
+  QUALITY_LOW_RECALL: "rag.quality.low_recall",
+  QUALITY_NO_CITATIONS: "rag.quality.no_citations",
+  QUALITY_REFUSAL: "rag.quality.refusal",
+  QUALITY_TIMEOUT: "rag.quality.timeout",
 } as const;
 
 export const OTEL_OPERATIONS = {
@@ -58,3 +63,12 @@ export const CODECRUSH_SPAN_KIND = {
   EVENT: "event",
   CUSTOM: "custom",
 } as const;
+
+// M8 T3：通用 trace IO（004 Invariant 6「SDK 工作负载通用」——输入/输出是通用 trace 概念、
+// 非 RAG 专属，与既有 codecrush.span.kind 同命名空间；未来 agent/tool 调用同样用它）。
+export const CODECRUSH_IO = {
+  INPUT: "codecrush.io.input",
+  OUTPUT: "codecrush.io.output",
+} as const;
+// 落 ClickHouse 前脱敏后打标（RedactingSpanExporter 置位）
+export const CODECRUSH_REDACTED = "codecrush.redacted";
