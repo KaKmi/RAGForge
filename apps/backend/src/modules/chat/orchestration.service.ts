@@ -88,12 +88,16 @@ export class OrchestrationService {
     let replyIt: AsyncGenerator<{ delta: string }, unknown> | undefined;
     // M8 T3：所有结束路径统一写 output + 四质量布尔（每路径恰一次；prep 未就绪的 infra 早失败不写）。
     let signalsWritten = false;
+    // reply 分支模型输出未过契约校验 → streamTextChunks 返回 outcome=fallback（把兜底话术当整段）；
+    // 这也是「生成拒答」，但不在 prep.isFallback（那是检索层兜底判定）里——单独记，供 refusal 信号。
+    let replyDegraded = false;
     const finalizeChainSignals = (timedOut: boolean): void => {
       if (signalsWritten || !prep) return;
       signalsWritten = true;
       chain.setAttribute(CODECRUSH_IO.OUTPUT, replyText);
       const sig = deriveQualitySignals({
-        isFallback: prep.isFallback,
+        // refusal = 检索层兜底 或 reply 节点契约降级（两类"生成拒答"都算，对齐 docstring）
+        isFallback: prep.isFallback || replyDegraded,
         reasons: prep.reasons,
         citationCount: prep.citations.length,
         timedOut,
@@ -150,6 +154,7 @@ export class OrchestrationService {
           }
           if (summary.outcome === "fallback") {
             // reply 节点降级：把 reply 契约 fallback 文本当整段（同 T1 streamNode 语义），branch 仍算 reply
+            replyDegraded = true; // 记为「生成拒答」→ refusal 质量信号（review Finding 1）
             replyText = summary.text;
             if (summary.text) yield { type: "token", delta: summary.text };
           }

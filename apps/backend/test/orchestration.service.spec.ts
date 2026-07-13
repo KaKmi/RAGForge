@@ -430,4 +430,18 @@ describe("OrchestrationService · chain span 质量信号 + IO (M8 T3)", () => {
     expect(a["rag.quality.no_citations"]).toBe(true);
     expect(a["rag.quality.timeout"]).toBe(false);
   });
+
+  it("reply 节点契约降级（检索过阈但 reply 出兜底）→ refusal=true（low_recall/no_citations 仍 false）", async () => {
+    const d = makeDeps();
+    // 检索正常有命中（走 reply 分支），但 reply 模型输出未过契约 → streamTextChunks 返回 fallback
+    d.nodeRuntime.streamTextChunks = jest.fn(async function* () {
+      return { outcome: "fallback", text: "很抱歉，暂时无法回答。" };
+    });
+    await collect(makeSvc(d).run("app1", "怎么退货", undefined, "u1"));
+    const a = chainAttrs();
+    expect(a["rag.quality.refusal"]).toBe(true); // 生成拒答（review Finding 1）
+    expect(a["rag.quality.low_recall"]).toBe(false); // 检索本身过阈
+    expect(a["rag.quality.no_citations"]).toBe(false); // 有引用
+    expect(a["codecrush.io.output"]).toBe("很抱歉，暂时无法回答。");
+  });
 });
