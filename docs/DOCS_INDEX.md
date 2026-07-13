@@ -5,7 +5,7 @@
 | Category | # | Status | Name | Description | Last Modified | Path |
 |----------|---|--------|------|-------------|---------------|------|
 | design | 001 | draft | CodeCrushBot RAG 平台架构 | 通用 RAG 平台的系统架构：NestJS 薄编排 + Postgres/pgvector + OTel→Collector→ClickHouse 可观测，本地优先、阿里云就绪。 | 2026-07-11 | [001](docs/design/001-rag-platform-architecture.md) |
-| design | 002 | draft | RAG 平台实现路线图（模块级） | 按依赖排序的模块级实现路线图：地基→可观测→用户/骨架→可配置域→问答/追踪，逐波用 /ship:design 拆细 spec。 | 2026-07-11 | [002](docs/design/002-implementation-roadmap.md) |
+| design | 002 | draft | RAG 平台实现路线图（模块级） | 按依赖排序的模块级实现路线图：地基→可观测→用户/骨架→可配置域→问答/追踪，逐波用 /ship:design 拆细 spec。 | 2026-07-13 | [002](docs/design/002-implementation-roadmap.md) |
 | design | 003 | draft | 代码组织与工程架构（M0） | monorepo 布局、NestJS 模块边界与依赖规则、端口/适配器、Zod 契约、Drizzle/ClickHouse 分工、docker-compose 与约定。 | 2026-07-11 | [003](docs/design/003-code-organization.md) |
 | design | 004 | draft | 轻量级 Trace 可观测（自研 Langfuse 式） | 自研轻量 Langfuse：Session>Trace>Observation 模型、OTLP 结束即写、大 payload offload、首期以 VIEW 读模型跑通功能，后续按需演进物化层；本版聚焦 RAG 节点。 | 2026-07-05 | [004](docs/design/004-trace-observability.md) |
 | design | 005 | draft | 用户/认证（M1） | M1 身份边界：users 叶子 + auth 横切、argon2id、JWT HS256、全局 default-deny guard；四条数据流图与失败模式。 | 2026-07-05 | [005](docs/design/005-user-auth.md) |
