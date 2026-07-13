@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Conversation, Message, MessageRole } from "@codecrush/contracts";
 import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
@@ -85,11 +85,15 @@ export class ConversationsRepository {
     });
   }
 
-  async list(agentId?: string): Promise<Conversation[]> {
-    const query = this.db.select().from(conversations);
-    const rows = agentId
-      ? await query.where(eq(conversations.agentId, agentId)).orderBy(desc(conversations.updatedAt))
-      : await query.orderBy(desc(conversations.updatedAt));
+  async list(agentId?: string, userId?: string): Promise<Conversation[]> {
+    const conds = [];
+    if (agentId) conds.push(eq(conversations.agentId, agentId));
+    if (userId) conds.push(eq(conversations.userId, userId));
+    const rows = await this.db
+      .select()
+      .from(conversations)
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(conversations.updatedAt));
     return rows.map(toConversation);
   }
 
