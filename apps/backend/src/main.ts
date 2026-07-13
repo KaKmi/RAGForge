@@ -1,4 +1,6 @@
-// M0.5 将改为经 `node -r ./dist/tracing.js dist/main.js` 预加载 OTel（此处预留）
+// OTel 引导必须在任何被 instrument 的模块（http/express/pg）import 前生效——故置为首条 import。
+// prod（node dist/main.js）与 dev（nest start）统一经此引导，dev 也能落 trace（不再靠外部 -r 预加载）。
+import "./tracing";
 import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";

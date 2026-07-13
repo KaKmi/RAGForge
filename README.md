@@ -62,7 +62,7 @@ docker compose -f infra/docker-compose.yml --profile infra up -d --wait
 cp apps/backend/.env.example apps/backend/.env
 pnpm db:migrate && pnpm db:seed
 pnpm build
-pnpm --filter @codecrush/backend start    # node -r ./dist/tracing.js dist/main.js（OTel 预加载）
+pnpm --filter @codecrush/backend start    # node dist/main.js（OTel 由 main.ts 首条 import 引导；dev 亦然）
 pnpm observability:verify                 # 另开终端
 ```
 

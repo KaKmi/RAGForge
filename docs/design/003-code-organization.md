@@ -65,7 +65,7 @@ rag-service/
 ├─ apps/
 │  ├─ backend/                      # NestJS 模块化单体
 │  │  ├─ src/
-│  │  │  ├─ main.ts                 # bootstrap(tracing 已由 -r 预加载)
+│  │  │  ├─ main.ts                 # bootstrap(首条 import "./tracing" 引导 OTel, prod/dev 统一)
 │  │  │  ├─ tracing.ts              # OTel NodeSDK, 必须最先执行
 │  │  │  ├─ app.module.ts
 │  │  │  ├─ platform/               # 横切基础设施
@@ -256,7 +256,7 @@ Trace 相关能力分两层，不合成一个大包：
 
 ## Red-team
 
-**最先崩**:OTel SDK **初始化时序**——若 tracing 不在 Nest bootstrap 前 `-r` 预加载,自动埋点(HTTP/Nest/pg)静默失效,M0.5 手动 span 看着通、自动 instrumentation 却死了。→ 预加载 + 集成测试**断言一次 HTTP 请求产出自动埋点的 span**。**循环 import**:域内 `schema.ts` 必须纯表定义(已列不变量 5)。
+**最先崩**:OTel SDK **初始化时序**——若 tracing 不在被 instrument 的模块(HTTP/Nest/pg)import 前生效,自动埋点静默失效,M0.5 手动 span 看着通、自动 instrumentation 却死了。→ `main.ts` **首条** `import "./tracing"`(编译后 require 顺序先于 app.module),prod(`node dist/main.js`)与 dev(`nest start`)统一经此引导;集成测试**断言一次 HTTP 请求产出自动埋点的 span**。**循环 import**:域内 `schema.ts` 必须纯表定义(已列不变量 5)。
 
 ## 通用 Telemetry SDK 与包边界（2026-07-05 修订）
 
