@@ -1,4 +1,4 @@
-import { openChatStream } from "./sse";
+import { ChatStreamError, openChatStream } from "./sse";
 
 const TOKEN_KEY = "token";
 
@@ -120,6 +120,30 @@ it("throws on non-ok response with status", async () => {
       }
     })(),
   ).rejects.toThrow(/401/);
+});
+
+it("throws ChatStreamError carrying HTTP status (404 未上线)", async () => {
+  localStorage.setItem(TOKEN_KEY, "tok");
+  global.fetch = vi.fn().mockResolvedValue({
+    ok: false,
+    status: 404,
+    statusText: "Not Found",
+  }) as unknown as typeof fetch;
+
+  await expect(
+    (async () => {
+      for await (const _ of openChatStream({ agentId: "a1", query: "q" })) {
+        // drain
+      }
+    })(),
+  ).rejects.toMatchObject({ status: 404 });
+
+  // 类型可辨识：instanceof ChatStreamError
+  const err = await openChatStream({ agentId: "a1", query: "q" })
+    .next()
+    .then(() => null)
+    .catch((e) => e);
+  expect(err).toBeInstanceOf(ChatStreamError);
 });
 
 it("skips comment lines, event fields, and retry directives", async () => {
