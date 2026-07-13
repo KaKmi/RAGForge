@@ -172,8 +172,12 @@ export class OrchestrationService {
       }
       // 手动 next() 循环不自动传播 return()：显式级联 return reply 迭代器，触发 streamTextChunks
       // 的 finally（reader.cancel + reply span.end），避免 abort 时上游 fetch 悬挂/span 泄漏（Finding 1）。
-      // 对已读完/已抛错/已 return 的迭代器是安全 no-op。
-      if (replyIt) await replyIt.return?.(undefined);
+      // 对已读完/已抛错/已 return 的迭代器是安全 no-op。try 包裹保证 return 万一 reject 也不跳过 chain.end。
+      try {
+        if (replyIt) await replyIt.return?.(undefined);
+      } catch (e) {
+        this.logger.warn(`reply 迭代器 return 级联异常（忽略）：${(e as Error).message}`);
+      }
       chain.end(); // 手动生命周期：所有路径必 end
     }
   }
