@@ -72,3 +72,7 @@ export const CODECRUSH_IO = {
 } as const;
 // 落 ClickHouse 前脱敏后打标（RedactingSpanExporter 置位）
 export const CODECRUSH_REDACTED = "codecrush.redacted";
+
+// M9 W1：会话分组键与终端用户键（OTel 通用语义约定；前后端 + ClickHouse VIEW 共用，避免键名漂移）
+export const SESSION_ID = "session.id";
+export const ENDUSER_ID = "enduser.id";

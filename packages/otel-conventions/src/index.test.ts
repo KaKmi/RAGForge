@@ -3,9 +3,11 @@ import {
   CODECRUSH_IO,
   CODECRUSH_REDACTED,
   CODECRUSH_SPAN_KIND,
+  ENDUSER_ID,
   GEN_AI,
   OTEL_OPERATIONS,
   RAG,
+  SESSION_ID,
 } from "./index";
 
 describe("otel conventions", () => {
@@ -37,5 +39,10 @@ describe("otel conventions", () => {
     expect(CODECRUSH_IO.INPUT).toBe("codecrush.io.input");
     expect(CODECRUSH_IO.OUTPUT).toBe("codecrush.io.output");
     expect(CODECRUSH_REDACTED).toBe("codecrush.redacted");
+  });
+
+  it("M9 W1：身份约定键用 OTel 标准键名", () => {
+    expect(SESSION_ID).toBe("session.id");
+    expect(ENDUSER_ID).toBe("enduser.id");
   });
 });
