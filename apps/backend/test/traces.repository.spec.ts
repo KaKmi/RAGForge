@@ -1,4 +1,7 @@
-import { ClickHouseTracesRepository } from "../src/modules/traces/clickhouse-traces.repository";
+import {
+  ClickHouseTracesRepository,
+  EMPTY_TRACE_META,
+} from "../src/modules/traces/clickhouse-traces.repository";
 import type { CodeCrushClickHouseClient } from "../src/platform/clickhouse/clickhouse.types";
 
 type QueryCall = { query: string };
@@ -25,11 +28,73 @@ describe("ClickHouseTracesRepository", () => {
   it("returns empty spans without DDL when exporter table does not exist (cold DB)", async () => {
     const { client, raw } = buildClient({ tableExists: false });
     const repo = new ClickHouseTracesRepository(client);
+    // M9 W2：冷库返回零值 meta（仍满足契约）
     await expect(repo.findByTraceId("391dae938234560b16bb63f51501cb6f")).resolves.toEqual({
       traceId: "391dae938234560b16bb63f51501cb6f",
+      meta: EMPTY_TRACE_META,
       spans: [],
     });
     expect(raw.command).not.toHaveBeenCalled();
+  });
+
+  it("assembles detail meta from spans (M9 W2)", async () => {
+    const { client } = buildClient({
+      tableExists: true,
+      rows: [
+        {
+          trace_id: "a".repeat(32),
+          span_id: "root".padEnd(16, "0"),
+          parent_span_id: null,
+          name: "rag.pipeline",
+          kind: "chain",
+          start_time: "2026-07-13 09:11:00.000",
+          duration_ms: 2410,
+          status_code: "Ok",
+          status_message: "",
+          attributes: {
+            "codecrush.io.input": "怎么退款",
+            "gen_ai.agent.name": "退款助手",
+            "rag.prompt.version_id": "cv1",
+            "rag.fallback.used": "false",
+            "rag.quality.low_recall": "false",
+            "rag.quality.no_citations": "false",
+            "rag.quality.refusal": "false",
+            "rag.quality.timeout": "false",
+          },
+        },
+        {
+          trace_id: "a".repeat(32),
+          span_id: "reply".padEnd(16, "0"),
+          parent_span_id: "root".padEnd(16, "0"),
+          name: "node.reply",
+          kind: "llm",
+          start_time: "2026-07-13 09:11:01.000",
+          duration_ms: 1700,
+          status_code: "Ok",
+          status_message: "",
+          attributes: {
+            "rag.node.name": "reply",
+            "gen_ai.request.model": "deepseek-v3",
+            "gen_ai.usage.input_tokens": "1200",
+            "gen_ai.usage.output_tokens": "200",
+          },
+        },
+      ],
+    });
+    const repo = new ClickHouseTracesRepository(client);
+    const res = await repo.findByTraceId("a".repeat(32));
+    expect(res.meta).toMatchObject({
+      userInput: "怎么退款",
+      agentName: "退款助手",
+      genModel: "deepseek-v3",
+      genModelVersion: null,
+      promptVersionId: "cv1",
+      inputTokens: 1200,
+      outputTokens: 200,
+      cost: null,
+      status: "success",
+    });
+    expect(res.spans[0].statusMessage).toBeNull();
   });
 
   it("creates the view once and caches readiness across reads", async () => {
@@ -109,7 +174,10 @@ describe("ClickHouseTracesRepository · M9 W1 list/session", () => {
     const { client, raw } = buildRoutingClient({ tableExists: true });
     const repo = new ClickHouseTracesRepository(client);
     await repo.listSessions();
-    const createViewCmds = raw.command.mock.calls.filter(([c]: [QueryCall]) => /CREATE VIEW/i.test(c.query));
+    // M9 W2：spans VIEW 改 CREATE OR REPLACE，故匹配两种形式
+    const createViewCmds = raw.command.mock.calls.filter(([c]: [QueryCall]) =>
+      /CREATE (OR REPLACE )?VIEW/i.test(c.query),
+    );
     expect(createViewCmds).toHaveLength(3);
   });
 

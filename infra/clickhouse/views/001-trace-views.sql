@@ -1,4 +1,5 @@
-CREATE VIEW IF NOT EXISTS codecrush_trace_spans AS
+-- M9 W2：改 CREATE OR REPLACE 使新增列（status_message）对既有 VIEW 生效；补投影 StatusMessage 供错误框 errMsg。
+CREATE OR REPLACE VIEW codecrush_trace_spans AS
 SELECT
   TraceId AS trace_id,
   SpanId AS span_id,
@@ -8,6 +9,7 @@ SELECT
   Timestamp AS start_time,
   toFloat64(Duration) / 1000000 AS duration_ms,
   toString(StatusCode) AS status_code,
+  StatusMessage AS status_message,
   SpanAttributes AS attributes
 FROM otel_traces;
 

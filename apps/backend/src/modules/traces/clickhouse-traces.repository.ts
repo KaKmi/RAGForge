@@ -7,6 +7,7 @@ import type {
   SessionListResponse,
   SessionListRow,
   SessionStatus,
+  TraceDetailMeta,
   TraceDetailResponse,
   TraceListQuery,
   TraceListResponse,
@@ -75,8 +76,70 @@ type ClickHouseTraceRow = {
   start_time: string;
   duration_ms: number;
   status_code: string;
+  status_message: string;
   attributes: Record<string, unknown>;
 };
+
+/** 冷库/无 root 兜底的零值 meta（仍满足契约）。 */
+export const EMPTY_TRACE_META: TraceDetailMeta = {
+  userInput: "",
+  agentName: null,
+  genModel: null,
+  genModelVersion: null,
+  promptVersionId: null,
+  durationMs: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cost: null,
+  status: "success",
+  qualitySignals: [],
+};
+
+/** 从 span 属性（Map(String,String) 字符串值）拼质量信号数组——同 W1 mapTraceRow 语义。 */
+function signalsFromAttrs(a: Record<string, unknown>): QualitySignal[] {
+  const out: QualitySignal[] = [];
+  if (chTruthy(a["rag.quality.low_recall"])) out.push("low_recall");
+  if (chTruthy(a["rag.quality.no_citations"])) out.push("no_citations");
+  if (chTruthy(a["rag.quality.refusal"])) out.push("refusal");
+  if (chTruthy(a["rag.quality.timeout"])) out.push("timeout");
+  return out;
+}
+
+/** 从已取 spans 纯 TS 聚合详情 meta（不发第二条 CH 查询；root = 无父的 chain span）。 */
+function buildTraceMeta(spans: TraceSpan[]): TraceDetailMeta {
+  const root =
+    spans.find((s) => s.parentSpanId === null && s.kind === "chain") ??
+    spans.find((s) => s.parentSpanId === null);
+  if (!root) return EMPTY_TRACE_META;
+  const a = root.attributes as Record<string, unknown>;
+  const isError = root.statusCode === "Error" || root.statusCode === "STATUS_CODE_ERROR";
+  const status: TraceStatus = isError
+    ? "failed"
+    : chTruthy(a["rag.fallback.used"])
+      ? "fallback"
+      : "success";
+  const reply = spans.find(
+    (s) => s.kind === "llm" && (s.attributes as Record<string, unknown>)["rag.node.name"] === "reply",
+  );
+  const lastLlm = [...spans].reverse().find((s) => s.kind === "llm");
+  const genModel =
+    ((reply ?? lastLlm)?.attributes as Record<string, unknown> | undefined)?.["gen_ai.request.model"];
+  const sumTok = (key: string): number =>
+    spans.reduce((sum, s) => sum + Number((s.attributes as Record<string, unknown>)[key] ?? 0), 0);
+  return {
+    userInput: String(a["codecrush.io.input"] ?? ""),
+    agentName: (a["gen_ai.agent.name"] as string) || null,
+    genModel: (genModel as string) || null,
+    genModelVersion: null,
+    promptVersionId: (a["rag.prompt.version_id"] as string) || null,
+    durationMs: root.durationMs,
+    inputTokens: sumTok("gen_ai.usage.input_tokens"),
+    outputTokens: sumTok("gen_ai.usage.output_tokens"),
+    cost: null,
+    status,
+    qualitySignals: signalsFromAttrs(a),
+  };
+}
 
 // codecrush_traces / codecrush_sessions VIEW 行（值经 JSONEachRow：数字可能是 string，Bool 可能 0/1 或 true/false）
 type TracesViewRow = {
@@ -199,7 +262,7 @@ export class ClickHouseTracesRepository {
 
   async findByTraceId(traceId: string): Promise<TraceDetailResponse> {
     if (!(await this.ensureTraceViews())) {
-      return { traceId, spans: [] };
+      return { traceId, meta: EMPTY_TRACE_META, spans: [] };
     }
     const result = await this.clickhouse.query({
       query: `
@@ -212,22 +275,21 @@ export class ClickHouseTracesRepository {
       format: "JSONEachRow",
     });
     const rows = await result.json<ClickHouseTraceRow>();
-    return {
-      traceId,
-      spans: rows.map(
-        (row): TraceSpan => ({
-          traceId: row.trace_id,
-          spanId: row.span_id,
-          parentSpanId: row.parent_span_id || null,
-          name: row.name,
-          kind: row.kind,
-          startTime: toIsoUtc(row.start_time),
-          durationMs: Number(row.duration_ms),
-          statusCode: row.status_code,
-          attributes: row.attributes ?? {},
-        }),
-      ),
-    };
+    const spans = rows.map(
+      (row): TraceSpan => ({
+        traceId: row.trace_id,
+        spanId: row.span_id,
+        parentSpanId: row.parent_span_id || null,
+        name: row.name,
+        kind: row.kind,
+        startTime: toIsoUtc(row.start_time),
+        durationMs: Number(row.duration_ms),
+        statusCode: row.status_code,
+        statusMessage: row.status_message || null,
+        attributes: row.attributes ?? {},
+      }),
+    );
+    return { traceId, meta: buildTraceMeta(spans), spans };
   }
 
   private async runView<T>(query: string, params: Record<string, unknown>): Promise<T[]> {
