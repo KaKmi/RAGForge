@@ -430,6 +430,31 @@ describe("OrchestrationService · chain span 质量信号 + IO (M8 T3)", () => {
     expect(a["rag.quality.timeout"]).toBe(false);
   });
 
+  // M9 W1：根 span 身份富化 —— session/agent/user + 兜底状态标记
+  it("M9 W1：正常问答 → agent.id/agent.name/enduser.id/session.id(首轮 persist convId)/fallback.used=false", async () => {
+    const d = makeDeps();
+    await collect(makeSvc(d).run("app1", "怎么退货", undefined, "u1"));
+    const a = chainAttrs();
+    expect(a["gen_ai.agent.id"]).toBe("app1");
+    expect(a["gen_ai.agent.name"]).toBe("售后助手"); // cfg().name
+    expect(a["enduser.id"]).toBe("u1");
+    expect(a["session.id"]).toBe("conv1"); // 首轮新会话取 createConversation 返回，非 prep.validConvId(undefined)
+    expect(a["rag.fallback.used"]).toBe(false);
+  });
+
+  it("M9 W1：续聊复用既有 session.id（convId=conv9）", async () => {
+    const d = makeDeps();
+    d.conversations.listMessages.mockResolvedValue([]);
+    await collect(makeSvc(d).run("app1", "接着问", "conv9", "u1"));
+    expect(chainAttrs()["session.id"]).toBe("conv9");
+  });
+
+  it("M9 W1：无 userId → 不设 enduser.id", async () => {
+    const d = makeDeps();
+    await collect(makeSvc(d).run("app1", "怎么退货", undefined, undefined));
+    expect(chainAttrs()["enduser.id"]).toBeUndefined();
+  });
+
   it("低分兜底 → refusal + low_recall + no_citations 为 true", async () => {
     const d = makeDeps();
     // 两 KB 命中最高分均 < FALLBACK_THRESHOLD(0.2) → decideFallback 判 low_similarity → 兜底

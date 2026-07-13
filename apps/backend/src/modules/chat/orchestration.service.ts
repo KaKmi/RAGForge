@@ -9,7 +9,14 @@ import {
   type ResolvedNodeConfig,
 } from "@codecrush/contracts";
 import { startManualSpan, runInContext, SpanStatusCode } from "@codecrush/otel";
-import { CODECRUSH_IO, CODECRUSH_SPAN_KIND, RAG } from "@codecrush/otel-conventions";
+import {
+  CODECRUSH_IO,
+  CODECRUSH_SPAN_KIND,
+  ENDUSER_ID,
+  GEN_AI,
+  RAG,
+  SESSION_ID,
+} from "@codecrush/otel-conventions";
 import { ApplicationsService } from "../applications/applications.service";
 import { NodeRuntimeService } from "../node-runtime/executor/node-runtime.service";
 import { RetrievalService } from "../retrieval/retrieval.service";
@@ -79,6 +86,12 @@ export class OrchestrationService {
     const traceId = chain.spanContext().traceId;
     // M8 T3：输入即得，起始即记（通用 IO 属性；导出前经 RedactingSpanExporter 脱敏）
     chain.setAttribute(CODECRUSH_IO.INPUT, query);
+    // M9 W1：身份富化——agentId/userId 入口即得，cfg.name 已解析；session.id 须待 persist 出真 convId（见 finally）。
+    chain.setAttribute(GEN_AI.AGENT_ID, agentId);
+    chain.setAttribute(GEN_AI.AGENT_NAME, cfg.name);
+    if (userId) chain.setAttribute(ENDUSER_ID, userId);
+    // 首轮新会话的真实 convId 在 persist() 内 createConversation 才产生 → 捕获返回、finally end 前写 session.id。
+    let sessionId = "";
     let replyText = "";
     let completed = false;
     let prep: PrepResult | undefined;
@@ -106,6 +119,8 @@ export class OrchestrationService {
       chain.setAttribute(RAG.QUALITY_NO_CITATIONS, sig.noCitations);
       chain.setAttribute(RAG.QUALITY_REFUSAL, sig.refusal);
       chain.setAttribute(RAG.QUALITY_TIMEOUT, sig.timeout);
+      // M9 W1：兜底状态判据——检索层未命中走兜底话术（区别于 refusal=isFallback||replyDegraded，PDF「兜底=知识未命中」）
+      chain.setAttribute(RAG.FALLBACK_USED, prep.isFallback);
     };
 
     try {
@@ -148,7 +163,7 @@ export class OrchestrationService {
             chain.setStatus({ code: SpanStatusCode.ERROR, message: "first token timeout" });
             finalizeChainSignals(true); // 唯一 timedOut=true 路径（其余路径由 finally 写 false）
             yield { type: "error", message: "生成超时，请稍后重试" };
-            await this.persist(this.buildResult(traceId, "", prep), persistCtx);
+            sessionId = (await this.persist(this.buildResult(traceId, "", prep), persistCtx)) ?? persistCtx?.convId ?? sessionId;
             completed = true;
             return; // 熔断：不发 done
           }
@@ -171,7 +186,7 @@ export class OrchestrationService {
           chain.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
           chain.recordException(err as Error);
           yield { type: "error", message: "生成失败，请稍后重试" };
-          await this.persist(this.buildResult(traceId, replyText, prep), persistCtx);
+          sessionId = (await this.persist(this.buildResult(traceId, replyText, prep), persistCtx)) ?? persistCtx?.convId ?? sessionId;
           completed = true;
           return;
         }
@@ -180,6 +195,7 @@ export class OrchestrationService {
       // —— 派生指标 + 落库 + done（先 persist+completed，再 yield，杜绝 yield 处 abort 致重复落库）——
       const result = this.buildResult(traceId, replyText, prep);
       const persistedConvId = await this.persist(result, persistCtx);
+      sessionId = persistedConvId ?? persistCtx?.convId ?? sessionId; // M9 W1：首轮取 persist 生成的真 convId
       const doneConvId = persistedConvId ?? prep.validConvId; // 可能 undefined（落库彻底失败）
       completed = true;
       chain.setStatus({ code: SpanStatusCode.OK });
@@ -202,7 +218,7 @@ export class OrchestrationService {
       if (!completed && persistCtx && prep) {
         // 客户端 abort（gen.return()）：落已产出部分 assistant 内容（复用现有字段，无 aborted 列）。
         try {
-          await this.persist(this.buildResult(traceId, replyText, prep), persistCtx);
+          sessionId = (await this.persist(this.buildResult(traceId, replyText, prep), persistCtx)) ?? persistCtx?.convId ?? sessionId;
         } catch (e) {
           this.logger.error(`abort 落部分失败（边界7 兜住）：${(e as Error).message}`);
         }
@@ -219,6 +235,8 @@ export class OrchestrationService {
       // timeout 路径已在熔断处 finalize(true)，signalsWritten 去重保证不被覆盖。prep 未就绪的 infra
       // 早失败（prepare 抛）prep=undefined，finalize guard 跳过（早失败无质量信号可言）。
       finalizeChainSignals(false);
+      // M9 W1：session.id 待此写——首轮新会话的真 convId 已由各 persist 路径捕获进 sessionId。
+      if (sessionId) chain.setAttribute(SESSION_ID, sessionId);
       chain.end(); // 手动生命周期：所有路径必 end
     }
   }
