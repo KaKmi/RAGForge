@@ -13,6 +13,7 @@ export const ChatCitationSchema = z.object({
   kb: z.string(),
   section: z.string(),
   score: z.number().min(0).max(1),
+  text: z.string().optional(), // M8 T4：命中段正文，供 C 端右栏引用原文渲染
 });
 export type ChatCitation = z.infer<typeof ChatCitationSchema>;
 
@@ -39,6 +40,7 @@ export type FallbackReason = z.infer<typeof FallbackReasonSchema>;
 export const ChatDoneEventSchema = z.object({
   type: z.literal("done"),
   traceId: z.string().min(1),
+  convId: z.string().min(1).optional(), // M8 T4：新建会话回传落库 convId；落库失败时省略（前端容错）
   confidence: z.number().min(0).max(1).optional(),
   coverage: z.enum(["full", "partial"]),
   isFallback: z.boolean(),
