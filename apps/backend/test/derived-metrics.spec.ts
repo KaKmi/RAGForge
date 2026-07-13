@@ -2,6 +2,7 @@ import {
   decideFallback,
   deriveConfidence,
   deriveCoverage,
+  deriveQualitySignals,
   resolveRetrievalKbIds,
 } from "../src/modules/chat/derived-metrics";
 import { FALLBACK_THRESHOLD } from "../src/modules/chat/orchestration.constants";
@@ -90,5 +91,41 @@ describe("resolveRetrievalKbIds", () => {
     expect(resolveRetrievalKbIds("SUPPORT", cfg, allBoundOther)).toEqual(
       cfg.kbIds,
     );
+  });
+});
+
+describe("deriveQualitySignals (M8 T3)", () => {
+  it("低分兜底（low_similarity）→ lowRecall+refusal+noCitations，timeout=false", () => {
+    expect(
+      deriveQualitySignals({
+        isFallback: true,
+        reasons: ["low_similarity", "handled_by_fallback"],
+        citationCount: 0,
+        timedOut: false,
+      }),
+    ).toEqual({ lowRecall: true, noCitations: true, refusal: true, timeout: false });
+  });
+
+  it("空召回（empty_retrieval）→ lowRecall=true", () => {
+    expect(
+      deriveQualitySignals({
+        isFallback: true,
+        reasons: ["empty_retrieval", "handled_by_fallback"],
+        citationCount: 0,
+        timedOut: false,
+      }).lowRecall,
+    ).toBe(true);
+  });
+
+  it("正常有引用 → 四者全 false", () => {
+    expect(
+      deriveQualitySignals({ isFallback: false, reasons: [], citationCount: 3, timedOut: false }),
+    ).toEqual({ lowRecall: false, noCitations: false, refusal: false, timeout: false });
+  });
+
+  it("timeout → timeout=true（独立于其它信号）", () => {
+    expect(
+      deriveQualitySignals({ isFallback: false, reasons: [], citationCount: 2, timedOut: true }),
+    ).toEqual({ lowRecall: false, noCitations: false, refusal: false, timeout: true });
   });
 });

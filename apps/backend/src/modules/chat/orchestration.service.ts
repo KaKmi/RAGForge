@@ -9,7 +9,7 @@ import {
   type ResolvedNodeConfig,
 } from "@codecrush/contracts";
 import { startManualSpan, runInContext, SpanStatusCode } from "@codecrush/otel";
-import { CODECRUSH_SPAN_KIND, RAG } from "@codecrush/otel-conventions";
+import { CODECRUSH_IO, CODECRUSH_SPAN_KIND, RAG } from "@codecrush/otel-conventions";
 import { ApplicationsService } from "../applications/applications.service";
 import { NodeRuntimeService } from "../node-runtime/executor/node-runtime.service";
 import { RetrievalService } from "../retrieval/retrieval.service";
@@ -20,6 +20,7 @@ import {
   decideFallback,
   deriveConfidence,
   deriveCoverage,
+  deriveQualitySignals,
   resolveRetrievalKbIds,
 } from "./derived-metrics";
 import { FALLBACK_THRESHOLD } from "./orchestration.constants";
@@ -76,6 +77,8 @@ export class OrchestrationService {
       },
     });
     const traceId = chain.spanContext().traceId;
+    // M8 T3：输入即得，起始即记（通用 IO 属性；导出前经 RedactingSpanExporter 脱敏）
+    chain.setAttribute(CODECRUSH_IO.INPUT, query);
     let replyText = "";
     let completed = false;
     let prep: PrepResult | undefined;
@@ -83,6 +86,23 @@ export class OrchestrationService {
     // reply 迭代器提到外层：手动 next() 循环不像 for-await 那样自动传播 return()，故 finally
     // 显式 return() 级联取消上游（streamTextChunks → chatStream → reader.cancel）+ 结束 reply span。
     let replyIt: AsyncGenerator<{ delta: string }, unknown> | undefined;
+    // M8 T3：所有结束路径统一写 output + 四质量布尔（每路径恰一次；prep 未就绪的 infra 早失败不写）。
+    let signalsWritten = false;
+    const finalizeChainSignals = (timedOut: boolean): void => {
+      if (signalsWritten || !prep) return;
+      signalsWritten = true;
+      chain.setAttribute(CODECRUSH_IO.OUTPUT, replyText);
+      const sig = deriveQualitySignals({
+        isFallback: prep.isFallback,
+        reasons: prep.reasons,
+        citationCount: prep.citations.length,
+        timedOut,
+      });
+      chain.setAttribute(RAG.QUALITY_LOW_RECALL, sig.lowRecall);
+      chain.setAttribute(RAG.QUALITY_NO_CITATIONS, sig.noCitations);
+      chain.setAttribute(RAG.QUALITY_REFUSAL, sig.refusal);
+      chain.setAttribute(RAG.QUALITY_TIMEOUT, sig.timeout);
+    };
 
     try {
       // —— 预备阶段：整段在 chainCtx 内（内部无 yield），子 span（rewrite/intent/检索）自动挂 chain ——
@@ -122,6 +142,7 @@ export class OrchestrationService {
             // 降级路径也要在后端日志留痕（不只 span），否则无 ClickHouse 时排查无迹（QA 观察 2）。
             this.logger.warn(`reply 首 token 超时熔断（agentId=${agentId}, traceId=${traceId}）`);
             chain.setStatus({ code: SpanStatusCode.ERROR, message: "first token timeout" });
+            finalizeChainSignals(true); // 唯一 timedOut=true 路径（其余路径由 finally 写 false）
             yield { type: "error", message: "生成超时，请稍后重试" };
             await this.persist(this.buildResult(traceId, "", prep), persistCtx);
             completed = true;
@@ -186,6 +207,10 @@ export class OrchestrationService {
       } catch (e) {
         this.logger.warn(`reply 迭代器 return 级联异常（忽略）：${(e as Error).message}`);
       }
+      // M8 T3：非 timeout 路径（正常/reply-fail/abort）在此统一写 output + 四质量布尔 timedOut=false；
+      // timeout 路径已在熔断处 finalize(true)，signalsWritten 去重保证不被覆盖。prep 未就绪的 infra
+      // 早失败（prepare 抛）prep=undefined，finalize guard 跳过（早失败无质量信号可言）。
+      finalizeChainSignals(false);
       chain.end(); // 手动生命周期：所有路径必 end
     }
   }

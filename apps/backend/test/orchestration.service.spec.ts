@@ -1,4 +1,10 @@
 import { NotFoundException } from "@nestjs/common";
+import { trace } from "@opentelemetry/api";
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import type {
   ChatStreamEvent,
   ResolvedApplicationConfig,
@@ -377,5 +383,51 @@ describe("OrchestrationService.run（AsyncGenerator 逐 token）", () => {
       (c) => (c[0] as { role: string }).role === "assistant",
     );
     expect(assistantCall).toBeDefined();
+  });
+});
+
+// M8 T3：chain span 写侧富化——codecrush.io.input/output + 四质量布尔（所有结束路径写一次）。
+// chain span 经 startManualSpan 直接 setAttribute（无子 span 挂父需求），故只需 InMemorySpanExporter。
+describe("OrchestrationService · chain span 质量信号 + IO (M8 T3)", () => {
+  let exporter: InMemorySpanExporter;
+  beforeEach(() => {
+    exporter = new InMemorySpanExporter();
+    trace.disable();
+    trace.setGlobalTracerProvider(
+      new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] }),
+    );
+  });
+  afterEach(() => trace.disable());
+
+  const chainAttrs = () => {
+    const span = exporter.getFinishedSpans().find((s) => s.name === "rag.pipeline");
+    if (!span) throw new Error("rag.pipeline span not found");
+    return span.attributes as Record<string, unknown>;
+  };
+
+  it("正常问答 → io.input/output 记录，四质量布尔全 false", async () => {
+    const d = makeDeps();
+    await collect(makeSvc(d).run("app1", "怎么退货", undefined, "u1"));
+    const a = chainAttrs();
+    expect(a["codecrush.io.input"]).toBe("怎么退货");
+    expect(a["codecrush.io.output"]).toBe("答案[1][2]");
+    expect(a["rag.quality.low_recall"]).toBe(false);
+    expect(a["rag.quality.no_citations"]).toBe(false);
+    expect(a["rag.quality.refusal"]).toBe(false);
+    expect(a["rag.quality.timeout"]).toBe(false);
+  });
+
+  it("低分兜底 → refusal + low_recall + no_citations 为 true", async () => {
+    const d = makeDeps();
+    // 两 KB 命中最高分均 < FALLBACK_THRESHOLD(0.2) → decideFallback 判 low_similarity → 兜底
+    d.retrieval.test = jest.fn(async (req: { kbId: string }) => ({
+      hits: [hit(`${req.kbId}_low`, 0.1)],
+    }));
+    await collect(makeSvc(d).run("app1", "无关问题", undefined, "u1"));
+    const a = chainAttrs();
+    expect(a["rag.quality.refusal"]).toBe(true);
+    expect(a["rag.quality.low_recall"]).toBe(true);
+    expect(a["rag.quality.no_citations"]).toBe(true);
+    expect(a["rag.quality.timeout"]).toBe(false);
   });
 });

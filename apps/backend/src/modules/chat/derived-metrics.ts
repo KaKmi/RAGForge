@@ -62,6 +62,28 @@ export function decideFallback(a: {
 }
 
 /**
+ * M8 T3 §5 质量信号自动判定（写为 chain span 四布尔，供 M9 汇入 Badcase 池）：
+ * - lowRecall：最高分低于阈值（low_similarity）或空召回（empty_retrieval）
+ * - noCitations：无引用（citations 空）
+ * - refusal：生成拒答（走了兜底话术，含 CHAT 短路 / 低分兜底 / reply 节点降级）
+ * - timeout：reply 首 token 超时熔断
+ * 四布尔各自独立可筛（非互斥）；no_citations 与 refusal 在兜底路径常同真，设计使然。
+ */
+export function deriveQualitySignals(a: {
+  isFallback: boolean;
+  reasons: FallbackReason[];
+  citationCount: number;
+  timedOut: boolean;
+}): { lowRecall: boolean; noCitations: boolean; refusal: boolean; timeout: boolean } {
+  return {
+    lowRecall: a.reasons.includes("low_similarity") || a.reasons.includes("empty_retrieval"),
+    noCitations: a.citationCount === 0,
+    refusal: a.isFallback,
+    timeout: a.timedOut,
+  };
+}
+
+/**
  * 014 §D4 意图路由映射：
  * - CHAT → []（不检索，编排层短路到兜底）
  * - UNKNOWN → cfg.kbIds（全量召回）
