@@ -127,6 +127,8 @@ import {
   type TraceListQuery,
   SessionListResponseSchema,
   type SessionListResponse,
+  TraceDetailResponseSchema,
+  type TraceDetailResponse,
 } from "@codecrush/contracts";
 
 const TOKEN_KEY = "token";
@@ -292,6 +294,10 @@ export const getTraces = (q: TraceListQuery): Promise<TraceListResponse> => {
 
 export const getTraceSessions = (): Promise<SessionListResponse> =>
   getJson("/api/traces/sessions", SessionListResponseSchema);
+
+// M9 W2：Trace 详情（meta + 规范化 spans）
+export const getTrace = (traceId: string): Promise<TraceDetailResponse> =>
+  getJson(`/api/traces/${encodeURIComponent(traceId)}`, TraceDetailResponseSchema);
 export const getApplicationDetail = (id: string): Promise<ApplicationDetail> =>
   getJson(`/api/applications/${encodeURIComponent(id)}`, ApplicationDetailSchema);
 export const createApplication = (req: CreateApplicationRequest): Promise<ApplicationDetail> =>
