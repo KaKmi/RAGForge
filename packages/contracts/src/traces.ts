@@ -19,15 +19,10 @@ export const TraceSpanSchema = z.object({
   startTime: z.string().datetime(),
   durationMs: z.number().nonnegative(),
   statusCode: z.string(),
+  statusMessage: z.string().nullable(), // M9 W2：OTel StatusMessage（错误框 errMsg 源）
   attributes: z.record(z.string(), z.unknown()),
 });
 export type TraceSpan = z.infer<typeof TraceSpanSchema>;
-
-export const TraceDetailResponseSchema = z.object({
-  traceId: traceIdSchema,
-  spans: z.array(TraceSpanSchema),
-});
-export type TraceDetailResponse = z.infer<typeof TraceDetailResponseSchema>;
 
 // —— M9 W1：Trace 列表 / 概览 / Session 列表读模型 DTO ——
 // 响应 status 用英文 token（契约稳定）；query 的 status/quick 用中文 enum（前端筛选值零映射）。
@@ -40,6 +35,29 @@ export type SessionStatus = z.infer<typeof SessionStatusSchema>;
 
 export const QualitySignalSchema = z.enum(["low_recall", "no_citations", "refusal", "timeout"]);
 export type QualitySignal = z.infer<typeof QualitySignalSchema>;
+
+// —— M9 W2：Trace 详情 meta（头部六项聚合）——
+export const TraceDetailMetaSchema = z.object({
+  userInput: z.string(),
+  agentName: z.string().nullable(),
+  genModel: z.string().nullable(),
+  genModelVersion: z.string().nullable(), // W2 恒 null（无数据源）
+  promptVersionId: z.string().nullable(), // 实为 configVersionId
+  durationMs: z.number().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cost: z.number().nullable(), // W2 恒 null（真算 W3）
+  status: TraceStatusSchema,
+  qualitySignals: z.array(QualitySignalSchema),
+});
+export type TraceDetailMeta = z.infer<typeof TraceDetailMetaSchema>;
+
+export const TraceDetailResponseSchema = z.object({
+  traceId: traceIdSchema,
+  meta: TraceDetailMetaSchema,
+  spans: z.array(TraceSpanSchema),
+});
+export type TraceDetailResponse = z.infer<typeof TraceDetailResponseSchema>;
 
 export const TraceListRowSchema = z.object({
   traceId: traceIdSchema,

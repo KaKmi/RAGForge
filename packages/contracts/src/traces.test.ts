@@ -3,10 +3,12 @@ import {
   HelloTraceResponseSchema,
   QualitySignalSchema,
   SessionListRowSchema,
+  TraceDetailMetaSchema,
   TraceDetailResponseSchema,
   TraceListQuerySchema,
   TraceListResponseSchema,
   TraceListRowSchema,
+  TraceSpanSchema,
   TraceStatusSchema,
 } from "./traces";
 
@@ -28,6 +30,20 @@ describe("trace contracts", () => {
   it("accepts a normalized trace detail response", () => {
     const result = TraceDetailResponseSchema.safeParse({
       traceId: "391dae938234560b16bb63f51501cb6f",
+      // M9 W2：meta 变必填、span 加 statusMessage
+      meta: {
+        userInput: "",
+        agentName: null,
+        genModel: null,
+        genModelVersion: null,
+        promptVersionId: null,
+        durationMs: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: null,
+        status: "success",
+        qualitySignals: [],
+      },
       spans: [
         {
           traceId: "391dae938234560b16bb63f51501cb6f",
@@ -38,6 +54,7 @@ describe("trace contracts", () => {
           startTime: "2026-07-05T00:00:00.000Z",
           durationMs: 12.5,
           statusCode: "Ok",
+          statusMessage: null,
           attributes: { "codecrush.test": "hello" },
         },
       ],
@@ -53,6 +70,51 @@ describe("trace contracts", () => {
         name: "manual.hello",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("M9 W2 详情契约", () => {
+  const span = {
+    traceId: "a".repeat(32),
+    spanId: "b".repeat(16),
+    parentSpanId: null,
+    name: "rag.pipeline",
+    kind: "chain",
+    startTime: "2026-07-13T09:11:00.000Z",
+    durationMs: 2410,
+    statusCode: "Error",
+    statusMessage: "first token timeout",
+    attributes: { "codecrush.io.input": "怎么退款" },
+  };
+  const meta = {
+    userInput: "怎么退款",
+    agentName: "退款助手",
+    genModel: "deepseek-v3",
+    genModelVersion: null,
+    promptVersionId: "cv1",
+    durationMs: 2410,
+    inputTokens: 1200,
+    outputTokens: 200,
+    cost: null,
+    status: "success",
+    qualitySignals: [],
+  };
+
+  it("TraceSpan 带 statusMessage(可空)", () => {
+    expect(TraceSpanSchema.safeParse(span).success).toBe(true);
+    expect(TraceSpanSchema.safeParse({ ...span, statusMessage: null }).success).toBe(true);
+  });
+
+  it("TraceDetailMeta 合法(含 null 字段)", () => {
+    expect(TraceDetailMetaSchema.safeParse(meta).success).toBe(true);
+  });
+
+  it("TraceDetailResponse 带 meta + spans", () => {
+    expect(TraceDetailResponseSchema.safeParse({ traceId: "a".repeat(32), meta, spans: [span] }).success).toBe(true);
+  });
+
+  it("缺 meta 拒绝", () => {
+    expect(TraceDetailResponseSchema.safeParse({ traceId: "a".repeat(32), spans: [span] }).success).toBe(false);
   });
 });
 
