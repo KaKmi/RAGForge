@@ -25,11 +25,22 @@ export function spanKindColor(kind: string): { label: string; c: string } {
 
 const isErrorCode = (code: string): boolean => code === "Error" || code === "STATUS_CODE_ERROR";
 
+// HTTP 自动埋点使 rag.pipeline chain span 挂在 POST server span 下（ParentSpanId≠''），
+// 故 RAG 根按 kind='chain' 认，而非 parentSpanId===null（那是 HTTP 传输根）。
 export function rootSpanOf(spans: TraceSpan[]): TraceSpan | undefined {
-  return (
-    spans.find((s) => s.parentSpanId === null && s.kind === "chain") ??
-    spans.find((s) => s.parentSpanId === null)
-  );
+  return spans.find((s) => s.kind === "chain") ?? spans.find((s) => s.parentSpanId === null);
+}
+
+/** span 是否在 chain 根的子树内（含 chain 自身）——用于把 HTTP/PG 传输 span 排除出调用链。 */
+function inSubtree(span: TraceSpan, rootId: string, byId: Map<string, TraceSpan>): boolean {
+  let cur: TraceSpan | undefined = span;
+  const seen = new Set<string>();
+  while (cur && !seen.has(cur.spanId)) {
+    if (cur.spanId === rootId) return true;
+    seen.add(cur.spanId);
+    cur = cur.parentSpanId ? byId.get(cur.parentSpanId) : undefined;
+  }
+  return false;
 }
 
 export function autoSelectSpan(spans: TraceSpan[], sel: string | null): string {
@@ -40,12 +51,12 @@ export function autoSelectSpan(spans: TraceSpan[], sel: string | null): string {
   return (err ?? rootSpanOf(spans) ?? spans[0])?.spanId ?? "";
 }
 
-/** span 相对 root 的层级深度（root=0，root 的直接子节点=1，孙节点=2…）。 */
-function depthFromRoot(span: TraceSpan, byId: Map<string, TraceSpan>): number {
+/** span 相对 chain 根的层级深度（root 直接子=1，孙节点=2…）。到 rootId 即停，不算 HTTP 祖先。 */
+function depthFromRoot(span: TraceSpan, rootId: string, byId: Map<string, TraceSpan>): number {
   let d = 0;
   let cur: TraceSpan | undefined = span;
   const seen = new Set<string>();
-  while (cur?.parentSpanId && !seen.has(cur.spanId)) {
+  while (cur && cur.spanId !== rootId && cur.parentSpanId && !seen.has(cur.spanId)) {
     seen.add(cur.spanId);
     d += 1;
     cur = byId.get(cur.parentSpanId);
@@ -70,25 +81,25 @@ export interface WfRow {
 
 const KNOWN_CODES = ["Ok", "Error", "Unset", "STATUS_CODE_OK", "STATUS_CODE_ERROR", "STATUS_CODE_UNSET"];
 
-/** 轴宽 = 相对 root 起点的最大结束偏移（含 root，≥1）。瀑布行与轴刻度共用，避免两处各算一遍。 */
+/** 轴宽 = chain 根 span 的耗时（RAG 一轮总时长，天然覆盖所有子节点），≥1。瀑布行与轴刻度共用。 */
 export function traceSpanTotal(spans: TraceSpan[]): number {
   const root = rootSpanOf(spans);
-  const t0 = root ? Date.parse(root.startTime) : 0;
-  return Math.max(...spans.map((s) => Date.parse(s.startTime) - t0 + s.durationMs), 1);
+  if (root) return Math.max(root.durationMs, 1);
+  return Math.max(...spans.map((s) => s.durationMs), 1);
 }
 
 export function buildWaterfall(spans: TraceSpan[], selSid: string): WfRow[] {
   const root = rootSpanOf(spans);
   const t0 = root ? Date.parse(root.startTime) : 0;
-  // total 用全部 span（含 root）算轴宽；行只渲染非 root 节点（root 单独作 TRACE 头行，避免重复）。
   const total = traceSpanTotal(spans);
   const byId = new Map(spans.map((s) => [s.spanId, s]));
+  // 行只渲染 chain 子树内的节点（排除 root 自身 = TRACE 头行，且排除 HTTP/PG 传输 span）。
   return spans
-    .filter((s) => s.spanId !== root?.spanId)
+    .filter((s) => root != null && s.spanId !== root.spanId && inSubtree(s, root.spanId, byId))
     .map((s) => {
       const offsetMs = Date.parse(s.startTime) - t0;
-      // 显示缩进 = 相对 root 深度 − 1（root 直接子 = 0，孙节点 = 20，对齐原型层级）。
-      const indent = Math.max(0, depthFromRoot(s, byId) - 1) * 20;
+      // 显示缩进 = 相对 chain 根深度 − 1（root 直接子 = 0，孙节点 = 20，对齐原型层级）。
+      const indent = Math.max(0, depthFromRoot(s, root!.spanId, byId) - 1) * 20;
       return {
         sid: s.spanId,
         name: s.name,

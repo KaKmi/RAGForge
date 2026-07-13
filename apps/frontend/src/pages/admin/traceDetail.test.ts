@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TraceSpan } from "@codecrush/contracts";
-import { autoSelectSpan, buildOtlpJson, buildSpanDetail, buildWaterfall, spanKindColor } from "./traceDetail";
+import { autoSelectSpan, buildOtlpJson, buildSpanDetail, buildWaterfall, rootSpanOf, spanKindColor } from "./traceDetail";
 
 const mk = (o: Partial<TraceSpan>): TraceSpan => ({
   traceId: "a".repeat(32),
@@ -30,6 +30,22 @@ describe("traceDetail", () => {
   it("autoSelectSpan 保留有效选中", () => {
     const spans = [mk({ spanId: "r" }), mk({ spanId: "e", statusCode: "Error" })];
     expect(autoSelectSpan(spans, "r")).toBe("r");
+  });
+
+  it("HTTP 埋点场景：chain span 挂在 POST server span 下——按 kind 认根、排除 HTTP span", () => {
+    const spans = [
+      mk({ spanId: "http", kind: "Server", parentSpanId: null, name: "POST /api/chat", startTime: "2026-07-13T09:11:00.000Z", durationMs: 2600 }),
+      mk({ spanId: "chain", kind: "chain", parentSpanId: "http", name: "rag.pipeline", startTime: "2026-07-13T09:11:00.050Z", durationMs: 2400 }),
+      mk({ spanId: "reply", kind: "llm", parentSpanId: "chain", name: "node.reply", startTime: "2026-07-13T09:11:00.700Z", durationMs: 1700 }),
+    ];
+    // 根按 kind='chain' 认（非 parentSpanId===null 的 HTTP span）
+    expect(rootSpanOf(spans)!.spanId).toBe("chain");
+    const wf = buildWaterfall(spans, "reply");
+    // HTTP span 与 chain 自身都不进瀑布行；只剩 chain 子树内的 reply
+    expect(wf.map((w) => w.sid)).toEqual(["reply"]);
+    // offset 相对 chain 起点（09:11:00.700 − 09:11:00.050 = 650ms），reply 为 chain 直接子 → indent 0
+    expect(wf[0].offsetMs).toBe(650);
+    expect(wf[0].indent).toBe(0);
   });
 
   it("buildWaterfall 排除 root、offset 相对 root、缩进按深度", () => {

@@ -97,6 +97,49 @@ describe("ClickHouseTracesRepository", () => {
     expect(res.spans[0].statusMessage).toBeNull();
   });
 
+  it("finds chain root via kind even when it has an HTTP-server parent (M9 fix)", async () => {
+    const { client } = buildClient({
+      tableExists: true,
+      rows: [
+        // HTTP 自动埋点根 span（真实场景：POST server span 是 trace 根）
+        {
+          trace_id: "a".repeat(32),
+          span_id: "http".padEnd(16, "0"),
+          parent_span_id: null,
+          name: "POST /api/chat",
+          kind: "Server",
+          start_time: "2026-07-13 09:11:00.000",
+          duration_ms: 2600,
+          status_code: "Ok",
+          status_message: "",
+          attributes: {},
+        },
+        {
+          trace_id: "a".repeat(32),
+          span_id: "chain".padEnd(16, "0"),
+          parent_span_id: "http".padEnd(16, "0"), // chain 挂在 HTTP span 下
+          name: "rag.pipeline",
+          kind: "chain",
+          start_time: "2026-07-13 09:11:00.050",
+          duration_ms: 2400,
+          status_code: "Ok",
+          status_message: "",
+          attributes: {
+            "codecrush.io.input": "怎么退款",
+            "gen_ai.agent.name": "退款助手",
+            "rag.prompt.version_id": "cv1",
+          },
+        },
+      ],
+    });
+    const repo = new ClickHouseTracesRepository(client);
+    const res = await repo.findByTraceId("a".repeat(32));
+    // 根按 kind='chain' 认出（非 parentSpanId===null 的 HTTP span）→ meta 非空
+    expect(res.meta.userInput).toBe("怎么退款");
+    expect(res.meta.agentName).toBe("退款助手");
+    expect(res.meta.durationMs).toBe(2400); // chain span 耗时，非 HTTP 的 2600
+  });
+
   it("creates the view once and caches readiness across reads", async () => {
     const { client, raw } = buildClient({
       tableExists: true,

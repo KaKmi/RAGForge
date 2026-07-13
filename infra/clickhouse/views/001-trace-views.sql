@@ -14,9 +14,11 @@ SELECT
 FROM otel_traces;
 
 -- M9 W1：每 trace 一行——从 chain 根 span 取身份/IO/状态/质量，LEFT JOIN 子 span 求 token 和。
--- SpanAttributes = Map(String,String)：布尔读 = 'true'，数字读 toUInt64OrZero；root 过滤 ParentSpanId='' 且 kind='chain'。
--- StatusCode 字面量以真库为准（dev 校验 SELECT DISTINCT StatusCode），此处 IN 防御两种常见写法。
-CREATE VIEW IF NOT EXISTS codecrush_traces AS
+-- SpanAttributes = Map(String,String)：布尔读 = 'true'，数字读 toUInt64OrZero。
+-- root 过滤 = kind='chain' 单条件：HTTP 自动埋点（HttpInstrumentation）给每请求加 POST server 根 span，
+-- rag.pipeline chain span 是其子（ParentSpanId≠''），故不能用 ParentSpanId='' 认根——chain 才是 RAG 一轮的语义根。
+-- StatusCode 字面量真库校验为 Ok/Error（此处 IN 防御另一常见写法）。
+CREATE OR REPLACE VIEW codecrush_traces AS
 SELECT
   root.TraceId AS trace_id,
   root.SpanAttributes['session.id'] AS session_id,
@@ -46,7 +48,7 @@ LEFT JOIN (
     sum(toUInt64OrZero(SpanAttributes['gen_ai.usage.output_tokens'])) AS total_output_tokens
   FROM otel_traces GROUP BY TraceId
 ) AS agg ON root.TraceId = agg.TraceId
-WHERE root.ParentSpanId = '' AND root.SpanAttributes['codecrush.span.kind'] = 'chain';
+WHERE root.SpanAttributes['codecrush.span.kind'] = 'chain';
 
 -- M9 W1：每 session 一行——over codecrush_traces，按 session_id 聚合；排除 preview（试运行不入正式统计）。
 CREATE VIEW IF NOT EXISTS codecrush_sessions AS

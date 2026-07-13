@@ -105,11 +105,13 @@ function signalsFromAttrs(a: Record<string, unknown>): QualitySignal[] {
   return out;
 }
 
-/** 从已取 spans 纯 TS 聚合详情 meta（不发第二条 CH 查询；root = 无父的 chain span）。 */
+/**
+ * 从已取 spans 纯 TS 聚合详情 meta（不发第二条 CH 查询）。
+ * root = kind='chain' 的 RAG 一轮根 span。注意：HTTP 自动埋点使 chain span 有 HTTP server 父
+ * （ParentSpanId≠''），故不能用 parentSpanId===null 认根——chain 才是 RAG 语义根。
+ */
 function buildTraceMeta(spans: TraceSpan[]): TraceDetailMeta {
-  const root =
-    spans.find((s) => s.parentSpanId === null && s.kind === "chain") ??
-    spans.find((s) => s.parentSpanId === null);
+  const root = spans.find((s) => s.kind === "chain") ?? spans.find((s) => s.parentSpanId === null);
   if (!root) return EMPTY_TRACE_META;
   const a = root.attributes as Record<string, unknown>;
   const isError = root.statusCode === "Error" || root.statusCode === "STATUS_CODE_ERROR";
