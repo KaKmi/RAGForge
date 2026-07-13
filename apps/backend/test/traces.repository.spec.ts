@@ -57,14 +57,144 @@ describe("ClickHouseTracesRepository", () => {
       parentSpanId: null,
       startTime: "2026-07-05T08:00:00.123Z", // UTC 毫秒 ISO（无本地时区偏移）
     });
-    expect(raw.command).toHaveBeenCalledTimes(1);
+    // M9 W1：VIEW 文件含 3 个 CREATE VIEW（spans/traces/sessions），逐条执行 → 3 次 command
+    expect(raw.command).toHaveBeenCalledTimes(3);
 
     await repo.findByTraceId("391dae938234560b16bb63f51501cb6f");
     // 第二次读：viewsReady 缓存生效，不再 EXISTS 探测、不再执行 VIEW DDL
-    expect(raw.command).toHaveBeenCalledTimes(1);
+    expect(raw.command).toHaveBeenCalledTimes(3);
     const existsProbes = raw.query.mock.calls.filter(([arg]: [QueryCall]) =>
       arg.query.startsWith("EXISTS TABLE"),
     );
     expect(existsProbes).toHaveLength(1);
+  });
+});
+
+// M9 W1：listTraces / summarize / listSessions —— 路由式 fake client 按查询内容分派预置行
+function buildRoutingClient(opts: {
+  tableExists: boolean;
+  tracesRows?: unknown[];
+  summaryRow?: unknown;
+  sessionRows?: unknown[];
+}) {
+  const commands: QueryCall[] = [];
+  const client = {
+    query: jest.fn(async ({ query }: QueryCall) => {
+      if (query.startsWith("EXISTS TABLE"))
+        return { json: async () => [{ result: opts.tableExists ? 1 : 0 }] };
+      if (query.includes("codecrush_sessions")) return { json: async () => opts.sessionRows ?? [] };
+      if (query.includes("quantile(0.95)")) return { json: async () => (opts.summaryRow ? [opts.summaryRow] : []) };
+      if (query.includes("codecrush_traces")) return { json: async () => opts.tracesRows ?? [] };
+      return { json: async () => [] };
+    }),
+    command: jest.fn(async (call: QueryCall) => {
+      commands.push(call);
+    }),
+  };
+  return { client: client as unknown as CodeCrushClickHouseClient, commands, raw: client };
+}
+
+const emptySummary = { sampledTotal: 0, failRate: 0, failCount: 0, p95Ms: 0, timeoutCount: 0 };
+
+describe("ClickHouseTracesRepository · M9 W1 list/session", () => {
+  it("cold DB → empty list/sessions, no DDL", async () => {
+    const { client, raw } = buildRoutingClient({ tableExists: false });
+    const repo = new ClickHouseTracesRepository(client);
+    expect(await repo.listTraces({ page: 1, pageSize: 20 })).toEqual({ items: [], total: 0, summary: emptySummary });
+    expect(await repo.listSessions()).toEqual([]);
+    expect(raw.command).not.toHaveBeenCalled();
+  });
+
+  it("ensureTraceViews runs each CREATE VIEW separately (3 statements)", async () => {
+    const { client, raw } = buildRoutingClient({ tableExists: true });
+    const repo = new ClickHouseTracesRepository(client);
+    await repo.listSessions();
+    const createViewCmds = raw.command.mock.calls.filter(([c]: [QueryCall]) => /CREATE VIEW/i.test(c.query));
+    expect(createViewCmds).toHaveLength(3);
+  });
+
+  it("listTraces maps status/tokens/qualitySignals/startTime + summary", async () => {
+    const { client } = buildRoutingClient({
+      tableExists: true,
+      tracesRows: [
+        {
+          trace_id: "a".repeat(32),
+          session_id: "conv1",
+          agent_id: "app1",
+          agent_name: "退款助手",
+          user_id: "u1",
+          user_input: "怎么退款",
+          output: "…",
+          start_time: "2026-07-13 09:11:00.000",
+          total_duration_ms: 2410,
+          total_input_tokens: "1200",
+          total_output_tokens: "200",
+          status: "success",
+          low_recall: 0,
+          no_citations: 1,
+          refusal: 0,
+          timeout: 0,
+          prompt_version_id: "pv1",
+          preview: 0,
+        },
+      ],
+      summaryRow: { total: "1", failCount: "0", p95Ms: "2410", timeoutCount: "0" },
+    });
+    const repo = new ClickHouseTracesRepository(client);
+    const res = await repo.listTraces({ page: 1, pageSize: 20 });
+    expect(res.total).toBe(1);
+    expect(res.items[0]).toMatchObject({
+      status: "success",
+      inputTokens: 1200,
+      outputTokens: 200,
+      qualitySignals: ["no_citations"],
+      startTime: "2026-07-13T09:11:00.000Z",
+      userId: "u1",
+      promptVersionId: "pv1",
+    });
+    expect(res.summary).toEqual({ sampledTotal: 1, failRate: 0, failCount: 0, p95Ms: 2410, timeoutCount: 0 });
+  });
+
+  it("listTraces empty user_id → null; failRate computed", async () => {
+    const { client } = buildRoutingClient({
+      tableExists: true,
+      tracesRows: [
+        {
+          trace_id: "b".repeat(32), session_id: "conv2", agent_id: "app1", agent_name: "退款助手",
+          user_id: "", user_input: "x", output: "y", start_time: "2026-07-13 10:00:00.000",
+          total_duration_ms: 6000, total_input_tokens: null, total_output_tokens: null,
+          status: "failed", low_recall: 1, no_citations: 1, refusal: 1, timeout: 1,
+          prompt_version_id: "", preview: 0,
+        },
+      ],
+      summaryRow: { total: "4", failCount: "1", p95Ms: "6000", timeoutCount: "1" },
+    });
+    const repo = new ClickHouseTracesRepository(client);
+    const res = await repo.listTraces({ page: 1, pageSize: 20 });
+    expect(res.items[0].userId).toBeNull();
+    expect(res.items[0].promptVersionId).toBeNull();
+    expect(res.items[0].inputTokens).toBe(0);
+    expect(res.items[0].qualitySignals).toEqual(["low_recall", "no_citations", "refusal", "timeout"]);
+    expect(res.summary.failRate).toBeCloseTo(0.25);
+  });
+
+  it("listSessions maps rows", async () => {
+    const { client } = buildRoutingClient({
+      tableExists: true,
+      sessionRows: [
+        {
+          session_id: "conv1", user_id: "u1", agent_id: "app1", agent_name: "退款助手",
+          round_count: "3", first_question: "怎么退款", first_ts: "2026-07-13 09:11:00.000",
+          last_ts: "2026-07-13 09:20:00.000", status: "has_fallback",
+        },
+      ],
+    });
+    const repo = new ClickHouseTracesRepository(client);
+    const rows = await repo.listSessions();
+    expect(rows[0]).toEqual({
+      sessionId: "conv1", userId: "u1", agentId: "app1", agentName: "退款助手",
+      roundCount: 3, firstQuestion: "怎么退款",
+      firstTs: "2026-07-13T09:11:00.000Z", lastTs: "2026-07-13T09:20:00.000Z", status: "has_fallback",
+    });
   });
 });
