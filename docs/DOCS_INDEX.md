@@ -18,3 +18,4 @@
 | design | 012 | current | Prompt 管理模块重构 | Prompt 版本从三态状态机改为可排他移动的标识（标签）模型，详情页新增试运行，谁在用改为应用域只读派生视图。 | 2026-07-11 | [012](docs/design/012-prompt-management-redesign.md) |
 | design | 013 | draft | 问答 / RAG 编排内核（M8 OrchestrationService 与 SSE 流式） | 七节点编排流水线、SSE 逐 token 流式、会话/消息持久化与完整 OTLP trace 写侧的架构设计。 | 2026-07-12 | [013](docs/design/013-m8-rag-orchestration.md) |
 | design | 014 | draft | 两级意图表与知识库外挂意图路由 | 意图节点只做静态闭集大分类，路由靠 KB↔意图绑定映射；替换 013 的 KB-UUID 路由方案。 | 2026-07-12 | [014](docs/design/014-intent-routing.md) |
+| design | 015 | draft | M9 Trace 追踪（完整版）读模型 | M9 落地：根 span 补 session/agent/user 身份 → 纯 VIEW 读模型（列表/Session/详情）+ 只读 API + 前端四屏；out-flow 延后 M11。 | 2026-07-13 | [015](docs/design/015-m9-trace-read-model.md) |
