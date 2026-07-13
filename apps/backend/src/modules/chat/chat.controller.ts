@@ -16,6 +16,8 @@ interface SseResponse {
   setHeader(name: string, value: string): void;
   write(chunk: string): boolean;
   end(): void;
+  /** 客户端断连侦听（Express Response 结构兼容）——用于 T2 abort 级联取消生成器。 */
+  on?(event: "close", cb: () => void): void;
 }
 
 /** SSE 单帧：`data: ${JSON}\n\n`（前端 sse.ts 按此解析）。 */
@@ -28,10 +30,11 @@ export class ChatController {
   constructor(private readonly orchestration: OrchestrationService) {}
 
   /**
-   * M8 T1：接真实 RAG 编排。resolvePublic 在 run() 最前、写响应头之前——未上线/停用
-   * 异常冒泡给 Nest 异常过滤器翻 404/403（此时尚未写 event-stream 头，客户端收到干净的错误响应）。
+   * M8 T2：消费 OrchestrationService.run() 的 AsyncGenerator，逐帧 flush SSE。
+   * resolvePublic 在生成器体首行、首个 next() 触发——抛（未上线/停用）在写 event-stream 头之前
+   * 冒泡给 Nest 异常过滤器翻 404/403（客户端收到干净的错误响应）。
+   * 客户端断连（res close）→ gen.return() 级联取消（streamTextChunks → chatStream → reader.cancel）。
    * 带 JWT（不 @Public），userId 取自 req.user.id。
-   * T1 非流式：整段 replyText 作单个 token 事件；逐 token 流式留 T2。
    */
   @Post()
   @HttpCode(200)
@@ -40,27 +43,21 @@ export class ChatController {
     @Req() req: AuthedRequest,
     @Res() res: SseResponse,
   ): Promise<void> {
-    // 抛错在写头之前：让 Nest 异常过滤器接管（404/403），不进 event-stream。
-    const result = await this.orchestration.run(body.agentId, body.query, body.convId, req.user.id);
+    const gen = this.orchestration.run(body.agentId, body.query, body.convId, req.user.id);
+    // close 侦听须在首个 next() 之前注册：否则客户端在首帧到达前断连会漏掉。
+    // gen.return() 对已抛错/已结束的 generator 是安全 no-op。
+    res.on?.("close", () => {
+      void gen.return(undefined);
+    });
+    // 首个 next() 触发 resolvePublic：抛（404/403）在写 event-stream 头之前冒泡给 Nest 过滤器。
+    const first = await gen.next();
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    for (const c of result.citations) {
-      res.write(sse({ type: "citation", citation: c }));
-    }
-    res.write(sse({ type: "token", delta: result.replyText }));
-    res.write(
-      sse({
-        type: "done",
-        traceId: result.traceId,
-        confidence: result.confidence,
-        coverage: result.coverage,
-        isFallback: result.isFallback,
-        fallbackReasons: result.fallbackReasons,
-      }),
-    );
+    if (!first.done) res.write(sse(first.value));
+    for await (const ev of gen) res.write(sse(ev));
     res.end();
   }
 }
