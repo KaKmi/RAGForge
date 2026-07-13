@@ -135,6 +135,10 @@ export default function ChatPage() {
   // 进页加载应用元信息（未上线判定 + 头部/信息卡 + KB 名标签）
   useEffect(() => {
     let alive = true;
+    // agent 切换（Router 复用本组件，不卸载）：取消上一 agent 进行中的流，
+    // 否则其 done 回调会把上一 agent 的会话列表/convId 污染到新 agent 页（peer review Finding 1）。
+    abortRef.current?.abort();
+    abortRef.current = null;
     setMetaLoading(true);
     setMsgs([]);
     setConvId(undefined);
@@ -355,16 +359,16 @@ export default function ChatPage() {
     navigate("/login", { replace: true });
   };
 
-  // 右栏当前选中消息的 citation 列表 + 选中详情
-  const rightCites = useMemo(() => {
+  // 右栏 citation 来源消息（选中优先，否则最近一条带 citation 的 assistant 消息）+ 列表 + 详情
+  const rightSource = useMemo(() => {
     const m = citeSel ? msgs.find((x) => x.key === citeSel.msgKey) : null;
-    // 无选中时用最近一条带 citation 的 assistant 消息
-    const src =
+    return (
       m ??
       [...msgs].reverse().find((x) => x.role === "assistant" && x.citations.length > 0) ??
-      null;
-    return src?.citations ?? [];
+      null
+    );
   }, [citeSel, msgs]);
+  const rightCites = rightSource?.citations ?? [];
 
   const selectedCite = useMemo(() => {
     if (!citeSel) return null;
@@ -687,8 +691,10 @@ export default function ChatPage() {
             background: "#fafafa",
           }}
         >
-          {msgs.map((m) =>
-            m.role === "user" ? (
+          {msgs.map((m) => {
+            // 首 token 前不渲染空 assistant 气泡——由下方 typing 三点独占该态（避免空气泡 + 三点叠现）
+            if (m.role === "assistant" && m.streaming && m.text === "" && !m.errored) return null;
+            return m.role === "user" ? (
               <div key={m.key} style={{ display: "flex", flexDirection: "column" }}>
                 <div
                   style={{
@@ -1020,8 +1026,8 @@ export default function ChatPage() {
                   </div>
                 )}
               </div>
-            ),
-          )}
+            );
+          })}
 
           {anyStreaming && (
             <div style={{ display: "flex", gap: 10 }}>
@@ -1177,7 +1183,7 @@ export default function ChatPage() {
                   <div
                     key={ct.n}
                     onClick={() =>
-                      citeSel && setCiteSel({ msgKey: citeSel.msgKey, n: ct.n })
+                      rightSource && setCiteSel({ msgKey: rightSource.key, n: ct.n })
                     }
                     style={{
                       display: "flex",

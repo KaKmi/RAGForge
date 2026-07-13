@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import type { ChatStreamEvent } from "@codecrush/contracts";
 import ChatPage from "./ChatPage";
 import * as client from "../../api/client";
@@ -145,6 +145,59 @@ it("未上线应用显占位、无输入区", async () => {
   await waitFor(() => expect(screen.getByText(/尚未上线/)).toBeInTheDocument());
   expect(screen.queryByPlaceholderText(/输入您的问题/)).not.toBeInTheDocument();
   expect(screen.getByText(/去管理台配置/)).toBeInTheDocument();
+});
+
+it("切换 agent 时中止进行中的流（不跨 agent 污染会话列表）", async () => {
+  vi.spyOn(client, "getApplications").mockResolvedValue([
+    { id: "app1", slug: "agentA", name: "A", description: "", productionConfigVersionId: "v1" },
+    { id: "app2", slug: "agentB", name: "B", description: "", productionConfigVersionId: "v1" },
+  ] as unknown as Awaited<ReturnType<typeof client.getApplications>>);
+  const abortSpy = vi.spyOn(AbortController.prototype, "abort");
+  let releaseHang: () => void = () => {};
+  const hang = new Promise<void>((r) => {
+    releaseHang = r;
+  });
+  async function* inflight() {
+    yield {
+      type: "citation" as const,
+      citation: { n: 1, doc: "d", kb: "售后库", section: "s", score: 0.8, text: "x" },
+    };
+    await hang; // 永不 done，保持流在飞行中
+  }
+  vi.spyOn(sse, "openChatStream").mockImplementation(() => inflight());
+
+  function Nav() {
+    const nav = useNavigate();
+    return (
+      <button type="button" onClick={() => nav("/chat/agentB")}>
+        go-b
+      </button>
+    );
+  }
+  render(
+    <MemoryRouter initialEntries={["/chat/agentA"]}>
+      <Routes>
+        <Route
+          path="/chat/:agentId"
+          element={
+            <>
+              <ChatPage />
+              <Nav />
+            </>
+          }
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  fireEvent.change(await screen.findByPlaceholderText(/输入您的问题/), { target: { value: "q" } });
+  fireEvent.click(await screen.findByRole("button", { name: /发\s*送/ }));
+  await waitFor(() => expect(sse.openChatStream).toHaveBeenCalled());
+
+  abortSpy.mockClear();
+  fireEvent.click(screen.getByText("go-b")); // 中途切到 agentB（组件复用，不卸载）
+  await waitFor(() => expect(abortSpy).toHaveBeenCalled());
+  releaseHang();
 });
 
 it("SSE 404 → 该消息显错误提示，不崩页", async () => {
