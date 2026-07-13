@@ -325,12 +325,21 @@ describe("OrchestrationService.run（AsyncGenerator 逐 token）", () => {
     expect(r.done).toBeUndefined();
   });
 
-  it("客户端 abort（gen.return）→ 落已产出部分 assistant 文本", async () => {
+  it("客户端 abort（gen.return）→ 落已产出部分 + 级联 return reply 迭代器（AC6 cascade）", async () => {
     const d = makeDeps();
-    d.nodeRuntime.streamTextChunks.mockImplementation(async function* () {
-      yield { delta: "答" };
-      yield { delta: "案" };
-      return { outcome: "ok", text: "答案" };
+    let replyReturned = false;
+    d.nodeRuntime.streamTextChunks.mockImplementation(() => {
+      const inner = (async function* () {
+        yield { delta: "答" };
+        yield { delta: "案" };
+        return { outcome: "ok", text: "答案" };
+      })();
+      const orig = inner.return.bind(inner);
+      inner.return = ((v?: unknown) => {
+        replyReturned = true;
+        return orig(v as never);
+      }) as never;
+      return inner;
     });
     const gen = makeSvc(d).run("app1", "怎么退货");
     // reply 分支：先 2 个 citation，再 token。拉到第一个 token 后 abort。
@@ -338,11 +347,35 @@ describe("OrchestrationService.run（AsyncGenerator 逐 token）", () => {
     await gen.next(); // citation 2
     const t = await gen.next(); // token "答"
     expect(t.value).toMatchObject({ type: "token", delta: "答" });
-    await gen.return(undefined); // 模拟客户端断连 → finally 落部分
+    await gen.return(undefined); // 模拟客户端断连 → finally 落部分 + 级联 return
+    // 级联：reply 迭代器被 return（→ streamTextChunks finally → reader.cancel + reply span end）
+    expect(replyReturned).toBe(true);
+    // 落部分 assistant 内容
     const assistantCall = d.conversations.appendMessage.mock.calls.find(
       (c) => (c[0] as { role: string }).role === "assistant",
     );
     expect(assistantCall).toBeDefined();
     expect((assistantCall![0] as { content: string }).content).toBe("答");
+  });
+
+  it("reply 首帧后 infra 失败（streamTextChunks 抛）→ error 事件收尾、无 done，不截断（review Finding 2）", async () => {
+    const d = makeDeps();
+    d.nodeRuntime.streamTextChunks.mockImplementation(
+      // 模拟 reply 模型不可解析：generator 首个 next() 即抛（resolveModel 抛）
+      (() =>
+        (async function* () {
+          throw new Error("model gone");
+        })()) as never,
+    );
+    const r = await collect(makeSvc(d).run("app1", "怎么退货"));
+    // citations 已在抛错前 flush，随后 error 收尾、无 done
+    expect(r.citations.length).toBeGreaterThan(0);
+    expect(r.error).toBeDefined();
+    expect(r.done).toBeUndefined();
+    // 仍落库（部分/空 assistant），trace 可对齐
+    const assistantCall = d.conversations.appendMessage.mock.calls.find(
+      (c) => (c[0] as { role: string }).role === "assistant",
+    );
+    expect(assistantCall).toBeDefined();
   });
 });

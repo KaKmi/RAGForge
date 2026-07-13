@@ -80,6 +80,9 @@ export class OrchestrationService {
     let completed = false;
     let prep: PrepResult | undefined;
     let persistCtx: { agentId: string; query: string; convId?: string; userId?: string } | undefined;
+    // reply 迭代器提到外层：手动 next() 循环不像 for-await 那样自动传播 return()，故 finally
+    // 显式 return() 级联取消上游（streamTextChunks → chatStream → reader.cancel）+ 结束 reply span。
+    let replyIt: AsyncGenerator<{ delta: string }, unknown> | undefined;
 
     try {
       // —— 预备阶段：整段在 chainCtx 内（内部无 yield），子 span（rewrite/intent/检索）自动挂 chain ——
@@ -106,26 +109,38 @@ export class OrchestrationService {
           { temperature: cfg.nodes.reply.temperature },
           chainCtx,
         );
-        let res = await it.next();
-        while (!res.done) {
-          replyText += res.value.delta;
-          yield { type: "token", delta: res.value.delta };
-          res = await it.next();
-        }
-        const summary = res.value;
-        if (summary.outcome === "timeout") {
-          chain.setStatus({ code: SpanStatusCode.ERROR, message: "first token timeout" });
-          yield { type: "error", message: "生成超时，请稍后重试" };
-          await this.persist(this.buildResult(traceId, "", prep), persistCtx);
+        replyIt = it; // 供 finally 级联 return()（abort 时取消上游 + 结束 reply span，AC6）
+        try {
+          let res = await it.next();
+          while (!res.done) {
+            replyText += res.value.delta;
+            yield { type: "token", delta: res.value.delta };
+            res = await it.next();
+          }
+          const summary = res.value;
+          if (summary.outcome === "timeout") {
+            chain.setStatus({ code: SpanStatusCode.ERROR, message: "first token timeout" });
+            yield { type: "error", message: "生成超时，请稍后重试" };
+            await this.persist(this.buildResult(traceId, "", prep), persistCtx);
+            completed = true;
+            return; // 熔断：不发 done
+          }
+          if (summary.outcome === "fallback") {
+            // reply 节点降级：把 reply 契约 fallback 文本当整段（同 T1 streamNode 语义），branch 仍算 reply
+            replyText = summary.text;
+            if (summary.text) yield { type: "token", delta: summary.text };
+          }
+          // ok / partial：replyText 已逐 token 累加
+        } catch (err) {
+          // reply 节点 infra 失败（模型被删/协议不支持 → resolveModel 抛）发生在首帧后，HTTP 头已发，
+          // 不能截断流 → 优雅降级为 error 事件收尾（对齐 timeout；不冒泡截断，review Finding 2）。
+          chain.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+          chain.recordException(err as Error);
+          yield { type: "error", message: "生成失败，请稍后重试" };
+          await this.persist(this.buildResult(traceId, replyText, prep), persistCtx);
           completed = true;
-          return; // 熔断：不发 done
+          return;
         }
-        if (summary.outcome === "fallback") {
-          // reply 节点降级：把 reply 契约 fallback 文本当整段（同 T1 streamNode 语义），branch 仍算 reply
-          replyText = summary.text;
-          if (summary.text) yield { type: "token", delta: summary.text };
-        }
-        // ok / partial：replyText 已逐 token 累加
       }
 
       // —— 派生指标 + 落库 + done（先 persist+completed，再 yield，杜绝 yield 处 abort 致重复落库）——
@@ -155,6 +170,10 @@ export class OrchestrationService {
           this.logger.error(`abort 落部分失败（边界7 兜住）：${(e as Error).message}`);
         }
       }
+      // 手动 next() 循环不自动传播 return()：显式级联 return reply 迭代器，触发 streamTextChunks
+      // 的 finally（reader.cancel + reply span.end），避免 abort 时上游 fetch 悬挂/span 泄漏（Finding 1）。
+      // 对已读完/已抛错/已 return 的迭代器是安全 no-op。
+      if (replyIt) await replyIt.return?.(undefined);
       chain.end(); // 手动生命周期：所有路径必 end
     }
   }
