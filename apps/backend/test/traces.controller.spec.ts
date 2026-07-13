@@ -53,4 +53,28 @@ describe("TracesController", () => {
     );
     expect(getTrace).not.toHaveBeenCalled();
   });
+
+  // M9 W1：list + sessions
+  it("GET /traces passes parsed query to service.listTraces", async () => {
+    const empty = { items: [], total: 0, summary: { sampledTotal: 0, failRate: 0, failCount: 0, p95Ms: 0, timeoutCount: 0 } };
+    const listTraces = jest.fn().mockResolvedValue(empty);
+    const ctrl = await build({ listTraces } as Partial<TracesService>);
+    await expect(ctrl.list({ page: "2", pageSize: "10", status: "失败" })).resolves.toEqual(empty);
+    // 手动 parse 后 coerce：page/pageSize 数字化
+    expect(listTraces).toHaveBeenCalledWith(expect.objectContaining({ page: 2, pageSize: 10, status: "失败" }));
+  });
+
+  it("GET /traces rejects invalid query (page=0) with 400 before service", async () => {
+    const listTraces = jest.fn();
+    const ctrl = await build({ listTraces } as Partial<TracesService>);
+    await expect(ctrl.list({ page: "0" })).rejects.toBeInstanceOf(BadRequestException);
+    expect(listTraces).not.toHaveBeenCalled();
+  });
+
+  it("GET /traces/sessions calls service.listSessions (not swallowed by :traceId)", async () => {
+    const listSessions = jest.fn().mockResolvedValue([]);
+    const ctrl = await build({ listSessions } as Partial<TracesService>);
+    await expect(ctrl.sessions()).resolves.toEqual([]);
+    expect(listSessions).toHaveBeenCalled();
+  });
 });

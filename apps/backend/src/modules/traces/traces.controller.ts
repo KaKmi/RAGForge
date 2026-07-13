@@ -1,5 +1,11 @@
-import { BadRequestException, Controller, Get, Param, Post } from "@nestjs/common";
-import type { HelloTraceResponse, TraceDetailResponse } from "@codecrush/contracts";
+import { BadRequestException, Controller, Get, Param, Post, Query } from "@nestjs/common";
+import {
+  type HelloTraceResponse,
+  type SessionListResponse,
+  type TraceDetailResponse,
+  type TraceListResponse,
+  TraceListQuerySchema,
+} from "@codecrush/contracts";
 import { TracesService } from "./traces.service";
 
 const TRACE_ID_RE = /^[a-f0-9]{32}$/i;
@@ -11,6 +17,20 @@ export class TracesController {
   @Post("hello")
   async emitHello(): Promise<HelloTraceResponse> {
     return await this.tracesService.emitHello();
+  }
+
+  // 静态路由须声明在 :traceId 之前（Nest 按声明序匹配）：否则 /traces、/traces/sessions 被参数路由吞掉。
+  @Get()
+  async list(@Query() raw: unknown): Promise<TraceListResponse> {
+    // 全局 ZodValidationPipe 对非 createZodDto 的 @Query 跳过校验（同 :traceId 手动校验风格），故此处手动 parse。
+    const parsed = TraceListQuerySchema.safeParse(raw ?? {});
+    if (!parsed.success) throw new BadRequestException(parsed.error.message);
+    return await this.tracesService.listTraces(parsed.data);
+  }
+
+  @Get("sessions")
+  async sessions(): Promise<SessionListResponse> {
+    return await this.tracesService.listSessions();
   }
 
   @Get(":traceId")
