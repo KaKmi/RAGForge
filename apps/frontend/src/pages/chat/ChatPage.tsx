@@ -452,7 +452,7 @@ export default function ChatPage() {
   const anyStreaming = msgs.some((m) => m.streaming && m.text === "");
 
   return (
-    <div style={{ height: "100%", display: "flex", background: "#f0f2f5" }}>
+    <div style={{ height: "100%", display: "flex", background: "#f0f2f5", overflow: "hidden" }}>
       <style>{`@keyframes ccb-blink{0%,60%,100%{opacity:.25}30%{opacity:1}}`}</style>
 
       {/* 左侧栏：单 Agent 信息卡 + 新建会话 + 会话历史 + 账号区 */}
