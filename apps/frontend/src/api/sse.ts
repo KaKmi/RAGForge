@@ -8,6 +8,20 @@ import {
 const TOKEN_KEY = "token";
 
 /**
+ * 携带 HTTP 状态码的流错误——供 C 端区分 404（未上线）/ 403（停用）/ 其它。
+ * resolvePublic 在写 SSE 头前抛（chat.controller.ts:53），故错误以干净 HTTP 状态返回。
+ */
+export class ChatStreamError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ChatStreamError";
+  }
+}
+
+/**
  * 005 Revisit 1：用 fetch + ReadableStream 而非 EventSource（后者不能带 Authorization 头）。
  * M8 接真实 RAG 编排后复用此模式。
  *
@@ -31,7 +45,7 @@ export async function* openChatStream(
     signal,
   });
   if (!resp.ok || !resp.body) {
-    throw new Error(`chat stream failed: ${resp.status} ${resp.statusText}`);
+    throw new ChatStreamError(resp.status, `chat stream failed: ${resp.status} ${resp.statusText}`);
   }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();

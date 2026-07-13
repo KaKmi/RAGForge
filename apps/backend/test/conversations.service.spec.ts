@@ -35,10 +35,10 @@ function makeFakeRepo() {
       if (conv) conv.updatedAt = nextTime();
       return msg;
     }),
-    list: jest.fn(async (agentId?: string): Promise<Conversation[]> =>
-      (agentId ? convs.filter((c) => c.agentId === agentId) : [...convs]).sort((a, b) =>
-        b.updatedAt.localeCompare(a.updatedAt),
-      ),
+    list: jest.fn(async (agentId?: string, userId?: string): Promise<Conversation[]> =>
+      convs
+        .filter((c) => (!agentId || c.agentId === agentId) && (!userId || c.userId === userId))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     ),
     getById: jest.fn(
       async (id: string): Promise<Conversation | undefined> => convs.find((c) => c.id === id),
@@ -88,6 +88,22 @@ describe("ConversationsService（真实读写）", () => {
     await svc.createConversation({ agentId: "app1", userId: "u1", title: "app1 的会话" });
     expect(await svc.list("app2")).toEqual([]);
     expect((await svc.list("app1")).length).toBe(1);
+  });
+
+  it("M8 T4：list 只返回指定 agentId + userId 的会话", async () => {
+    const svc = new ConversationsService(makeFakeRepo());
+    await svc.createConversation({ agentId: "app1", userId: "uX", title: "A" });
+    await svc.createConversation({ agentId: "app1", userId: "uY", title: "B" });
+    await svc.createConversation({ agentId: "app2", userId: "uX", title: "C" });
+    const rows = await svc.list("app1", "uX");
+    expect(rows.map((r) => r.title)).toEqual(["A"]);
+  });
+
+  it("M8 T4：get/listMessages 拒绝非本人会话（IDOR → NotFound）", async () => {
+    const svc = new ConversationsService(makeFakeRepo());
+    const b = await svc.createConversation({ agentId: "app1", userId: "uY", title: "B" });
+    await expect(svc.get(b.id, "uX")).rejects.toThrow(NotFoundException);
+    await expect(svc.listMessages(b.id, "uX")).rejects.toThrow(NotFoundException);
   });
 
   it("appendMessage 回写会话活跃时间：先建 A 再建 B，向 A 追加消息后 list 中 A 排最前", async () => {

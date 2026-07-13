@@ -574,8 +574,12 @@ export const batchDeleteChunks = (
   );
 
 // conversations — @Controller("conversations")
-export const getConversations = (): Promise<ConversationListResponse> =>
-  getJson("/api/conversations", ConversationListResponseSchema);
+// M8 T4：C 端按 agentId 过滤（userId 由后端从 JWT 取）；不传 = 全部（保留管理面用法）。
+export const getConversations = (agentId?: string): Promise<ConversationListResponse> =>
+  getJson(
+    `/api/conversations${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`,
+    ConversationListResponseSchema,
+  );
 export const getConversation = (id: string): Promise<Conversation> =>
   getJson(`/api/conversations/${encodeURIComponent(id)}`, ConversationSchema);
 export const getMessages = (convId: string): Promise<MessageListResponse> =>

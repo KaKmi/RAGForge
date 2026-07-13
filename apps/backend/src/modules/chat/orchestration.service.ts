@@ -179,12 +179,15 @@ export class OrchestrationService {
 
       // —— 派生指标 + 落库 + done（先 persist+completed，再 yield，杜绝 yield 处 abort 致重复落库）——
       const result = this.buildResult(traceId, replyText, prep);
-      await this.persist(result, persistCtx);
+      const persistedConvId = await this.persist(result, persistCtx);
+      const doneConvId = persistedConvId ?? prep.validConvId; // 可能 undefined（落库彻底失败）
       completed = true;
       chain.setStatus({ code: SpanStatusCode.OK });
       yield {
         type: "done",
         traceId,
+        // M8 T4：契约 convId 可选——有值才带（新会话回填/续聊定位），落库失败时省略不发空串
+        ...(doneConvId ? { convId: doneConvId } : {}),
         confidence: result.confidence,
         coverage: result.coverage,
         isFallback: result.isFallback,
@@ -317,6 +320,7 @@ export class OrchestrationService {
       kb: kbNameById.get(h.kbId) ?? "",
       section: h.section,
       score: h.finalScore,
+      text: h.text, // M8 T4：命中段正文回传前端右栏
     }));
     const retrievalContext = hits.map((h, i) => `[${i + 1}] ${h.text}`).join("\n\n");
     return {

@@ -184,6 +184,18 @@ describe("OrchestrationService.run（AsyncGenerator 逐 token）", () => {
     });
   });
 
+  it("M8 T4：citation 事件带命中段正文 text=h.text", async () => {
+    const d = makeDeps();
+    const r = await collect(makeSvc(d).run("app1", "怎么退货", undefined, "u1"));
+    expect(r.citations[0].citation.text).toBe("内容 a1"); // hit("a1",…).text = `内容 a1`
+  });
+
+  it("M8 T4：done 事件带新建会话 convId（createConversation → conv1）", async () => {
+    const d = makeDeps();
+    const r = await collect(makeSvc(d).run("app1", "怎么退货", undefined, "u1"));
+    expect(r.done!.convId).toBe("conv1");
+  });
+
   it("intent=UNKNOWN → 全 KB 回退召回（reply 分支）", async () => {
     const d = makeDeps();
     d.nodeRuntime.executeStructured.mockImplementation(async (node: string) =>

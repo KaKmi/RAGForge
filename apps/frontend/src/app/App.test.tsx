@@ -1,6 +1,7 @@
 import { configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App";
+import * as client from "../api/client";
 
 // 全量套件并发跑时，本文件每例都冷启动懒加载路由树（M7a 新增两个懒页后转换图更重），
 // 默认 1s 的 findBy 窗口偶发被冷转换击穿。放宽异步等待窗口与 it 超时，断言语义不变。
@@ -269,22 +270,41 @@ it("loads ChunksPage from real /api/documents/:id/chunks on the chunks route (M4
   });
 });
 
-it("renders chat three-column layout on /chat when authenticated", async () => {
+it("renders chat three-column layout on /chat/:agentId when authenticated", async () => {
   localStorage.setItem("token", "fake-token");
-  render(
-    <MemoryRouter initialEntries={["/chat"]}>
-      <App />
-    </MemoryRouter>,
-  );
-  // 三栏可识别：左品牌「CodeCrushBot」+ 左副标题「知识库 Agent」+ 右栏头「引用原文」
-  expect(await screen.findByText("CodeCrushBot")).toBeInTheDocument();
-  expect(screen.getByText("知识库 Agent")).toBeInTheDocument();
-  expect(screen.getByText("引用原文")).toBeInTheDocument();
+  // M8 T4：ChatPage 进页拉真实应用元信息（mock client 网络边界）——已上线应用渲染三栏。
+  const app = {
+    id: "app1",
+    slug: "aftersale",
+    name: "售后助手",
+    description: "退款换课",
+    productionConfigVersionId: "v1",
+  } as unknown as Awaited<ReturnType<typeof client.getApplications>>[number];
+  vi.spyOn(client, "getApplications").mockResolvedValue([app]);
+  vi.spyOn(client, "getApplicationDetail").mockResolvedValue({
+    ...app,
+    versions: [],
+  } as unknown as Awaited<ReturnType<typeof client.getApplicationDetail>>);
+  vi.spyOn(client, "getKnowledgeBases").mockResolvedValue([]);
+  vi.spyOn(client, "getConversations").mockResolvedValue([]);
+  try {
+    render(
+      <MemoryRouter initialEntries={["/chat/aftersale"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    // 三栏可识别：左品牌「CodeCrushBot」+ 头部 agent 名 + 右栏头「引用原文」
+    expect(await screen.findByText("CodeCrushBot")).toBeInTheDocument();
+    expect(screen.getAllByText("售后助手").length).toBeGreaterThan(0);
+    expect(screen.getByText("引用原文")).toBeInTheDocument();
+  } finally {
+    vi.restoreAllMocks();
+  }
 });
 
-it("protects /chat behind AuthGuard", async () => {
+it("protects /chat/:agentId behind AuthGuard", async () => {
   render(
-    <MemoryRouter initialEntries={["/chat"]}>
+    <MemoryRouter initialEntries={["/chat/aftersale"]}>
       <App />
     </MemoryRouter>,
   );
