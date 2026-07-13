@@ -1,5 +1,9 @@
 import { NotFoundException } from "@nestjs/common";
-import type { ResolvedApplicationConfig, RetrievalHit } from "@codecrush/contracts";
+import type {
+  ChatStreamEvent,
+  ResolvedApplicationConfig,
+  RetrievalHit,
+} from "@codecrush/contracts";
 import { OrchestrationService } from "../src/modules/chat/orchestration.service";
 import type { ApplicationsService } from "../src/modules/applications/applications.service";
 import type { NodeRuntimeService } from "../src/modules/node-runtime/executor/node-runtime.service";
@@ -60,6 +64,19 @@ const KB_ROWS = [
   { id: "kb_b", name: "通用库", desc: "", embeddingModelId: "emb1", intentKey: null },
 ];
 
+/** drain generator：累加 token、收集 citation、读 done/error 事件。 */
+async function collect(gen: AsyncGenerator<ChatStreamEvent>) {
+  const events: ChatStreamEvent[] = [];
+  for await (const e of gen) events.push(e);
+  const tokens = events.filter((e): e is Extract<ChatStreamEvent, { type: "token" }> => e.type === "token");
+  const citations = events.filter(
+    (e): e is Extract<ChatStreamEvent, { type: "citation" }> => e.type === "citation",
+  );
+  const done = events.find((e): e is Extract<ChatStreamEvent, { type: "done" }> => e.type === "done");
+  const error = events.find((e): e is Extract<ChatStreamEvent, { type: "error" }> => e.type === "error");
+  return { events, replyText: tokens.map((t) => t.delta).join(""), tokens, citations, done, error };
+}
+
 function makeDeps() {
   const applications = { resolvePublic: jest.fn(async () => cfg()) };
   const nodeRuntime = {
@@ -72,6 +89,13 @@ function makeDeps() {
         };
       return { output: { intent: "SUPPORT", confidence: 0.9 }, fallbackUsed: false, validateSteps: [] };
     }),
+    // reply 走 streamTextChunks（逐 token）——默认吐两段拼成 "答案[1][2]"
+    streamTextChunks: jest.fn(async function* () {
+      yield { delta: "答案" };
+      yield { delta: "[1][2]" };
+      return { outcome: "ok", text: "答案[1][2]" };
+    }),
+    // streamText 仅 fallback 路径调用（整段）
     streamText: jest.fn(async (node: string) =>
       node === "reply"
         ? { text: "答案[1][2]", fallbackUsed: false }
@@ -114,19 +138,25 @@ function makeSvc(d: ReturnType<typeof makeDeps>): OrchestrationService {
   );
 }
 
-describe("OrchestrationService.run", () => {
-  it("正常路径：带引用回答 + coverage=full + 落库 user+assistant", async () => {
+describe("OrchestrationService.run（AsyncGenerator 逐 token）", () => {
+  it("正常路径：逐 token（多个 token 事件）+ citation×2 + coverage=full + 落库 user+assistant", async () => {
     const d = makeDeps();
-    const r = await makeSvc(d).run("app1", "怎么退货", undefined, "u1");
-    expect(r.isFallback).toBe(false);
-    expect(r.fallbackReasons).toEqual([]);
-    expect(r.citations.map((c) => c.n)).toEqual([1, 2]);
-    expect(r.citations[0].kb).toBe("售后库");
-    expect(r.coverage).toBe("full");
-    expect(r.confidence).toBeCloseTo(0.9);
+    const r = await collect(makeSvc(d).run("app1", "怎么退货", undefined, "u1"));
+    // 逐 token：两个 token 事件而非一个整段
+    expect(r.tokens).toHaveLength(2);
     expect(r.replyText).toBe("答案[1][2]");
-    expect(r.traceId).toHaveLength(32);
-    expect(r.convId).toBe("conv1");
+    expect(r.citations.map((e) => e.citation.n)).toEqual([1, 2]);
+    expect(r.citations[0].citation.kb).toBe("售后库");
+    expect(r.done).toBeDefined();
+    expect(r.done!.isFallback).toBe(false);
+    expect(r.done!.fallbackReasons).toEqual([]);
+    expect(r.done!.coverage).toBe("full");
+    expect(r.done!.confidence).toBeCloseTo(0.9);
+    expect(r.done!.traceId).toHaveLength(32);
+    // 事件顺序：末位是 done
+    expect(r.events[r.events.length - 1].type).toBe("done");
+    // reply 走 streamTextChunks，不走 streamText
+    expect(d.nodeRuntime.streamTextChunks).toHaveBeenCalled();
     // 检索用改写后的 query，SUPPORT → kb_a(绑定) + kb_b(未绑定通配)
     expect(d.retrieval.test).toHaveBeenCalledTimes(2);
     expect(d.retrieval.test.mock.calls[0][0]).toMatchObject({
@@ -134,13 +164,13 @@ describe("OrchestrationService.run", () => {
       kbId: "kb_a",
       embedModelId: "emb1",
     });
+    // 落库
     expect(d.conversations.createConversation).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "app1", userId: "u1" }),
     );
     expect(d.conversations.appendMessage).toHaveBeenCalledTimes(2);
     const assistant = d.conversations.appendMessage.mock.calls[1][0] as Record<string, unknown>;
     expect(assistant).toMatchObject({
-      convId: "conv1",
       role: "assistant",
       coverage: "full",
       isFallback: false,
@@ -148,27 +178,28 @@ describe("OrchestrationService.run", () => {
     });
   });
 
-  it("intent=UNKNOWN → 全 KB 回退召回", async () => {
+  it("intent=UNKNOWN → 全 KB 回退召回（reply 分支）", async () => {
     const d = makeDeps();
     d.nodeRuntime.executeStructured.mockImplementation(async (node: string) =>
       node === "rewrite"
         ? { output: { rewrittenQuery: "q2", keywords: [] }, fallbackUsed: false, validateSteps: [] }
         : { output: { intent: "UNKNOWN", confidence: 0 }, fallbackUsed: true, validateSteps: [] },
     );
-    await makeSvc(d).run("app1", "天书问题");
+    await collect(makeSvc(d).run("app1", "天书问题"));
     const kbIds = d.retrieval.test.mock.calls.map((c) => (c[0] as { kbId: string }).kbId);
     expect(kbIds.sort()).toEqual(["kb_a", "kb_b"]);
   });
 
-  it("intent=CHAT → 不检索，直走 fallback 节点，reasons=[chitchat,handled_by_fallback]", async () => {
+  it("intent=CHAT → 不检索，直走 fallback 节点（整段 streamText），reasons=[chitchat,handled_by_fallback]", async () => {
     const d = makeDeps();
     d.nodeRuntime.executeStructured.mockImplementation(async (node: string) =>
       node === "rewrite"
         ? { output: { rewrittenQuery: "你好", keywords: [] }, fallbackUsed: false, validateSteps: [] }
         : { output: { intent: "CHAT", confidence: 0.95 }, fallbackUsed: false, validateSteps: [] },
     );
-    const r = await makeSvc(d).run("app1", "你好");
+    const r = await collect(makeSvc(d).run("app1", "你好"));
     expect(d.retrieval.test).not.toHaveBeenCalled();
+    // fallback 走 streamText（整段），不走 streamTextChunks
     expect(d.nodeRuntime.streamText).toHaveBeenCalledWith(
       "fallback",
       expect.anything(),
@@ -178,36 +209,42 @@ describe("OrchestrationService.run", () => {
       expect.anything(),
       expect.anything(),
     );
-    expect(r.isFallback).toBe(true);
-    expect(r.fallbackReasons).toEqual(["chitchat", "handled_by_fallback"]);
-    expect(r.coverage).toBe("partial");
-    expect(r.citations).toEqual([]);
+    expect(d.nodeRuntime.streamTextChunks).not.toHaveBeenCalled();
+    expect(r.done!.isFallback).toBe(true);
+    expect(r.done!.fallbackReasons).toEqual(["chitchat", "handled_by_fallback"]);
+    expect(r.done!.coverage).toBe("partial");
+    expect(r.citations).toHaveLength(0);
   });
 
-  it("低分 → isFallback + low_similarity + fallback 节点", async () => {
+  it("低分 → isFallback + low_similarity + fallback 节点（fallbackInfo 落库）", async () => {
     const d = makeDeps();
     d.retrieval.test.mockImplementation(async (req: { kbId: string }) => ({
       hits: req.kbId === "kb_a" ? [hit("a1", 0.1)] : [],
     }));
-    const r = await makeSvc(d).run("app1", "怎么退货");
-    expect(r.isFallback).toBe(true);
-    expect(r.fallbackReasons).toContain("low_similarity");
-    expect(r.fallbackReasons).toContain("handled_by_fallback");
-    expect(r.fallbackInfo.topScore).toBeCloseTo(0.1);
-    expect(r.fallbackInfo.threshold).toBeCloseTo(0.2);
-    expect(r.fallbackInfo.scopeKbNames).toEqual(["售后库", "通用库"]);
-    expect(r.coverage).toBe("partial");
+    const r = await collect(makeSvc(d).run("app1", "怎么退货"));
+    expect(r.done!.isFallback).toBe(true);
+    expect(r.done!.fallbackReasons).toContain("low_similarity");
+    expect(r.done!.fallbackReasons).toContain("handled_by_fallback");
+    expect(r.done!.coverage).toBe("partial");
+    // fallbackInfo 在落库的 assistant 消息里（done 事件不带 fallbackInfo）
+    const assistant = d.conversations.appendMessage.mock.calls[1][0] as {
+      fallbackInfo: { topScore?: number; threshold?: number; scopeKbNames?: string[] };
+    };
+    expect(assistant.fallbackInfo.topScore).toBeCloseTo(0.1);
+    expect(assistant.fallbackInfo.threshold).toBeCloseTo(0.2);
+    expect(assistant.fallbackInfo.scopeKbNames).toEqual(["售后库", "通用库"]);
     const streamNodes = d.nodeRuntime.streamText.mock.calls.map((c) => c[0]);
     expect(streamNodes).toEqual(["fallback"]);
+    expect(d.nodeRuntime.streamTextChunks).not.toHaveBeenCalled();
   });
 
-  it("空召回 → empty_retrieval + fallback", async () => {
+  it("空召回 → empty_retrieval + fallback，无 citation", async () => {
     const d = makeDeps();
     d.retrieval.test.mockResolvedValue({ hits: [] });
-    const r = await makeSvc(d).run("app1", "怎么退货");
-    expect(r.isFallback).toBe(true);
-    expect(r.fallbackReasons).toContain("empty_retrieval");
-    expect(r.citations).toEqual([]);
+    const r = await collect(makeSvc(d).run("app1", "怎么退货"));
+    expect(r.done!.isFallback).toBe(true);
+    expect(r.done!.fallbackReasons).toContain("empty_retrieval");
+    expect(r.citations).toHaveLength(0);
   });
 
   it("rewrite 降级 → 用原 query 继续检索", async () => {
@@ -217,22 +254,22 @@ describe("OrchestrationService.run", () => {
         ? { output: { rewrittenQuery: "怎么退货", keywords: [] }, fallbackUsed: true, validateSteps: [] }
         : { output: { intent: "SUPPORT", confidence: 0.9 }, fallbackUsed: false, validateSteps: [] },
     );
-    await makeSvc(d).run("app1", "怎么退货");
+    await collect(makeSvc(d).run("app1", "怎么退货"));
     expect(d.retrieval.test.mock.calls[0][0]).toMatchObject({ query: "怎么退货" });
   });
 
-  it("resolvePublic 抛（未上线）→ run 冒泡异常", async () => {
+  it("resolvePublic 抛（未上线）→ 首个 next() 冒泡异常", async () => {
     const d = makeDeps();
     d.applications.resolvePublic.mockRejectedValue(new NotFoundException("应用未上线"));
-    await expect(makeSvc(d).run("appX", "q")).rejects.toThrow("未上线");
+    await expect(collect(makeSvc(d).run("appX", "q"))).rejects.toThrow("未上线");
   });
 
-  it("落库异常兜住不冒泡：appendMessage 抛仍返回回答（AGENTS.md 边界 7）", async () => {
+  it("落库异常兜住不冒泡：appendMessage 抛仍产出完整回答（AGENTS.md 边界 7）", async () => {
     const d = makeDeps();
     d.conversations.appendMessage.mockRejectedValue(new Error("db down"));
-    const r = await makeSvc(d).run("app1", "怎么退货");
+    const r = await collect(makeSvc(d).run("app1", "怎么退货"));
     expect(r.replyText).toBe("答案[1][2]");
-    expect(r.isFallback).toBe(false);
+    expect(r.done!.isFallback).toBe(false);
   });
 
   it("传入 convId → 不新建会话，历史注入 rewrite", async () => {
@@ -241,9 +278,8 @@ describe("OrchestrationService.run", () => {
       { id: "m0", convId: "conv9", role: "user", content: "上一个问题" },
       { id: "m0b", convId: "conv9", role: "assistant", content: "上一个回答" },
     ]);
-    const r = await makeSvc(d).run("app1", "接着问", "conv9", "u1");
+    await collect(makeSvc(d).run("app1", "接着问", "conv9", "u1"));
     expect(d.conversations.createConversation).not.toHaveBeenCalled();
-    expect(r.convId).toBe("conv9");
     const rewriteCall = d.nodeRuntime.executeStructured.mock.calls.find((c) => c[0] === "rewrite")!;
     expect((rewriteCall[4] as { history?: string }).history).toContain("上一个问题");
   });
@@ -259,25 +295,54 @@ describe("OrchestrationService.run", () => {
     d.conversations.listMessages.mockResolvedValue([
       { id: "m0", convId: "conv9", role: "user", content: "app2 的私密问题" },
     ]);
-    const r = await makeSvc(d).run("app1", "接着问", "conv9", "u1");
-    // 不读别的应用的历史：既不调用 listMessages("conv9")，也不把其内容注入 rewrite
+    await collect(makeSvc(d).run("app1", "接着问", "conv9", "u1"));
+    // 不读别的应用的历史
     expect(d.conversations.listMessages).not.toHaveBeenCalled();
     const rewriteCall = d.nodeRuntime.executeStructured.mock.calls.find((c) => c[0] === "rewrite")!;
     expect((rewriteCall[4] as { history?: string }).history).toBeUndefined();
     // 不写别的应用的会话：改为新建会话，消息落库到新 convId
     expect(d.conversations.createConversation).toHaveBeenCalled();
-    expect(r.convId).toBe("conv1"); // makeDeps 的 createConversation 桩固定返回 conv1
-    expect(r.convId).not.toBe("conv9");
     const userMsg = d.conversations.appendMessage.mock.calls[0][0] as Record<string, unknown>;
     expect(userMsg.convId).toBe("conv1");
   });
 
-  it("新建会话后 appendMessage 失败 → 仍返回刚创建的 convId，不丢失（review P3）", async () => {
+  it("新建会话后 appendMessage 失败 → 仍产出完整回答，不冒泡（边界 7 / review P3）", async () => {
     const d = makeDeps();
     d.conversations.appendMessage.mockRejectedValueOnce(new Error("db down"));
-    const r = await makeSvc(d).run("app1", "怎么退货"); // 不传 convId → 触发新建
+    const r = await collect(makeSvc(d).run("app1", "怎么退货")); // 不传 convId → 触发新建
     expect(d.conversations.createConversation).toHaveBeenCalledTimes(1);
-    expect(r.convId).toBe("conv1"); // 而非 undefined
-    expect(r.replyText).toBe("答案[1][2]"); // 边界7：仍正常返回回答
+    expect(r.replyText).toBe("答案[1][2]"); // 仍正常产出回答
+    expect(r.done).toBeDefined();
+  });
+
+  it("首 token 超时 → error 事件、无 done、chain span 记 ERROR（不阻塞流的既有断言）", async () => {
+    const d = makeDeps();
+    d.nodeRuntime.streamTextChunks.mockImplementation(async function* () {
+      return { outcome: "timeout" };
+    });
+    const r = await collect(makeSvc(d).run("app1", "怎么退货"));
+    expect(r.error).toBeDefined();
+    expect(r.done).toBeUndefined();
+  });
+
+  it("客户端 abort（gen.return）→ 落已产出部分 assistant 文本", async () => {
+    const d = makeDeps();
+    d.nodeRuntime.streamTextChunks.mockImplementation(async function* () {
+      yield { delta: "答" };
+      yield { delta: "案" };
+      return { outcome: "ok", text: "答案" };
+    });
+    const gen = makeSvc(d).run("app1", "怎么退货");
+    // reply 分支：先 2 个 citation，再 token。拉到第一个 token 后 abort。
+    await gen.next(); // citation 1
+    await gen.next(); // citation 2
+    const t = await gen.next(); // token "答"
+    expect(t.value).toMatchObject({ type: "token", delta: "答" });
+    await gen.return(undefined); // 模拟客户端断连 → finally 落部分
+    const assistantCall = d.conversations.appendMessage.mock.calls.find(
+      (c) => (c[0] as { role: string }).role === "assistant",
+    );
+    expect(assistantCall).toBeDefined();
+    expect((assistantCall![0] as { content: string }).content).toBe("答");
   });
 });

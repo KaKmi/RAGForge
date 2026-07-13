@@ -3,11 +3,12 @@ import {
   CHAT_INTENT_KEY,
   INTENT_TABLE,
   type ChatCitation,
+  type ChatStreamEvent,
   type FallbackInfo,
   type FallbackReason,
   type ResolvedNodeConfig,
 } from "@codecrush/contracts";
-import { withSpan } from "@codecrush/otel";
+import { startManualSpan, runInContext, SpanStatusCode } from "@codecrush/otel";
 import { CODECRUSH_SPAN_KIND, RAG } from "@codecrush/otel-conventions";
 import { ApplicationsService } from "../applications/applications.service";
 import { NodeRuntimeService } from "../node-runtime/executor/node-runtime.service";
@@ -27,11 +28,23 @@ import type { OrchestrationResult } from "./orchestration.types";
 const TITLE_MAX = 30;
 const HISTORY_MAX_MESSAGES = 6;
 
+/** 预备阶段（rewrite→intent→路由→检索→判定）的产物，供流式阶段消费。全在首个 yield 前算完。 */
+interface PrepResult {
+  branch: "reply" | "fallback";
+  citations: ChatCitation[];
+  retrievalContext: string;
+  history?: string;
+  validConvId?: string;
+  isFallback: boolean;
+  reasons: FallbackReason[];
+  fallbackInfo: FallbackInfo;
+}
+
 /**
- * M8 T1 RAG 编排内核（013 §编排 + 014 意图路由）：
+ * M8 RAG 编排内核（013 §编排 + 014 意图路由）：
  * resolvePublic → rewrite → intent → 路由映射 → 逐 KB 检索合并 → 生成/兜底 → 派生指标 → 落库。
- * chain 根 span 用 withSpan 活动上下文，NodeRuntime/检索的子 span 自动挂父。
- * T1 非流式：返回完整结果，SSE 合成归 controller（T2 逐 token）。
+ * chain 根 span 用 startManualSpan 手动生命周期（跨 yield 存活），子 span 经 runInContext 显式挂父。
+ * T2 逐 token 真流式：run() 返回 AsyncGenerator<ChatStreamEvent>，reply 走 streamTextChunks 逐 token yield。
  */
 @Injectable()
 export class OrchestrationService {
@@ -45,147 +58,236 @@ export class OrchestrationService {
     private readonly conversations: ConversationsService,
   ) {}
 
-  async run(
+  async *run(
     agentId: string,
     query: string,
     convId?: string,
     userId?: string,
-  ): Promise<OrchestrationResult> {
-    // resolvePublic 在 span 之外：未上线/停用异常直接冒泡给 controller 翻 404/403（写头之前）。
+  ): AsyncGenerator<ChatStreamEvent> {
+    // resolvePublic 在 chain span 之外：未上线/停用异常直接冒泡给 controller 翻 404/403（写头之前）。
     const cfg = await this.applications.resolvePublic(agentId);
 
-    return withSpan(
-      "rag.pipeline",
-      {
-        attributes: {
-          "codecrush.span.kind": CODECRUSH_SPAN_KIND.CHAIN,
-          [RAG.PROMPT_VERSION_ID]: cfg.configVersionId,
-          [RAG.PREVIEW]: cfg.preview,
-        },
+    // chain 根 span 用手动生命周期：跨 yield 存活，finally 手动 end（withSpan 撑不住流式）。
+    const { span: chain, ctx: chainCtx } = startManualSpan("rag.pipeline", {
+      attributes: {
+        "codecrush.span.kind": CODECRUSH_SPAN_KIND.CHAIN,
+        [RAG.PROMPT_VERSION_ID]: cfg.configVersionId,
+        [RAG.PREVIEW]: cfg.preview,
       },
-      async (span) => {
-        const traceId = span.spanContext().traceId;
-        const kbRows = await this.kbs.findByIds(cfg.kbIds);
-        const kbNameById = new Map(kbRows.map((k) => [k.id, k.name]));
-        // review P2：convId 归属校验——客户端自报的 convId 若属于别的 agentId，不得读其历史
-        // 或写入其消息（跨应用会话串号）；不属于/不存在均按未传 convId 处理，降级新建会话。
-        const validConvId = await this.resolveConvId(agentId, convId);
-        const history = await this.loadHistory(validConvId);
+    });
+    const traceId = chain.spanContext().traceId;
+    let replyText = "";
+    let completed = false;
+    let prep: PrepResult | undefined;
+    let persistCtx: { agentId: string; query: string; convId?: string; userId?: string } | undefined;
 
-        // 1) rewrite：降级时契约 fallback 已回填原 query
-        const rewrite = await this.executeNode<{ rewrittenQuery: string }>(
-          cfg.nodes.rewrite,
-          "rewrite",
-          { query, history },
-          {},
+    try {
+      // —— 预备阶段：整段在 chainCtx 内（内部无 yield），子 span（rewrite/intent/检索）自动挂 chain ——
+      prep = await runInContext(chainCtx, () => this.prepare(agentId, query, convId, cfg));
+      persistCtx = { agentId, query, convId: prep.validConvId, userId };
+
+      // —— 流式阶段 ——
+      for (const c of prep.citations) yield { type: "citation", citation: c };
+
+      if (prep.branch === "fallback") {
+        // 兜底/CHAT：整段（streamText，无 delta 可吐），单 token yield
+        const text = await runInContext(chainCtx, () => this.streamNode(cfg.nodes.fallback, "fallback"));
+        replyText = text;
+        if (text) yield { type: "token", delta: text };
+      } else {
+        // 正常 reply：逐 token 真流式（streamTextChunks），reply LLM span 显式挂父到 chainCtx。
+        const it = this.nodeRuntime.streamTextChunks(
+          "reply",
+          cfg.nodes.reply.contractVersion,
+          cfg.nodes.reply.promptBody,
+          cfg.nodes.reply.modelId,
+          { query, history: prep.history, retrievalContext: prep.retrievalContext },
+          { citations: prep.citations },
+          { temperature: cfg.nodes.reply.temperature },
+          chainCtx,
         );
-        const rewrittenQuery = rewrite.rewrittenQuery;
-
-        // 2) intent：候选恒注入静态全表（014 D3）
-        const intentOut = await this.executeNode<{ intent: string }>(
-          cfg.nodes.intent,
-          "intent",
-          { query, history },
-          { availableIntents: INTENT_TABLE },
-        );
-        const intent = intentOut.intent;
-
-        // 3) CHAT 短路：不检索，直走兜底（014 D4）
-        if (intent === CHAT_INTENT_KEY) {
-          const reasons: FallbackReason[] = ["chitchat", "handled_by_fallback"];
-          const fallbackInfo: FallbackInfo = { reasons, scopeKbNames: [] };
-          const replyText = await this.streamNode(cfg.nodes.fallback, "fallback");
-          const result: OrchestrationResult = {
-            traceId,
-            replyText,
-            citations: [],
-            confidence: undefined,
-            coverage: "partial",
-            isFallback: true,
-            fallbackReasons: reasons,
-            fallbackInfo,
-          };
-          result.convId = await this.persist(result, { agentId, query, convId: validConvId, userId });
-          return result;
+        let res = await it.next();
+        while (!res.done) {
+          replyText += res.value.delta;
+          yield { type: "token", delta: res.value.delta };
+          res = await it.next();
         }
-
-        // 4) 路由映射 + 逐 KB 检索 + 合并去重（保持 routeKbIds 顺序，去重同分保留先到组）
-        const routeKbIds = resolveRetrievalKbIds(intent, cfg, kbRows);
-        const reqs = buildRetrievalRequests({
-          query: rewrittenQuery,
-          routeKbIds,
-          embedModelId: kbRows[0]?.embeddingModelId ?? "",
-          retrieval: cfg.retrieval,
-        });
-        const perKb = await Promise.all(
-          reqs.map(async (r) => ({ kbId: r.kbId, hits: (await this.retrieval.test(r)).hits })),
-        );
-        const hits: TaggedHit[] = mergeHits(perKb).slice(0, cfg.retrieval.topN);
-
-        // 5) 兜底判定：rerank 开启时用 rerankThreshold（缺省回退平台阈值）
-        const threshold = cfg.retrieval.rerankEnabled
-          ? (cfg.retrieval.rerankThreshold ?? FALLBACK_THRESHOLD)
-          : FALLBACK_THRESHOLD;
-        const scopeKbNames = routeKbIds.map((id) => kbNameById.get(id) ?? id);
-        const decision = decideFallback({
-          topScore: hits[0]?.finalScore,
-          hitCount: hits.length,
-          threshold,
-          scopeKbNames,
-        });
-        const fallbackInfo: FallbackInfo = {
-          reasons: decision.reasons,
-          topScore: decision.topScore,
-          threshold: decision.threshold,
-          scopeKbNames: decision.scopeKbNames,
-        };
-
-        // 6) 生成：正常 reply（携检索上下文+引用）；兜底 fallback 纯文本
-        let replyText: string;
-        let citations: ChatCitation[] = [];
-        if (decision.isFallback) {
-          replyText = await this.streamNode(cfg.nodes.fallback, "fallback");
-        } else {
-          citations = hits.map((h, i) => ({
-            n: i + 1,
-            doc: h.docName,
-            kb: kbNameById.get(h.kbId) ?? "",
-            section: h.section,
-            score: h.finalScore,
-          }));
-          const retrievalContext = hits.map((h, i) => `[${i + 1}] ${h.text}`).join("\n\n");
-          replyText = await this.streamNode(cfg.nodes.reply, "reply", {
-            input: { query, history, retrievalContext },
-            reserved: { citations },
-          });
+        const summary = res.value;
+        if (summary.outcome === "timeout") {
+          chain.setStatus({ code: SpanStatusCode.ERROR, message: "first token timeout" });
+          yield { type: "error", message: "生成超时，请稍后重试" };
+          await this.persist(this.buildResult(traceId, "", prep), persistCtx);
+          completed = true;
+          return; // 熔断：不发 done
         }
+        if (summary.outcome === "fallback") {
+          // reply 节点降级：把 reply 契约 fallback 文本当整段（同 T1 streamNode 语义），branch 仍算 reply
+          replyText = summary.text;
+          if (summary.text) yield { type: "token", delta: summary.text };
+        }
+        // ok / partial：replyText 已逐 token 累加
+      }
 
-        // 7) 派生指标（F3：从正文 [n] 反查被引用 citation 的 score）
-        const marks = new Set(
-          [...replyText.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1])),
-        );
-        const citedScores = citations.filter((c) => marks.has(c.n)).map((c) => c.score);
-        const confidence = decision.isFallback
-          ? undefined
-          : deriveConfidence(
-              citedScores.length ? citedScores : citations.slice(0, 1).map((c) => c.score),
-            );
-        const coverage = deriveCoverage(replyText, citations.length, decision.isFallback);
+      // —— 派生指标 + 落库 + done（先 persist+completed，再 yield，杜绝 yield 处 abort 致重复落库）——
+      const result = this.buildResult(traceId, replyText, prep);
+      await this.persist(result, persistCtx);
+      completed = true;
+      chain.setStatus({ code: SpanStatusCode.OK });
+      yield {
+        type: "done",
+        traceId,
+        confidence: result.confidence,
+        coverage: result.coverage,
+        isFallback: result.isFallback,
+        fallbackReasons: result.fallbackReasons,
+      };
+    } catch (err) {
+      // 预备阶段异常（infra 级）在首个 yield 前发生 → 记 span 并冒泡给 controller（写头前 → 500）。
+      chain.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      chain.recordException(err as Error);
+      throw err;
+    } finally {
+      if (!completed && persistCtx && prep) {
+        // 客户端 abort（gen.return()）：落已产出部分 assistant 内容（复用现有字段，无 aborted 列）。
+        try {
+          await this.persist(this.buildResult(traceId, replyText, prep), persistCtx);
+        } catch (e) {
+          this.logger.error(`abort 落部分失败（边界7 兜住）：${(e as Error).message}`);
+        }
+      }
+      chain.end(); // 手动生命周期：所有路径必 end
+    }
+  }
 
-        const result: OrchestrationResult = {
-          traceId,
-          replyText,
-          citations,
-          confidence,
-          coverage,
-          isFallback: decision.isFallback,
-          fallbackReasons: decision.reasons,
-          fallbackInfo,
-        };
-        result.convId = await this.persist(result, { agentId, query, convId: validConvId, userId });
-        return result;
-      },
+  /** 预备阶段：rewrite→intent→路由→检索→兜底判定，产出 PrepResult。无 yield，供 runInContext 包裹挂父。 */
+  private async prepare(
+    agentId: string,
+    query: string,
+    convId: string | undefined,
+    cfg: Awaited<ReturnType<ApplicationsService["resolvePublic"]>>,
+  ): Promise<PrepResult> {
+    const kbRows = await this.kbs.findByIds(cfg.kbIds);
+    const kbNameById = new Map(kbRows.map((k) => [k.id, k.name]));
+    // review P2：convId 归属校验——客户端自报的 convId 若属于别的 agentId，不得读其历史
+    // 或写入其消息（跨应用会话串号）；不属于/不存在均按未传 convId 处理，降级新建会话。
+    const validConvId = await this.resolveConvId(agentId, convId);
+    const history = await this.loadHistory(validConvId);
+
+    // 1) rewrite：降级时契约 fallback 已回填原 query
+    const rewrite = await this.executeNode<{ rewrittenQuery: string }>(
+      cfg.nodes.rewrite,
+      "rewrite",
+      { query, history },
+      {},
     );
+    const rewrittenQuery = rewrite.rewrittenQuery;
+
+    // 2) intent：候选恒注入静态全表（014 D3）
+    const intentOut = await this.executeNode<{ intent: string }>(
+      cfg.nodes.intent,
+      "intent",
+      { query, history },
+      { availableIntents: INTENT_TABLE },
+    );
+    const intent = intentOut.intent;
+
+    // 3) CHAT 短路：不检索，直走兜底（014 D4）
+    if (intent === CHAT_INTENT_KEY) {
+      const reasons: FallbackReason[] = ["chitchat", "handled_by_fallback"];
+      return {
+        branch: "fallback",
+        citations: [],
+        retrievalContext: "",
+        history,
+        validConvId,
+        isFallback: true,
+        reasons,
+        fallbackInfo: { reasons, scopeKbNames: [] },
+      };
+    }
+
+    // 4) 路由映射 + 逐 KB 检索 + 合并去重（保持 routeKbIds 顺序，去重同分保留先到组）
+    const routeKbIds = resolveRetrievalKbIds(intent, cfg, kbRows);
+    const reqs = buildRetrievalRequests({
+      query: rewrittenQuery,
+      routeKbIds,
+      embedModelId: kbRows[0]?.embeddingModelId ?? "",
+      retrieval: cfg.retrieval,
+    });
+    const perKb = await Promise.all(
+      reqs.map(async (r) => ({ kbId: r.kbId, hits: (await this.retrieval.test(r)).hits })),
+    );
+    const hits: TaggedHit[] = mergeHits(perKb).slice(0, cfg.retrieval.topN);
+
+    // 5) 兜底判定：rerank 开启时用 rerankThreshold（缺省回退平台阈值）
+    const threshold = cfg.retrieval.rerankEnabled
+      ? (cfg.retrieval.rerankThreshold ?? FALLBACK_THRESHOLD)
+      : FALLBACK_THRESHOLD;
+    const scopeKbNames = routeKbIds.map((id) => kbNameById.get(id) ?? id);
+    const decision = decideFallback({
+      topScore: hits[0]?.finalScore,
+      hitCount: hits.length,
+      threshold,
+      scopeKbNames,
+    });
+    const fallbackInfo: FallbackInfo = {
+      reasons: decision.reasons,
+      topScore: decision.topScore,
+      threshold: decision.threshold,
+      scopeKbNames: decision.scopeKbNames,
+    };
+
+    if (decision.isFallback) {
+      return {
+        branch: "fallback",
+        citations: [],
+        retrievalContext: "",
+        history,
+        validConvId,
+        isFallback: true,
+        reasons: decision.reasons,
+        fallbackInfo,
+      };
+    }
+
+    const citations: ChatCitation[] = hits.map((h, i) => ({
+      n: i + 1,
+      doc: h.docName,
+      kb: kbNameById.get(h.kbId) ?? "",
+      section: h.section,
+      score: h.finalScore,
+    }));
+    const retrievalContext = hits.map((h, i) => `[${i + 1}] ${h.text}`).join("\n\n");
+    return {
+      branch: "reply",
+      citations,
+      retrievalContext,
+      history,
+      validConvId,
+      isFallback: false,
+      reasons: [],
+      fallbackInfo,
+    };
+  }
+
+  /** 派生指标（F3：从正文 [n] 反查被引用 citation 的 score）+ 组装 OrchestrationResult（内部累加器）。 */
+  private buildResult(traceId: string, replyText: string, prep: PrepResult): OrchestrationResult {
+    const marks = new Set([...replyText.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1])));
+    const citedScores = prep.citations.filter((c) => marks.has(c.n)).map((c) => c.score);
+    const confidence = prep.isFallback
+      ? undefined
+      : deriveConfidence(citedScores.length ? citedScores : prep.citations.slice(0, 1).map((c) => c.score));
+    const coverage = deriveCoverage(replyText, prep.citations.length, prep.isFallback);
+    return {
+      traceId,
+      replyText,
+      citations: prep.citations,
+      confidence,
+      coverage,
+      isFallback: prep.isFallback,
+      fallbackReasons: prep.reasons,
+      fallbackInfo: prep.fallbackInfo,
+    };
   }
 
   private async executeNode<TOutput>(
