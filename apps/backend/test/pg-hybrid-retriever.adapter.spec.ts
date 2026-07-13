@@ -283,7 +283,8 @@ describe("PgHybridRetriever — 检索 span 三拆 + 命中分表 (M8 T3)", () =
     await new PgHybridRetriever(chunks, models, kbs).retrieve({ ...baseReq, multi: false });
     const parent = spanByName("retrieval.retrieve")!;
     expect(JSON.parse(parent.attributes["rag.chunk.scores"] as string)).toEqual([
-      { chunkId: "c1", vec: 0.9, kw: null, rerank: null, final: 0.9 },
+      // M9 W2 D1：加 doc/section（命中分表文档名）
+      { chunkId: "c1", doc: "doc1", section: "s", vec: 0.9, kw: null, rerank: null, final: 0.9 },
     ]);
   });
 

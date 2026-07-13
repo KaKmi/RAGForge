@@ -173,6 +173,8 @@ export class PgHybridRetriever implements RetrieverPort {
       JSON.stringify(
         finalHits.map((h) => ({
           chunkId: h.chunkId,
+          doc: h.docName, // M9 W2 D1：命中分表文档名（读侧纯 CH，不回 Postgres 取名）
+          section: h.section ?? null,
           vec: h.vecScore,
           kw: h.kwScore ?? null,
           rerank: h.rerankScore ?? null,

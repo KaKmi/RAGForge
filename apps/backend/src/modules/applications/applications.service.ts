@@ -363,6 +363,7 @@ export class ApplicationsService {
     return {
       applicationId: app.id,
       slug: app.slug,
+      name: app.name, // M9 W1：agent 名快照来源（写侧落 gen_ai.agent.name）
       configVersionId: v.id,
       version: v.version,
       kbIds,

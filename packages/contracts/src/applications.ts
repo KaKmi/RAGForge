@@ -224,6 +224,7 @@ export type ResolvedNodeConfig = z.infer<typeof ResolvedNodeConfigSchema>;
 export const ResolvedApplicationConfigSchema = z.strictObject({
   applicationId: z.string().min(1),
   slug: z.string().min(1),
+  name: z.string().min(1), // M9 W1：agent 名快照来源（写侧落 gen_ai.agent.name）
   configVersionId: z.string().min(1),
   version: z.number().int().positive(),
   kbIds: z.array(z.string()),

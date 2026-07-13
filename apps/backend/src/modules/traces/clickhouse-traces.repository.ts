@@ -2,12 +2,41 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Inject, Injectable } from "@nestjs/common";
-import type { TraceDetailResponse, TraceSpan } from "@codecrush/contracts";
+import type {
+  QualitySignal,
+  SessionListResponse,
+  SessionListRow,
+  SessionStatus,
+  TraceDetailMeta,
+  TraceDetailResponse,
+  TraceListQuery,
+  TraceListResponse,
+  TraceListRow,
+  TraceSpan,
+  TraceStatus,
+} from "@codecrush/contracts";
 import { CLICKHOUSE } from "../../platform/clickhouse/clickhouse.constants";
 import type { CodeCrushClickHouseClient } from "../../platform/clickhouse/clickhouse.types";
 
 export const TRACE_VIEW_NAME = "codecrush_trace_spans";
+export const TRACES_VIEW_NAME = "codecrush_traces";
+export const SESSIONS_VIEW_NAME = "codecrush_sessions";
 const TRACE_VIEW_SQL_RELPATH = join("infra", "clickhouse", "views", "001-trace-views.sql");
+
+/** quick=慢请求 的耗时阈值（ms）；对齐前端 mock（≥3s）与 P95 红线 5s 分离。 */
+const SLOW_MS = 3000;
+
+/** 中文状态筛选 → CH 英文 token（响应/存储统一英文，query 用中文对齐前端筛选值）。 */
+const STATUS_ZH_TO_TOKEN: Record<string, TraceStatus> = {
+  成功: "success",
+  兜底: "fallback",
+  失败: "failed",
+};
+
+/** ClickHouse Bool/UInt8 经 JSONEachRow 可能是 0/1 或 true/false，统一判真。 */
+function chTruthy(v: unknown): boolean {
+  return v === 1 || v === true || v === "1" || v === "true";
+}
 
 /**
  * 解析仓库根下的 VIEW SQL 路径。
@@ -47,8 +76,146 @@ type ClickHouseTraceRow = {
   start_time: string;
   duration_ms: number;
   status_code: string;
+  status_message: string;
   attributes: Record<string, unknown>;
 };
+
+/** 冷库/无 root 兜底的零值 meta（仍满足契约）。 */
+export const EMPTY_TRACE_META: TraceDetailMeta = {
+  userInput: "",
+  agentName: null,
+  genModel: null,
+  genModelVersion: null,
+  promptVersionId: null,
+  durationMs: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cost: null,
+  status: "success",
+  qualitySignals: [],
+};
+
+/** 从 span 属性（Map(String,String) 字符串值）拼质量信号数组——同 W1 mapTraceRow 语义。 */
+function signalsFromAttrs(a: Record<string, unknown>): QualitySignal[] {
+  const out: QualitySignal[] = [];
+  if (chTruthy(a["rag.quality.low_recall"])) out.push("low_recall");
+  if (chTruthy(a["rag.quality.no_citations"])) out.push("no_citations");
+  if (chTruthy(a["rag.quality.refusal"])) out.push("refusal");
+  if (chTruthy(a["rag.quality.timeout"])) out.push("timeout");
+  return out;
+}
+
+/** 从已取 spans 纯 TS 聚合详情 meta（不发第二条 CH 查询；root = 无父的 chain span）。 */
+function buildTraceMeta(spans: TraceSpan[]): TraceDetailMeta {
+  const root =
+    spans.find((s) => s.parentSpanId === null && s.kind === "chain") ??
+    spans.find((s) => s.parentSpanId === null);
+  if (!root) return EMPTY_TRACE_META;
+  const a = root.attributes as Record<string, unknown>;
+  const isError = root.statusCode === "Error" || root.statusCode === "STATUS_CODE_ERROR";
+  const status: TraceStatus = isError
+    ? "failed"
+    : chTruthy(a["rag.fallback.used"])
+      ? "fallback"
+      : "success";
+  const reply = spans.find(
+    (s) => s.kind === "llm" && (s.attributes as Record<string, unknown>)["rag.node.name"] === "reply",
+  );
+  const lastLlm = [...spans].reverse().find((s) => s.kind === "llm");
+  const genModel =
+    ((reply ?? lastLlm)?.attributes as Record<string, unknown> | undefined)?.["gen_ai.request.model"];
+  const sumTok = (key: string): number =>
+    spans.reduce((sum, s) => sum + Number((s.attributes as Record<string, unknown>)[key] ?? 0), 0);
+  return {
+    userInput: String(a["codecrush.io.input"] ?? ""),
+    agentName: (a["gen_ai.agent.name"] as string) || null,
+    genModel: (genModel as string) || null,
+    genModelVersion: null,
+    promptVersionId: (a["rag.prompt.version_id"] as string) || null,
+    durationMs: root.durationMs,
+    inputTokens: sumTok("gen_ai.usage.input_tokens"),
+    outputTokens: sumTok("gen_ai.usage.output_tokens"),
+    cost: null,
+    status,
+    qualitySignals: signalsFromAttrs(a),
+  };
+}
+
+// codecrush_traces / codecrush_sessions VIEW 行（值经 JSONEachRow：数字可能是 string，Bool 可能 0/1 或 true/false）
+type TracesViewRow = {
+  trace_id: string;
+  session_id: string;
+  agent_id: string;
+  agent_name: string;
+  user_id: string;
+  user_input: string;
+  output: string;
+  start_time: string;
+  total_duration_ms: number | string;
+  total_input_tokens: number | string | null;
+  total_output_tokens: number | string | null;
+  status: TraceStatus;
+  low_recall: unknown;
+  no_citations: unknown;
+  refusal: unknown;
+  timeout: unknown;
+  prompt_version_id: string;
+  preview: unknown;
+};
+type SummaryRow = {
+  total: number | string;
+  failCount: number | string;
+  p95Ms: number | string;
+  timeoutCount: number | string;
+};
+type SessionsViewRow = {
+  session_id: string;
+  user_id: string;
+  agent_id: string;
+  agent_name: string;
+  round_count: number | string;
+  first_question: string;
+  first_ts: string;
+  last_ts: string;
+  status: SessionStatus;
+};
+
+function mapTraceRow(r: TracesViewRow): TraceListRow {
+  const signals: QualitySignal[] = [];
+  if (chTruthy(r.low_recall)) signals.push("low_recall");
+  if (chTruthy(r.no_citations)) signals.push("no_citations");
+  if (chTruthy(r.refusal)) signals.push("refusal");
+  if (chTruthy(r.timeout)) signals.push("timeout");
+  return {
+    traceId: r.trace_id,
+    sessionId: r.session_id ?? "",
+    agentId: r.agent_id ?? "",
+    agentName: r.agent_name ?? "",
+    userId: r.user_id ? r.user_id : null,
+    userInput: r.user_input ?? "",
+    status: r.status,
+    startTime: toIsoUtc(r.start_time),
+    durationMs: Number(r.total_duration_ms ?? 0),
+    inputTokens: Number(r.total_input_tokens ?? 0),
+    outputTokens: Number(r.total_output_tokens ?? 0),
+    qualitySignals: signals,
+    promptVersionId: r.prompt_version_id ? r.prompt_version_id : null,
+  };
+}
+
+function mapSessionRow(r: SessionsViewRow): SessionListRow {
+  return {
+    sessionId: r.session_id,
+    userId: r.user_id ? r.user_id : null,
+    agentId: r.agent_id ?? "",
+    agentName: r.agent_name ?? "",
+    roundCount: Number(r.round_count ?? 0),
+    firstQuestion: r.first_question ?? "",
+    firstTs: toIsoUtc(r.first_ts),
+    lastTs: toIsoUtc(r.last_ts),
+    status: r.status,
+  };
+}
 
 @Injectable()
 export class ClickHouseTracesRepository {
@@ -74,14 +241,28 @@ export class ClickHouseTracesRepository {
     if (this.viewsReady) return true;
     if (!(await this.exporterTableExists())) return false;
     const viewSql = await readFile(resolveTraceViewSqlPath(), "utf8");
-    await this.clickhouse.command({ query: viewSql });
+    // @clickhouse/client 的 command 不支持一次多语句；按 `;` 切分逐条建 VIEW（顺序 = 文件序：traces 先于 sessions）。
+    // 每段先剥掉整行注释（`-- …`）再判空——段首常有说明性注释行，不能整段丢弃。
+    const statements = viewSql
+      .split(";")
+      .map((s) =>
+        s
+          .split("\n")
+          .filter((line) => !line.trim().startsWith("--"))
+          .join("\n")
+          .trim(),
+      )
+      .filter((s) => s.length > 0);
+    for (const stmt of statements) {
+      await this.clickhouse.command({ query: stmt });
+    }
     this.viewsReady = true;
     return true;
   }
 
   async findByTraceId(traceId: string): Promise<TraceDetailResponse> {
     if (!(await this.ensureTraceViews())) {
-      return { traceId, spans: [] };
+      return { traceId, meta: EMPTY_TRACE_META, spans: [] };
     }
     const result = await this.clickhouse.query({
       query: `
@@ -94,21 +275,103 @@ export class ClickHouseTracesRepository {
       format: "JSONEachRow",
     });
     const rows = await result.json<ClickHouseTraceRow>();
-    return {
-      traceId,
-      spans: rows.map(
-        (row): TraceSpan => ({
-          traceId: row.trace_id,
-          spanId: row.span_id,
-          parentSpanId: row.parent_span_id || null,
-          name: row.name,
-          kind: row.kind,
-          startTime: toIsoUtc(row.start_time),
-          durationMs: Number(row.duration_ms),
-          statusCode: row.status_code,
-          attributes: row.attributes ?? {},
-        }),
-      ),
+    const spans = rows.map(
+      (row): TraceSpan => ({
+        traceId: row.trace_id,
+        spanId: row.span_id,
+        parentSpanId: row.parent_span_id || null,
+        name: row.name,
+        kind: row.kind,
+        startTime: toIsoUtc(row.start_time),
+        durationMs: Number(row.duration_ms),
+        statusCode: row.status_code,
+        statusMessage: row.status_message || null,
+        attributes: row.attributes ?? {},
+      }),
+    );
+    return { traceId, meta: buildTraceMeta(spans), spans };
+  }
+
+  private async runView<T>(query: string, params: Record<string, unknown>): Promise<T[]> {
+    const result = await this.clickhouse.query({ query, query_params: params, format: "JSONEachRow" });
+    return await result.json<T>();
+  }
+
+  /** 组 WHERE：始终排除 preview（试运行不入正式统计）+ 按 query 追加筛选，全走 query_params 防注入。 */
+  private buildTraceWhere(q: TraceListQuery): { where: string; params: Record<string, unknown> } {
+    const conds: string[] = ["preview = 0"];
+    const params: Record<string, unknown> = {};
+    if (q.agentId) {
+      conds.push("agent_id = {agentId:String}");
+      params.agentId = q.agentId;
+    }
+    if (q.status && q.status !== "全部") {
+      conds.push("status = {status:String}");
+      params.status = STATUS_ZH_TO_TOKEN[q.status];
+    }
+    if (q.quick && q.quick !== "全部") {
+      if (q.quick === "失败") conds.push("status = 'failed'");
+      else if (q.quick === "慢请求") {
+        conds.push("total_duration_ms >= {slow:UInt32}");
+        params.slow = SLOW_MS;
+      } else if (q.quick === "低分召回") conds.push("low_recall");
+    }
+    if (q.q) {
+      conds.push("(user_input ILIKE {kw:String} OR trace_id ILIKE {kw:String})");
+      params.kw = `%${q.q}%`;
+    }
+    if (q.from) {
+      conds.push("start_time >= parseDateTimeBestEffortOrNull({from:String})");
+      params.from = q.from;
+    }
+    if (q.to) {
+      conds.push("start_time <= parseDateTimeBestEffortOrNull({to:String})");
+      params.to = q.to;
+    }
+    return { where: `WHERE ${conds.join(" AND ")}`, params };
+  }
+
+  async listTraces(q: TraceListQuery): Promise<TraceListResponse> {
+    const empty: TraceListResponse = {
+      items: [],
+      total: 0,
+      summary: { sampledTotal: 0, failRate: 0, failCount: 0, p95Ms: 0, timeoutCount: 0 },
     };
+    if (!(await this.ensureTraceViews())) return empty;
+    const { where, params } = this.buildTraceWhere(q);
+    const offset = (q.page - 1) * q.pageSize;
+    const rows = await this.runView<TracesViewRow>(
+      `SELECT * FROM ${TRACES_VIEW_NAME} ${where} ORDER BY start_time DESC LIMIT {limit:UInt32} OFFSET {offset:UInt32}`,
+      { ...params, limit: q.pageSize, offset },
+    );
+    const [agg] = await this.runView<SummaryRow>(
+      `SELECT count() AS total, countIf(status = 'failed') AS failCount,
+              quantile(0.95)(total_duration_ms) AS p95Ms, countIf(timeout) AS timeoutCount
+       FROM ${TRACES_VIEW_NAME} ${where}`,
+      params,
+    );
+    const total = Number(agg?.total ?? 0);
+    const failCount = Number(agg?.failCount ?? 0);
+    const p95 = Number(agg?.p95Ms ?? 0);
+    return {
+      items: rows.map(mapTraceRow),
+      total,
+      summary: {
+        sampledTotal: total,
+        failCount,
+        failRate: total ? failCount / total : 0,
+        p95Ms: Number.isFinite(p95) ? p95 : 0,
+        timeoutCount: Number(agg?.timeoutCount ?? 0),
+      },
+    };
+  }
+
+  async listSessions(): Promise<SessionListResponse> {
+    if (!(await this.ensureTraceViews())) return [];
+    const rows = await this.runView<SessionsViewRow>(
+      `SELECT * FROM ${SESSIONS_VIEW_NAME} ORDER BY last_ts DESC`,
+      {},
+    );
+    return rows.map(mapSessionRow);
   }
 }

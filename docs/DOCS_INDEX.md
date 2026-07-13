@@ -5,7 +5,7 @@
 | Category | # | Status | Name | Description | Last Modified | Path |
 |----------|---|--------|------|-------------|---------------|------|
 | design | 001 | draft | CodeCrushBot RAG 平台架构 | 通用 RAG 平台的系统架构：NestJS 薄编排 + Postgres/pgvector + OTel→Collector→ClickHouse 可观测，本地优先、阿里云就绪。 | 2026-07-11 | [001](docs/design/001-rag-platform-architecture.md) |
-| design | 002 | draft | RAG 平台实现路线图（模块级） | 按依赖排序的模块级实现路线图：地基→可观测→用户/骨架→可配置域→问答/追踪，逐波用 /ship:design 拆细 spec。 | 2026-07-11 | [002](docs/design/002-implementation-roadmap.md) |
+| design | 002 | draft | RAG 平台实现路线图（模块级） | 按依赖排序的模块级实现路线图：地基→可观测→用户/骨架→可配置域→问答/追踪，逐波用 /ship:design 拆细 spec。 | 2026-07-13 | [002](docs/design/002-implementation-roadmap.md) |
 | design | 003 | draft | 代码组织与工程架构（M0） | monorepo 布局、NestJS 模块边界与依赖规则、端口/适配器、Zod 契约、Drizzle/ClickHouse 分工、docker-compose 与约定。 | 2026-07-11 | [003](docs/design/003-code-organization.md) |
 | design | 004 | draft | 轻量级 Trace 可观测（自研 Langfuse 式） | 自研轻量 Langfuse：Session>Trace>Observation 模型、OTLP 结束即写、大 payload offload、首期以 VIEW 读模型跑通功能，后续按需演进物化层；本版聚焦 RAG 节点。 | 2026-07-05 | [004](docs/design/004-trace-observability.md) |
 | design | 005 | draft | 用户/认证（M1） | M1 身份边界：users 叶子 + auth 横切、argon2id、JWT HS256、全局 default-deny guard；四条数据流图与失败模式。 | 2026-07-05 | [005](docs/design/005-user-auth.md) |
@@ -18,3 +18,4 @@
 | design | 012 | current | Prompt 管理模块重构 | Prompt 版本从三态状态机改为可排他移动的标识（标签）模型，详情页新增试运行，谁在用改为应用域只读派生视图。 | 2026-07-11 | [012](docs/design/012-prompt-management-redesign.md) |
 | design | 013 | draft | 问答 / RAG 编排内核（M8 OrchestrationService 与 SSE 流式） | 七节点编排流水线、SSE 逐 token 流式、会话/消息持久化与完整 OTLP trace 写侧的架构设计。 | 2026-07-12 | [013](docs/design/013-m8-rag-orchestration.md) |
 | design | 014 | draft | 两级意图表与知识库外挂意图路由 | 意图节点只做静态闭集大分类，路由靠 KB↔意图绑定映射；替换 013 的 KB-UUID 路由方案。 | 2026-07-12 | [014](docs/design/014-intent-routing.md) |
+| design | 015 | draft | M9 Trace 追踪（完整版）读模型 | M9 落地：根 span 补 session/agent/user 身份 → 纯 VIEW 读模型（列表/Session/详情）+ 只读 API + 前端四屏；out-flow 延后 M11。 | 2026-07-13 | [015](docs/design/015-m9-trace-read-model.md) |

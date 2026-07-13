@@ -1,6 +1,12 @@
 import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { emitManualHelloSpan } from "@codecrush/otel";
-import type { HelloTraceResponse, TraceDetailResponse } from "@codecrush/contracts";
+import type {
+  HelloTraceResponse,
+  SessionListResponse,
+  TraceDetailResponse,
+  TraceListQuery,
+  TraceListResponse,
+} from "@codecrush/contracts";
 import { ClickHouseTracesRepository } from "./clickhouse-traces.repository";
 
 /** noop tracer（tracing 未启用）返回的 INVALID_SPAN_CONTEXT traceId */
@@ -24,5 +30,13 @@ export class TracesService {
 
   async getTrace(traceId: string): Promise<TraceDetailResponse> {
     return await this.tracesRepository.findByTraceId(traceId);
+  }
+
+  async listTraces(query: TraceListQuery): Promise<TraceListResponse> {
+    return await this.tracesRepository.listTraces(query);
+  }
+
+  async listSessions(): Promise<SessionListResponse> {
+    return await this.tracesRepository.listSessions();
   }
 }

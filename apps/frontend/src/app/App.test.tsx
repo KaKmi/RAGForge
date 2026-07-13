@@ -78,15 +78,58 @@ it("renders GapsPage shell on /admin/gaps (数据飞轮壳页)", async () => {
   expect(await screen.findByText(/暂无知识缺口/)).toBeInTheDocument();
 });
 
-it("renders traces list on /admin/traces when authenticated", async () => {
+it("loads TracesPage from real /api/traces on /admin/traces (M9 W1)", async () => {
   localStorage.setItem("token", "fake-token");
+  // M9 W1：TracesPage 脱 mock，进页拉真实读模型。mock fetch：/api/traces 返一条、sessions/applications 返空。
+  const traceRow = {
+    traceId: "a".repeat(32),
+    sessionId: "conv1",
+    agentId: "app1",
+    agentName: "退款助手",
+    userId: "u1",
+    userInput: "帮我把课退了",
+    status: "success",
+    startTime: "2026-07-13T09:11:00.000Z",
+    durationMs: 2410,
+    inputTokens: 1200,
+    outputTokens: 200,
+    qualitySignals: [],
+    promptVersionId: null,
+  };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, _opts?: RequestInit) => {
+    const u = typeof input === "string" ? input : input.toString();
+    if (u.includes("/api/traces/sessions")) {
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response;
+    }
+    if (u.includes("/api/traces")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [traceRow],
+          total: 1,
+          summary: { sampledTotal: 1, failRate: 0, failCount: 0, p95Ms: 2410, timeoutCount: 0 },
+        }),
+      } as unknown as Response;
+    }
+    if (u.includes("/api/applications")) {
+      return { ok: true, status: 200, json: async () => [] } as unknown as Response;
+    }
+    return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+  });
+  global.fetch = fetchMock as unknown as typeof fetch;
+
   render(
     <MemoryRouter initialEntries={["/admin/traces"]}>
       <App />
     </MemoryRouter>,
   );
-  // 用 traces mock 独有查询文案断言列表非空，规避菜单「Trace 追踪」与卡片标题重复匹配
+  // 真实 API 返回的用户问题渲染 = 页面消费了 /api/traces（不再是本地 mock TRACE_ROWS）
   expect(await screen.findByText("帮我把课退了")).toBeInTheDocument();
+  await waitFor(() => {
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("/api/traces"))).toBe(true);
+  });
 });
 
 it("loads AgentsPage from real /api/agents on /admin/agents (M7)", async () => {
