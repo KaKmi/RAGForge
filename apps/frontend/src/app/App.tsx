@@ -64,7 +64,8 @@ export function App() {
             </AuthGuard>
           }
         >
-          <Route index element={<StartPage />} />
+          <Route index element={<DashboardPage />} />
+          <Route path="start" element={<StartPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
           {/* 旧 agents 路由保留可直达（不入导航，M7b 删除） */}
           <Route path="agents" element={<AgentsPage />} />

@@ -131,6 +131,11 @@ import {
   type SessionDetailResponse,
   TraceDetailResponseSchema,
   type TraceDetailResponse,
+  MetricsOverviewResponseSchema,
+  MetricsAppResponseSchema,
+  type MetricsOverviewResponse,
+  type MetricsAppResponse,
+  type MetricsQuery,
 } from "@codecrush/contracts";
 
 const TOKEN_KEY = "token";
@@ -287,12 +292,37 @@ export const getTraces = (q: TraceListQuery): Promise<TraceListResponse> => {
   if (q.agentId) p.set("agentId", q.agentId);
   if (q.status && q.status !== "全部") p.set("status", q.status);
   if (q.quick && q.quick !== "全部") p.set("quick", q.quick);
+  if (q.stage) p.set("stage", q.stage);
+  if (q.model) p.set("model", q.model);
+  if (q.signal) p.set("signal", q.signal);
   if (q.from) p.set("from", q.from);
   if (q.to) p.set("to", q.to);
   p.set("page", String(q.page ?? 1));
   p.set("pageSize", String(q.pageSize ?? 20));
   return getJson(`/api/traces?${p.toString()}`, TraceListResponseSchema);
 };
+
+export async function downloadTraceCandidates(q: TraceListQuery): Promise<void> {
+  const p = new URLSearchParams();
+  if (q.q) p.set("q", q.q);
+  if (q.agentId) p.set("agentId", q.agentId);
+  if (q.status && q.status !== "全部") p.set("status", q.status);
+  if (q.quick && q.quick !== "全部") p.set("quick", q.quick);
+  if (q.stage) p.set("stage", q.stage);
+  if (q.model) p.set("model", q.model);
+  if (q.signal) p.set("signal", q.signal);
+  if (q.from) p.set("from", q.from);
+  if (q.to) p.set("to", q.to);
+  const response = await apiFetch(`/api/traces/export?${p.toString()}`);
+  if (!response.ok) throw new Error(`导出失败：${response.status}`);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `trace-candidates-${new Date().toISOString().slice(0, 10)}.csv`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
 
 export const getTraceSessions = (): Promise<SessionListResponse> =>
   getJson("/api/traces/sessions", SessionListResponseSchema);
@@ -303,6 +333,27 @@ export const getSession = (sessionId: string): Promise<SessionDetailResponse> =>
 // M9 W2：Trace 详情（meta + 规范化 spans）
 export const getTrace = (traceId: string): Promise<TraceDetailResponse> =>
   getJson(`/api/traces/${encodeURIComponent(traceId)}`, TraceDetailResponseSchema);
+
+function metricsParams(q: MetricsQuery): string {
+  const params = new URLSearchParams();
+  if (q.from) params.set("from", q.from);
+  if (q.to) params.set("to", q.to);
+  if (q.agentId) params.set("agentId", q.agentId);
+  if (q.model) params.set("model", q.model);
+  return params.toString();
+}
+
+export const getMetricsOverview = (q: MetricsQuery): Promise<MetricsOverviewResponse> =>
+  getJson(`/api/metrics/overview?${metricsParams(q)}`, MetricsOverviewResponseSchema);
+
+export const getApplicationMetrics = (
+  applicationId: string,
+  q: MetricsQuery,
+): Promise<MetricsAppResponse> =>
+  getJson(
+    `/api/metrics/apps/${encodeURIComponent(applicationId)}?${metricsParams(q)}`,
+    MetricsAppResponseSchema,
+  );
 export const getApplicationDetail = (id: string): Promise<ApplicationDetail> =>
   getJson(`/api/applications/${encodeURIComponent(id)}`, ApplicationDetailSchema);
 export const createApplication = (req: CreateApplicationRequest): Promise<ApplicationDetail> =>

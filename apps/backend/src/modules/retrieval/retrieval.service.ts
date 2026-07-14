@@ -7,8 +7,13 @@ import type { RetrieverPort } from "./ports/retriever.port";
 export class RetrievalService {
   constructor(@Inject(RETRIEVER_PORT) private readonly retriever: RetrieverPort) {}
 
-  async test(req: RetrievalTestRequest): Promise<RetrievalTestResponse> {
-    const hits = await this.retriever.retrieve(req);
+  async test(
+    req: RetrievalTestRequest,
+    observer?: (signal: "keyword_degraded" | "rerank_degraded") => void,
+  ): Promise<RetrievalTestResponse> {
+    const hits = observer
+      ? await this.retriever.retrieve(req, observer)
+      : await this.retriever.retrieve(req);
     return { hits };
   }
 }

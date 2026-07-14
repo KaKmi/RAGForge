@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Param, Post, Query } from "@nestjs/common";
+import { BadRequestException, Controller, Get, Header, Param, Post, Query, Res } from "@nestjs/common";
 import {
   type HelloTraceResponse,
   type SessionDetailResponse,
@@ -27,6 +27,20 @@ export class TracesController {
     const parsed = TraceListQuerySchema.safeParse(raw ?? {});
     if (!parsed.success) throw new BadRequestException(parsed.error.message);
     return await this.tracesService.listTraces(parsed.data);
+  }
+
+  @Get("export")
+  @Header("Content-Type", "text/csv; charset=utf-8")
+  async export(
+    @Query() raw: unknown,
+    @Res({ passthrough: true }) response: { setHeader(name: string, value: string): void },
+  ): Promise<string> {
+    const parsed = TraceListQuerySchema.safeParse(raw ?? {});
+    if (!parsed.success) throw new BadRequestException(parsed.error.message);
+    const result = await this.tracesService.exportTraceCandidates(parsed.data);
+    response.setHeader("Content-Disposition", 'attachment; filename="trace-candidates.csv"');
+    response.setHeader("X-Export-Truncated", String(result.truncated));
+    return `\uFEFF${result.csv}`;
   }
 
   @Get("sessions")

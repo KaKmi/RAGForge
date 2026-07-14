@@ -53,12 +53,22 @@ type TokenUsage = { inputTokens: number; outputTokens: number };
 interface ExecuteNodeOptions {
   spanEnrich?: (output: unknown) => Record<string, string | number | boolean>;
   onUsage?: (usage: TokenUsage) => void;
+  onRepair?: (retryCount: number) => void;
 }
 
 class ChainMetricsAccumulator {
   private readonly prepUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   private readonly replyUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
   private model = "";
+  private repairAttemptCount = 0;
+  private repairEligibleCount = 0;
+  private ttftMs?: number;
+  private generationDurationMs?: number;
+  private retrievalExecutionCount = 0;
+  private keywordRequestedCount = 0;
+  private rerankRequestedCount = 0;
+  private keywordDegradedCount = 0;
+  private rerankDegradedCount = 0;
 
   readonly replyObserver = {
     onModel: (model: string) => {
@@ -68,11 +78,31 @@ class ChainMetricsAccumulator {
       this.replyUsage.inputTokens = usage.inputTokens;
       this.replyUsage.outputTokens = usage.outputTokens;
     },
+    onGenerationTiming: (timing: { ttftMs?: number; generationDurationMs: number }) => {
+      this.ttftMs = timing.ttftMs;
+      this.generationDurationMs = timing.generationDurationMs;
+    },
   };
 
   readonly addPrepUsage = (usage: TokenUsage): void => {
     this.prepUsage.inputTokens += usage.inputTokens;
     this.prepUsage.outputTokens += usage.outputTokens;
+  };
+
+  readonly addRepair = (retryCount: number): void => {
+    this.repairEligibleCount += 1;
+    if (retryCount > 0) this.repairAttemptCount += 1;
+  };
+
+  readonly addRetrieval = (keywordRequested: boolean, rerankRequested: boolean): void => {
+    this.retrievalExecutionCount += 1;
+    if (keywordRequested) this.keywordRequestedCount += 1;
+    if (rerankRequested) this.rerankRequestedCount += 1;
+  };
+
+  readonly addDegradation = (signal: "keyword_degraded" | "rerank_degraded"): void => {
+    if (signal === "keyword_degraded") this.keywordDegradedCount += 1;
+    else this.rerankDegradedCount += 1;
   };
 
   captureReply(usage?: TokenUsage, model?: string): void {
@@ -86,6 +116,24 @@ class ChainMetricsAccumulator {
     if (inputTokens > 0) span.setAttribute(GEN_AI.USAGE_INPUT_TOKENS, inputTokens);
     if (outputTokens > 0) span.setAttribute(GEN_AI.USAGE_OUTPUT_TOKENS, outputTokens);
     if (this.model) span.setAttribute(GEN_AI.REQUEST_MODEL, this.model);
+    span.setAttribute(RAG.REPAIR_ATTEMPT_COUNT, this.repairAttemptCount);
+    span.setAttribute(RAG.REPAIR_ELIGIBLE_COUNT, this.repairEligibleCount);
+    span.setAttribute(RAG.RETRIEVAL_EXECUTION_COUNT, this.retrievalExecutionCount);
+    span.setAttribute(RAG.KEYWORD_REQUESTED_COUNT, this.keywordRequestedCount);
+    span.setAttribute(RAG.RERANK_REQUESTED_COUNT, this.rerankRequestedCount);
+    span.setAttribute(RAG.DEGRADED_KEYWORD_RECALL_COUNT, this.keywordDegradedCount);
+    span.setAttribute(RAG.DEGRADED_RERANK_COUNT, this.rerankDegradedCount);
+    if (this.ttftMs !== undefined) span.setAttribute(RAG.TTFT_MS, this.ttftMs);
+    if (this.generationDurationMs !== undefined) {
+      span.setAttribute(RAG.GENERATION_DURATION_MS, this.generationDurationMs);
+      const postFirstTokenMs = this.generationDurationMs - (this.ttftMs ?? this.generationDurationMs);
+      if (this.replyUsage.outputTokens > 0 && postFirstTokenMs > 0) {
+        span.setAttribute(
+          RAG.GENERATION_TOKENS_PER_SECOND,
+          this.replyUsage.outputTokens / (postFirstTokenMs / 1000),
+        );
+      }
+    }
   }
 }
 
@@ -163,6 +211,17 @@ export class OrchestrationService {
       chain.setAttribute(RAG.QUALITY_TIMEOUT, sig.timeout);
       // M9 W1：兜底状态判据——检索层未命中走兜底话术（区别于 refusal=isFallback||replyDegraded，PDF「兜底=知识未命中」）
       chain.setAttribute(RAG.FALLBACK_USED, prep.isFallback);
+      const marks = new Set([...replyText.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1])));
+      const citedScores = prep.citations.filter((c) => marks.has(c.n)).map((c) => c.score);
+      const confidence = prep.isFallback
+        ? undefined
+        : deriveConfidence(citedScores.length ? citedScores : prep.citations.slice(0, 1).map((c) => c.score));
+      if (confidence !== undefined) chain.setAttribute(RAG.QUALITY_CONFIDENCE, confidence);
+      chain.setAttribute(RAG.CITATION_COUNT, prep.citations.length);
+      chain.setAttribute(
+        RAG.CITATION_COVERAGE,
+        deriveCoverage(replyText, prep.citations.length, prep.isFallback),
+      );
       // M9 W2 D2：引用角标↔命中分块（n 编号跨 KB 合并后才产生，只活在 prep.citations）——落根 span 供详情引用面板纯 CH 驱动。
       // 兜底/CHAT 分支 citations 为 []。RAG.CITATION_IDS 常量首次真实落地。
       chain.setAttribute(
@@ -319,7 +378,7 @@ export class OrchestrationService {
       "rewrite",
       { query, history },
       {},
-      { onUsage: metrics.addPrepUsage },
+      { onUsage: metrics.addPrepUsage, onRepair: metrics.addRepair },
     );
     const rewrittenQuery = rewrite.rewrittenQuery;
 
@@ -341,6 +400,7 @@ export class OrchestrationService {
           return { [RAG.INTENT]: cls, [RAG.ROUTE_KB_NAMES]: JSON.stringify(kbNames) };
         },
         onUsage: metrics.addPrepUsage,
+        onRepair: metrics.addRepair,
       },
     );
     const intent = intentOut.intent;
@@ -369,7 +429,13 @@ export class OrchestrationService {
       retrieval: cfg.retrieval,
     });
     const perKb = await Promise.all(
-      reqs.map(async (r) => ({ kbId: r.kbId, hits: (await this.retrieval.test(r)).hits })),
+      reqs.map(async (r) => {
+        metrics.addRetrieval(r.multi, Boolean(r.rerankModelId));
+        return {
+          kbId: r.kbId,
+          hits: (await this.retrieval.test(r, metrics.addDegradation)).hits,
+        };
+      }),
     );
     const hits: TaggedHit[] = mergeHits(perKb).slice(0, cfg.retrieval.topN);
 
@@ -459,7 +525,11 @@ export class OrchestrationService {
       node.modelId,
       input,
       reserved,
-      { temperature: node.temperature, spanEnrich: options.spanEnrich },
+      {
+        temperature: node.temperature,
+        spanEnrich: options.spanEnrich,
+        metricsObserver: options.onRepair ? { onRepair: options.onRepair } : undefined,
+      },
     );
     if (r.usage) options.onUsage?.(r.usage);
     return r.output;

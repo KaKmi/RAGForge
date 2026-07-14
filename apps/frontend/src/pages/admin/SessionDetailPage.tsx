@@ -90,22 +90,25 @@ export default function SessionDetailPage() {
   const initial = initialOf(data.agentName || "A");
 
   return (
-    <div>
+    <div style={{ maxWidth: 1280, margin: "0 auto", paddingBottom: 32 }}>
       {/* 头部：返回 + sessionId + 用户/轮次 */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
         <div onClick={() => nav("/admin/traces")} style={headBtn}>
           ← 返回列表
         </div>
-        <div style={{ fontSize: 16, fontWeight: 600, fontFamily: "ui-monospace,Menlo,monospace" }}>{data.sessionId}</div>
-        <span style={{ fontSize: 12, color: "rgba(0,0,0,.45)" }}>
-          用户 {data.userId ?? "—"} · {data.rounds.length} 轮
-        </span>
+        <div style={{ fontSize: 18, fontWeight: 650, color: "#0f172a" }}>会话详情</div>
+        <span style={{ fontSize: 12, color: "#64748b", fontFamily: "ui-monospace,Menlo,monospace" }}>{data.sessionId}</span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 18 }}>
+        {[{ label: "应用", value: data.agentName || "—" }, { label: "用户", value: data.userId ?? "未记录" }, { label: "对话轮次", value: `${data.rounds.length} 轮` }, { label: "会话状态", value: data.rounds.some((round) => round.status === "failed") ? "存在失败" : data.rounds.some((round) => round.status === "fallback") ? "包含兜底" : "正常" }].map((item) => <div key={item.label} style={{ background: "#fff", border: "1px solid #e8edf3", borderRadius: 10, padding: "13px 16px", boxShadow: "0 3px 14px rgba(15,23,42,.04)" }}><div style={{ fontSize: 12, color: "#94a3b8" }}>{item.label}</div><div style={{ marginTop: 6, fontSize: 15, fontWeight: 600, color: "#334155", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.value}</div></div>)}
       </div>
 
       {/* C 端聊天窗口卡 */}
-      <div style={{ maxWidth: 520, margin: "0 auto", border: "1px solid #ebebeb", borderRadius: 14, overflow: "hidden", boxShadow: "0 6px 24px rgba(0,0,0,.06)", background: "#f5f6f8" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 280px", gap: 18, alignItems: "start" }}>
+      <div style={{ height: "calc(100vh - 270px)", minHeight: 460, border: "1px solid #e2e8f0", borderRadius: 14, overflow: "hidden", boxShadow: "0 8px 28px rgba(15,23,42,.07)", background: "#f8fafc", display: "flex", flexDirection: "column" }}>
         {/* 顶栏 */}
-        <div style={{ height: 56, background: "#fff", borderBottom: "1px solid #f0f0f0", display: "flex", alignItems: "center", gap: 10, padding: "0 16px" }}>
+        <div style={{ height: 64, background: "#fff", borderBottom: "1px solid #e8edf3", display: "flex", alignItems: "center", gap: 12, padding: "0 20px" }}>
           <div style={{ width: 34, height: 34, borderRadius: 9, background: AGENT_COLOR, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 600 }}>{initial}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{data.agentName || "—"}</div>
@@ -114,11 +117,11 @@ export default function SessionDetailPage() {
               在线
             </div>
           </div>
-          <div style={{ fontSize: 11, color: "rgba(0,0,0,.3)" }}>AI 客服</div>
+          <div style={{ fontSize: 11, color: "rgba(0,0,0,.3)" }}>AI BOT</div>
         </div>
 
         {/* 气泡区 */}
-        <div style={{ padding: "18px 16px", display: "flex", flexDirection: "column", gap: 16, maxHeight: 560, overflowY: "auto" }}>
+        <div style={{ flex: 1, minHeight: 0, padding: "18px 24px", display: "flex", flexDirection: "column", gap: 16, overflowY: "auto" }}>
           {firstTs && (
             <div style={{ textAlign: "center" }}>
               <span style={{ fontSize: 11, color: "rgba(0,0,0,.35)", background: "rgba(0,0,0,.05)", padding: "2px 10px", borderRadius: 10 }}>{fmtDate(firstTs)}</span>
@@ -166,6 +169,13 @@ export default function SessionDetailPage() {
           <div style={{ flex: 1, height: 34, background: "#f5f6f8", borderRadius: 8, display: "flex", alignItems: "center", padding: "0 12px", fontSize: 13, color: "rgba(0,0,0,.3)" }}>输入消息…</div>
           <div style={{ width: 60, height: 32, borderRadius: 7, background: "#e6e8eb", color: "rgba(0,0,0,.35)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>发送</div>
         </div>
+      </div>
+      <aside style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: 18, boxShadow: "0 5px 20px rgba(15,23,42,.04)" }}>
+        <div style={{ fontSize: 14, fontWeight: 650, color: "#0f172a", marginBottom: 16 }}>会话概览</div>
+        <div style={{ display: "grid", gap: 12 }}>
+          {data.rounds.map((round, index) => { const st = STATUS_TAG[round.status]; return <div key={round.traceId} onClick={() => nav(`/admin/traces/${round.traceId}`)} style={{ padding: "11px 12px", border: "1px solid #eef2f7", borderRadius: 9, cursor: "pointer", background: "#fbfdff" }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span style={{ fontSize: 12, fontWeight: 600, color: "#334155" }}>第 {index + 1} 轮</span><span style={{ fontSize: 11, color: st.c }}>{st.label}</span></div><div style={{ marginTop: 7, color: "#64748b", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{round.userInput || "无问题文本"}</div><div style={{ marginTop: 6, color: "#94a3b8", fontSize: 11 }}>{fmtMs(round.durationMs)} · 查看 Trace →</div></div>; })}
+        </div>
+      </aside>
       </div>
       <div style={{ textAlign: "center", fontSize: 11, color: "rgba(0,0,0,.35)", marginTop: 12 }}>
         这是该会话在 C 端的真实呈现 · 每条回复下方的溯源条点击可下钻到 Trace 调用链路

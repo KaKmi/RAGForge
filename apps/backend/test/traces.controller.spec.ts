@@ -71,6 +71,25 @@ describe("TracesController", () => {
     expect(listTraces).not.toHaveBeenCalled();
   });
 
+  it("GET /traces/export validates typed filters and sets safe download headers", async () => {
+    const exportTraceCandidates = jest.fn().mockResolvedValue({ csv: "trace_id\r\n", truncated: true });
+    const ctrl = await build({ exportTraceCandidates } as Partial<TracesService>);
+    const response = { setHeader: jest.fn() };
+    const body = await ctrl.export({ signal: "repair", agentId: "app1" }, response);
+    expect(exportTraceCandidates).toHaveBeenCalledWith(expect.objectContaining({
+      signal: "repair", agentId: "app1", page: 1, pageSize: 20,
+    }));
+    expect(response.setHeader).toHaveBeenCalledWith("X-Export-Truncated", "true");
+    expect(body.startsWith("\uFEFF")).toBe(true);
+  });
+
+  it("GET /traces/export rejects unknown signals before querying", async () => {
+    const exportTraceCandidates = jest.fn();
+    const ctrl = await build({ exportTraceCandidates } as Partial<TracesService>);
+    await expect(ctrl.export({ signal: "unknown" }, { setHeader: jest.fn() })).rejects.toBeInstanceOf(BadRequestException);
+    expect(exportTraceCandidates).not.toHaveBeenCalled();
+  });
+
   it("GET /traces/sessions calls service.listSessions (not swallowed by :traceId)", async () => {
     const listSessions = jest.fn().mockResolvedValue([]);
     const ctrl = await build({ listSessions } as Partial<TracesService>);
