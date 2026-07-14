@@ -93,14 +93,25 @@ function makeDeps() {
           output: { rewrittenQuery: "改写后的退货问题", keywords: [] },
           fallbackUsed: false,
           validateSteps: [],
+          usage: { inputTokens: 5, outputTokens: 3 },
         };
-      return { output: { intent: "SUPPORT", confidence: 0.9 }, fallbackUsed: false, validateSteps: [] };
+      return {
+        output: { intent: "SUPPORT", confidence: 0.9 },
+        fallbackUsed: false,
+        validateSteps: [],
+        usage: { inputTokens: 5, outputTokens: 3 },
+      };
     }),
     // reply 走 streamTextChunks（逐 token）——默认吐两段拼成 "答案[1][2]"
     streamTextChunks: jest.fn(async function* () {
       yield { delta: "答案" };
       yield { delta: "[1][2]" };
-      return { outcome: "ok", text: "答案[1][2]" };
+      return {
+        outcome: "ok",
+        text: "答案[1][2]",
+        usage: { inputTokens: 20, outputTokens: 15 },
+        model: "deepseek-chat",
+      };
     }),
     // streamText 仅 fallback 路径调用（整段）
     streamText: jest.fn(async (node: string) =>
@@ -428,6 +439,63 @@ describe("OrchestrationService · chain span 质量信号 + IO (M8 T3)", () => {
     expect(a["rag.quality.no_citations"]).toBe(false);
     expect(a["rag.quality.refusal"]).toBe(false);
     expect(a["rag.quality.timeout"]).toBe(false);
+  });
+
+  it("根 chain span 落 token 总和与生成模型标签", async () => {
+    const d = makeDeps();
+    await collect(makeSvc(d).run("app1", "q", undefined, "u"));
+    const a = chainAttrs();
+    expect(a["gen_ai.usage.input_tokens"]).toBe(30);
+    expect(a["gen_ai.usage.output_tokens"]).toBe(21);
+    expect(a["gen_ai.request.model"]).toBe("deepseek-chat");
+  });
+
+  it("prepare 后段失败仍把 rewrite/intent 已消费 token 落根 span", async () => {
+    const d = makeDeps();
+    d.retrieval.test.mockRejectedValue(new Error("retrieval down"));
+    await expect(collect(makeSvc(d).run("app1", "q", undefined, "u"))).rejects.toThrow(
+      "retrieval down",
+    );
+    const a = chainAttrs();
+    expect(a["gen_ai.usage.input_tokens"]).toBe(10);
+    expect(a["gen_ai.usage.output_tokens"]).toBe(6);
+  });
+
+  it("客户端 abort 后根 span 保留已知 reply usage 与模型标签", async () => {
+    const d = makeDeps();
+    d.nodeRuntime.streamTextChunks.mockImplementation(
+      ((...args: unknown[]) => {
+        const observer = (
+          args[6] as {
+            metricsObserver?: {
+              onModel?: (model: string) => void;
+              onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
+            };
+          }
+        ).metricsObserver;
+        return (async function* () {
+          observer?.onModel?.("deepseek-chat");
+          observer?.onUsage?.({ inputTokens: 20, outputTokens: 4 });
+          yield { delta: "答" };
+          yield { delta: "案" };
+          return {
+            outcome: "ok",
+            text: "答案",
+            usage: { inputTokens: 20, outputTokens: 4 },
+            model: "deepseek-chat",
+          };
+        })();
+      }) as never,
+    );
+    const gen = makeSvc(d).run("app1", "q", undefined, "u");
+    await gen.next();
+    await gen.next();
+    await gen.next();
+    await gen.return(undefined);
+    const a = chainAttrs();
+    expect(a["gen_ai.usage.input_tokens"]).toBe(30);
+    expect(a["gen_ai.usage.output_tokens"]).toBe(10);
+    expect(a["gen_ai.request.model"]).toBe("deepseek-chat");
   });
 
   // M9 W1：根 span 身份富化 —— session/agent/user + 兜底状态标记

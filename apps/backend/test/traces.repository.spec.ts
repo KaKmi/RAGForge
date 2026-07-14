@@ -54,6 +54,8 @@ describe("ClickHouseTracesRepository", () => {
           attributes: {
             "codecrush.io.input": "怎么退款",
             "gen_ai.agent.name": "退款助手",
+            "gen_ai.usage.input_tokens": "1200",
+            "gen_ai.usage.output_tokens": "200",
             "rag.prompt.version_id": "cv1",
             "rag.fallback.used": "false",
             "rag.quality.low_recall": "false",
@@ -95,6 +97,33 @@ describe("ClickHouseTracesRepository", () => {
       status: "success",
     });
     expect(res.spans[0].statusMessage).toBeNull();
+  });
+
+  it("reads the generation model from the D-metrics chain root without an LLM child", async () => {
+    const { client } = buildClient({
+      tableExists: true,
+      rows: [
+        {
+          trace_id: "a".repeat(32),
+          span_id: "root".padEnd(16, "0"),
+          parent_span_id: null,
+          name: "rag.pipeline",
+          kind: "chain",
+          start_time: "2026-07-13 09:11:00.000",
+          duration_ms: 2410,
+          status_code: "Ok",
+          status_message: "",
+          attributes: {
+            "gen_ai.request.model": "root-model",
+          },
+        },
+      ],
+    });
+    const repo = new ClickHouseTracesRepository(client);
+
+    const res = await repo.findByTraceId("a".repeat(32));
+
+    expect(res.meta.genModel).toBe("root-model");
   });
 
   it("finds chain root via kind even when it has an HTTP-server parent (M9 fix)", async () => {
@@ -222,6 +251,11 @@ describe("ClickHouseTracesRepository · M9 W1 list/session", () => {
       /CREATE (OR REPLACE )?VIEW/i.test(c.query),
     );
     expect(createViewCmds).toHaveLength(3);
+    const tracesView = createViewCmds
+      .map(([c]: [QueryCall]) => c.query)
+      .find((query: string) => query.includes("codecrush_traces AS"));
+    expect(tracesView).toContain("root.SpanAttributes['gen_ai.usage.input_tokens'] != ''");
+    expect(tracesView).toContain("agg.child_input_tokens");
   });
 
   it("listTraces maps status/tokens/qualitySignals/startTime + summary", async () => {

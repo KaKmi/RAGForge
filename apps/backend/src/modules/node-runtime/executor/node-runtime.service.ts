@@ -29,6 +29,7 @@ export interface ExecuteStructuredResult<TOutput> {
   /** M7b S0：模型调用路径的 span traceId（供 ReleaseCheck OPEN_PROMPT_TRY_RUN 深链）。
    *  校验失败提前返回（无 span）路径为 undefined。 */
   traceId?: string;
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface StreamTextResult {
@@ -44,10 +45,33 @@ export interface StreamTextResult {
  * timeout → 编排 yield error 事件、不发 done。
  */
 export type StreamChunksSummary =
-  | { outcome: "ok"; text: string; traceId?: string }
-  | { outcome: "partial"; text: string; traceId?: string }
-  | { outcome: "fallback"; text: string; traceId?: string }
-  | { outcome: "timeout"; traceId?: string };
+  | {
+      outcome: "ok";
+      text: string;
+      traceId?: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      model?: string;
+    }
+  | {
+      outcome: "partial";
+      text: string;
+      traceId?: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      model?: string;
+    }
+  | {
+      outcome: "fallback";
+      text: string;
+      traceId?: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      model?: string;
+    }
+  | {
+      outcome: "timeout";
+      traceId?: string;
+      usage?: { inputTokens: number; outputTokens: number };
+      model?: string;
+    };
 
 /** 首 token 超时熔断的内部信号（仅 streamTextChunks 内部 race 用，不外泄）。 */
 class FirstTokenTimeoutError extends Error {}
@@ -61,6 +85,14 @@ export interface NodeExecuteOptions {
    * 仅结构化成功/修复/兜底路径调用；抛错被吞（遥测不得中断请求）。
    */
   spanEnrich?: (output: unknown) => Record<string, string | number | boolean>;
+  /**
+   * 流式末值可能因消费者 abort 不可达，故把已知模型与累计 usage 同步通知根 span 所有者。
+   * 回调异常必须被吞，避免指标富化进入问答关键路径。
+   */
+  metricsObserver?: {
+    onModel?: (model: string) => void;
+    onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
+  };
 }
 
 export interface NodeSampleRequest {
@@ -159,6 +191,7 @@ export class NodeRuntimeService {
         output: contract.fallback(input, reserved),
         fallbackUsed: true,
         validateSteps: [...steps, { step: "fallback", ok: true }],
+        usage: { inputTokens: 0, outputTokens: 0 },
       };
     }
 
@@ -173,6 +206,7 @@ export class NodeRuntimeService {
         output: contract.fallback(input, reserved),
         fallbackUsed: true,
         validateSteps: [...steps, { step: "fallback", ok: true }],
+        usage: { inputTokens: 0, outputTokens: 0 },
       };
     }
     // 后续统一用校验/归一后的值（含 Zod default，如 REPLY_CONTRACT.citations 缺省 []），
@@ -269,6 +303,7 @@ export class NodeRuntimeService {
             fallbackUsed: false,
             validateSteps: steps,
             traceId: span.spanContext().traceId,
+            usage: { inputTokens: uin, outputTokens: uout },
           };
         }
         steps.push({ step: first.step, ok: false, issues: first.issues });
@@ -293,6 +328,7 @@ export class NodeRuntimeService {
             fallbackUsed: false,
             validateSteps: steps,
             traceId: span.spanContext().traceId,
+            usage: { inputTokens: uin, outputTokens: uout },
           };
         }
         steps.push({ step: "repair", ok: false, issues: second.issues });
@@ -307,6 +343,7 @@ export class NodeRuntimeService {
           fallbackUsed: true,
           validateSteps: steps,
           traceId: span.spanContext().traceId,
+          usage: { inputTokens: uin, outputTokens: uout },
         };
       },
     );
@@ -444,6 +481,12 @@ export class NodeRuntimeService {
     const validInput = inputCheck.data;
     const validReserved = reservedCheck.data;
     const model = await this.resolveModel(modelId);
+    const modelLabel = model.deploymentId ?? model.name;
+    try {
+      opts?.metricsObserver?.onModel?.(modelLabel);
+    } catch {
+      /* 指标富化失败静默：不影响回答产出 */
+    }
 
     const { span } = startManualSpan(
       "node_runtime.stream_text",
@@ -453,7 +496,7 @@ export class NodeRuntimeService {
           [RAG.PROMPT_CONTRACT_VERSION]: contractVersion,
           [GEN_AI.OPERATION_NAME]: OTEL_OPERATIONS.CHAT,
           [GEN_AI.SYSTEM]: model.protocol,
-          [GEN_AI.REQUEST_MODEL]: model.deploymentId ?? model.name,
+          [GEN_AI.REQUEST_MODEL]: modelLabel,
           "codecrush.span.kind": CODECRUSH_SPAN_KIND.LLM,
         },
       },
@@ -492,7 +535,14 @@ export class NodeRuntimeService {
         let res = await firstTokenGate(it.next());
         while (!res.done) {
           const chunk = res.value;
-          if (chunk.usage) mergeStreamUsage(usageAcc, chunk.usage); // usage 帧无 delta，仅记账
+          if (chunk.usage) {
+            mergeStreamUsage(usageAcc, chunk.usage); // usage 帧无 delta，仅记账
+            try {
+              opts?.metricsObserver?.onUsage?.({ ...usageAcc });
+            } catch {
+              /* 指标富化失败静默：不影响回答产出 */
+            }
+          }
           if (chunk.error) {
             interrupted = true; // 首 token 前：text 仍空 → 下方转 fallback；已发 token：保留为 partial
             break;
@@ -513,18 +563,35 @@ export class NodeRuntimeService {
           // it.return() 由 finally 统一级联；此处只定状态并返回 outcome
           span.setStatus({ code: SpanStatusCode.ERROR, message: "first token timeout" });
           span.setAttribute(RAG.FALLBACK_USED, false);
-          return { outcome: "timeout", traceId };
+          return {
+            outcome: "timeout",
+            traceId,
+            usage: { ...usageAcc },
+            model: modelLabel,
+          };
         }
         interrupted = true; // 网络层异常：只看已产出（text 非空保留为 partial，空则下方 fallback）
       }
 
       if (text.length === 0) {
         span.setAttribute(RAG.FALLBACK_USED, true);
-        return { outcome: "fallback", text: contract.fallback(validInput, validReserved).text, traceId };
+        return {
+          outcome: "fallback",
+          text: contract.fallback(validInput, validReserved).text,
+          traceId,
+          usage: { ...usageAcc },
+          model: modelLabel,
+        };
       }
       span.setStatus({ code: SpanStatusCode.OK });
       span.setAttribute(RAG.FALLBACK_USED, false);
-      return { outcome: interrupted ? "partial" : "ok", text, traceId };
+      return {
+        outcome: interrupted ? "partial" : "ok",
+        text,
+        traceId,
+        usage: { ...usageAcc },
+        model: modelLabel,
+      };
     } finally {
       if (timer) clearTimeout(timer);
       // M8 T3：所有结束路径（ok/partial/fallback/timeout/abort）统一落 usage span 属性

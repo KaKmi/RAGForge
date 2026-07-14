@@ -1,6 +1,3 @@
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { Inject, Injectable } from "@nestjs/common";
 import type {
   QualitySignal,
@@ -17,13 +14,15 @@ import type {
   TraceSpan,
   TraceStatus,
 } from "@codecrush/contracts";
+import { GEN_AI } from "@codecrush/otel-conventions";
 import { CLICKHOUSE } from "../../platform/clickhouse/clickhouse.constants";
 import type { CodeCrushClickHouseClient } from "../../platform/clickhouse/clickhouse.types";
+import { loadSqlStatements, otelTracesTableExists, toIsoUtc } from "./clickhouse-view.utils";
 
 export const TRACE_VIEW_NAME = "codecrush_trace_spans";
 export const TRACES_VIEW_NAME = "codecrush_traces";
 export const SESSIONS_VIEW_NAME = "codecrush_sessions";
-const TRACE_VIEW_SQL_RELPATH = join("infra", "clickhouse", "views", "001-trace-views.sql");
+const TRACE_VIEW_SQL_RELPATH = "infra/clickhouse/views/001-trace-views.sql";
 
 /** quick=慢请求 的耗时阈值（ms）；对齐前端 mock（≥3s）与 P95 红线 5s 分离。 */
 const SLOW_MS = 3000;
@@ -38,35 +37,6 @@ const STATUS_ZH_TO_TOKEN: Record<string, TraceStatus> = {
 /** ClickHouse Bool/UInt8 经 JSONEachRow 可能是 0/1 或 true/false，统一判真。 */
 function chTruthy(v: unknown): boolean {
   return v === 1 || v === true || v === "1" || v === "true";
-}
-
-/**
- * 解析仓库根下的 VIEW SQL 路径。
- * 后端 `start` 经 `pnpm --filter @codecrush/backend start` 运行，cwd = apps/backend，
- * 直接用 process.cwd() 拼 infra/ 会指到 apps/backend/infra（不存在），所以从当前文件位置
- * 向上找 pnpm-workspace.yaml 标记的仓库根（dist 与 src 运行都成立）。
- */
-function resolveTraceViewSqlPath(): string {
-  let dir = __dirname;
-  for (let i = 0; i < 10; i += 1) {
-    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return join(dir, TRACE_VIEW_SQL_RELPATH);
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  // 兜底：cwd 相对（从仓库根启动时成立）
-  return join(process.cwd(), TRACE_VIEW_SQL_RELPATH);
-}
-
-/**
- * ClickHouse DateTime64 经 JSONEachRow 默认返回 "YYYY-MM-DD hh:mm:ss[.fraction]"（UTC、无时区）。
- * 直接 `new Date(该串)` 会被当本地时区解析产生偏移；这里按 UTC 显式解析并规整到毫秒 ISO。
- */
-function toIsoUtc(chTime: string): string {
-  const m = chTime.trim().match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?/);
-  if (!m) return new Date(chTime).toISOString();
-  const frac = (m[3] ?? "").padEnd(3, "0").slice(0, 3);
-  return new Date(`${m[1]}T${m[2]}.${frac}Z`).toISOString();
 }
 
 type ClickHouseTraceRow = {
@@ -126,10 +96,26 @@ function buildTraceMeta(spans: TraceSpan[]): TraceDetailMeta {
     (s) => s.kind === "llm" && (s.attributes as Record<string, unknown>)["rag.node.name"] === "reply",
   );
   const lastLlm = [...spans].reverse().find((s) => s.kind === "llm");
+  const rootGenModel = a[GEN_AI.REQUEST_MODEL];
   const genModel =
-    ((reply ?? lastLlm)?.attributes as Record<string, unknown> | undefined)?.["gen_ai.request.model"];
-  const sumTok = (key: string): number =>
-    spans.reduce((sum, s) => sum + Number((s.attributes as Record<string, unknown>)[key] ?? 0), 0);
+    typeof rootGenModel === "string" && rootGenModel.length > 0
+      ? rootGenModel
+      : ((reply ?? lastLlm)?.attributes as Record<string, unknown> | undefined)?.[
+          GEN_AI.REQUEST_MODEL
+        ];
+  const traceTokens = (key: string): number => {
+    const rootValue = a[key];
+    if (rootValue !== undefined && rootValue !== null && rootValue !== "") {
+      return Number(rootValue);
+    }
+    return spans.reduce(
+      (sum, s) =>
+        s.kind === "llm"
+          ? sum + Number((s.attributes as Record<string, unknown>)[key] ?? 0)
+          : sum,
+      0,
+    );
+  };
   return {
     userInput: String(a["codecrush.io.input"] ?? ""),
     agentName: (a["gen_ai.agent.name"] as string) || null,
@@ -137,8 +123,8 @@ function buildTraceMeta(spans: TraceSpan[]): TraceDetailMeta {
     genModelVersion: null,
     promptVersionId: (a["rag.prompt.version_id"] as string) || null,
     durationMs: root.durationMs,
-    inputTokens: sumTok("gen_ai.usage.input_tokens"),
-    outputTokens: sumTok("gen_ai.usage.output_tokens"),
+    inputTokens: traceTokens(GEN_AI.USAGE_INPUT_TOKENS),
+    outputTokens: traceTokens(GEN_AI.USAGE_OUTPUT_TOKENS),
     cost: null,
     status,
     qualitySignals: signalsFromAttrs(a),
@@ -229,12 +215,7 @@ export class ClickHouseTracesRepository {
   constructor(@Inject(CLICKHOUSE) private readonly clickhouse: CodeCrushClickHouseClient) {}
 
   private async exporterTableExists(): Promise<boolean> {
-    const result = await this.clickhouse.query({
-      query: "EXISTS TABLE otel_traces",
-      format: "JSONEachRow",
-    });
-    const rows = await result.json<{ result: 0 | 1 }>();
-    return rows[0]?.result === 1;
+    return otelTracesTableExists(this.clickhouse);
   }
 
   /**
@@ -244,19 +225,9 @@ export class ClickHouseTracesRepository {
   async ensureTraceViews(): Promise<boolean> {
     if (this.viewsReady) return true;
     if (!(await this.exporterTableExists())) return false;
-    const viewSql = await readFile(resolveTraceViewSqlPath(), "utf8");
     // @clickhouse/client 的 command 不支持一次多语句；按 `;` 切分逐条建 VIEW（顺序 = 文件序：traces 先于 sessions）。
     // 每段先剥掉整行注释（`-- …`）再判空——段首常有说明性注释行，不能整段丢弃。
-    const statements = viewSql
-      .split(";")
-      .map((s) =>
-        s
-          .split("\n")
-          .filter((line) => !line.trim().startsWith("--"))
-          .join("\n")
-          .trim(),
-      )
-      .filter((s) => s.length > 0);
+    const statements = await loadSqlStatements(TRACE_VIEW_SQL_RELPATH);
     for (const stmt of statements) {
       await this.clickhouse.command({ query: stmt });
     }

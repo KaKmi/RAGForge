@@ -13,7 +13,7 @@ SELECT
   SpanAttributes AS attributes
 FROM otel_traces;
 
--- M9 W1：每 trace 一行——从 chain 根 span 取身份/IO/状态/质量，LEFT JOIN 子 span 求 token 和。
+-- M9 W1：每 trace 一行——从 chain 根 span 取身份/IO/状态/质量；token 根值优先，旧 trace 回退子 span 求和。
 -- SpanAttributes = Map(String,String)：布尔读 = 'true'，数字读 toUInt64OrZero。
 -- root 过滤 = kind='chain' 单条件：HTTP 自动埋点（HttpInstrumentation）给每请求加 POST server 根 span，
 -- rag.pipeline chain span 是其子（ParentSpanId≠''），故不能用 ParentSpanId='' 认根——chain 才是 RAG 一轮的语义根。
@@ -29,8 +29,16 @@ SELECT
   root.SpanAttributes['codecrush.io.output'] AS output,
   root.Timestamp AS start_time,
   toFloat64(root.Duration) / 1000000 AS total_duration_ms,
-  agg.total_input_tokens AS total_input_tokens,
-  agg.total_output_tokens AS total_output_tokens,
+  if(
+    root.SpanAttributes['gen_ai.usage.input_tokens'] != '',
+    toUInt64OrZero(root.SpanAttributes['gen_ai.usage.input_tokens']),
+    agg.child_input_tokens
+  ) AS total_input_tokens,
+  if(
+    root.SpanAttributes['gen_ai.usage.output_tokens'] != '',
+    toUInt64OrZero(root.SpanAttributes['gen_ai.usage.output_tokens']),
+    agg.child_output_tokens
+  ) AS total_output_tokens,
   multiIf(
     root.StatusCode IN ('Error', 'STATUS_CODE_ERROR'), 'failed',
     root.SpanAttributes['rag.fallback.used'] = 'true', 'fallback',
@@ -44,8 +52,14 @@ SELECT
 FROM otel_traces AS root
 LEFT JOIN (
   SELECT TraceId,
-    sum(toUInt64OrZero(SpanAttributes['gen_ai.usage.input_tokens'])) AS total_input_tokens,
-    sum(toUInt64OrZero(SpanAttributes['gen_ai.usage.output_tokens'])) AS total_output_tokens
+    sumIf(
+      toUInt64OrZero(SpanAttributes['gen_ai.usage.input_tokens']),
+      SpanAttributes['codecrush.span.kind'] = 'llm'
+    ) AS child_input_tokens,
+    sumIf(
+      toUInt64OrZero(SpanAttributes['gen_ai.usage.output_tokens']),
+      SpanAttributes['codecrush.span.kind'] = 'llm'
+    ) AS child_output_tokens
   FROM otel_traces GROUP BY TraceId
 ) AS agg ON root.TraceId = agg.TraceId
 WHERE root.SpanAttributes['codecrush.span.kind'] = 'chain';

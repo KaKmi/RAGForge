@@ -1,0 +1,153 @@
+<div style="font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;background:#f5f5f5;padding:20px;color:rgba(0,0,0,.88)">
+  <div style="max-width:1080px;margin:0 auto">
+
+    <!-- 顶栏：标题 + 时间范围 + 筛选 -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div style="font-size:20px;font-weight:600">运行看板</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <!-- Segmented 时间范围 -->
+        <div style="display:inline-flex;background:#f0f0f0;border-radius:8px;padding:2px">
+          <span style="padding:4px 14px;font-size:13px;border-radius:6px;background:#fff;font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.06)">今日</span>
+          <span style="padding:4px 14px;font-size:13px;color:rgba(0,0,0,.55)">近 7 日</span>
+          <span style="padding:4px 14px;font-size:13px;color:rgba(0,0,0,.55)">近 30 日</span>
+        </div>
+        <!-- 应用筛选 Select -->
+        <div style="display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #d9d9d9;border-radius:8px;padding:5px 12px;font-size:13px;color:rgba(0,0,0,.65)">全部应用 <span style="color:rgba(0,0,0,.25);font-size:10px">▼</span></div>
+        <div style="display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #d9d9d9;border-radius:8px;padding:5px 12px;font-size:13px;color:rgba(0,0,0,.65)">全部模型 <span style="color:rgba(0,0,0,.25);font-size:10px">▼</span></div>
+      </div>
+    </div>
+
+    <!-- 指标卡：6 列（W-a 真能算的 8 指标里挑主 6，token 合一卡） -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px">
+
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px">
+        <div style="font-size:13px;color:rgba(0,0,0,.45);margin-bottom:8px">今日问答量</div>
+        <div style="font-size:26px;font-weight:600;line-height:1;margin-bottom:8px">1,284</div>
+        <div style="font-size:12px;color:rgba(0,0,0,.45)"><span style="color:#52c41a;font-weight:500">+12.4%</span> · 较昨日</div>
+      </div>
+
+      <!-- 兜底率：阈值染色（>5% 红），可下钻 -->
+      <div style="background:#fff;border:1px solid #ffccc7;border-radius:8px;padding:16px 20px;position:relative;cursor:pointer">
+        <div style="font-size:13px;color:rgba(0,0,0,.45);margin-bottom:8px">兜底率 <span style="font-size:11px;color:#ff4d4f;border:1px solid #ffccc7;border-radius:4px;padding:0 5px;margin-left:4px">超阈值</span></div>
+        <div style="font-size:26px;font-weight:600;line-height:1;margin-bottom:8px;color:#ff4d4f">6.2%</div>
+        <div style="font-size:12px;color:rgba(0,0,0,.45)">阈值 5% · <span style="color:#1677ff">点击看 80 条坏样本 →</span></div>
+      </div>
+
+      <!-- 失败率：可下钻 -->
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px;cursor:pointer">
+        <div style="font-size:13px;color:rgba(0,0,0,.45);margin-bottom:8px">失败率</div>
+        <div style="font-size:26px;font-weight:600;line-height:1;margin-bottom:8px">0.9%</div>
+        <div style="font-size:12px;color:rgba(0,0,0,.45)">含超时熔断 · <span style="color:#1677ff">下钻 →</span></div>
+      </div>
+
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px">
+        <div style="font-size:13px;color:rgba(0,0,0,.45);margin-bottom:8px">端到端 P95</div>
+        <div style="font-size:26px;font-weight:600;line-height:1;margin-bottom:8px">4.8<span style="font-size:15px;font-weight:400;color:rgba(0,0,0,.45)">s</span></div>
+        <div style="font-size:12px;color:rgba(0,0,0,.45)">P50 2.1s · 合并 t-digest</div>
+      </div>
+
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px">
+        <div style="font-size:13px;color:rgba(0,0,0,.45);margin-bottom:8px">Token 消耗</div>
+        <div style="font-size:26px;font-weight:600;line-height:1;margin-bottom:8px">1.83<span style="font-size:15px;font-weight:400;color:rgba(0,0,0,.45)">M</span></div>
+        <div style="font-size:12px;color:rgba(0,0,0,.45)">入 1.21M · 出 0.62M</div>
+      </div>
+
+      <!-- 花费：待定价，显示 — -->
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px">
+        <div style="font-size:13px;color:rgba(0,0,0,.45);margin-bottom:8px">花费 <span style="font-size:11px;color:rgba(0,0,0,.35);border:1px solid #f0f0f0;border-radius:4px;padding:0 5px;margin-left:4px">待定价</span></div>
+        <div style="font-size:26px;font-weight:600;line-height:1;margin-bottom:8px;color:rgba(0,0,0,.25)">—</div>
+        <div style="font-size:12px;color:rgba(0,0,0,.45)">接入模型单价后启用</div>
+      </div>
+    </div>
+
+    <!-- 2:1：趋势图（问答量 + 兜底率双线） + 质量信号分解 -->
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:16px">
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div style="font-size:14px;font-weight:600">趋势 · 近 7 日</div>
+          <div style="display:flex;gap:14px;font-size:12px;color:rgba(0,0,0,.55)">
+            <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#1677ff;margin-right:5px"></span>问答量</span>
+            <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#ff4d4f;margin-right:5px"></span>兜底率</span>
+          </div>
+        </div>
+        <svg viewBox="0 0 560 180" style="width:100%;display:block">
+          <!-- 问答量 area+line -->
+          <polygon points="20,140 106,111 193,94 280,126 366,67 453,49 540,26 540,165 20,165" fill="rgba(22,119,255,.08)"></polygon>
+          <polyline points="20,140 106,111 193,94 280,126 366,67 453,49 540,26" fill="none" stroke="#1677ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"></polyline>
+          <circle cx="540" cy="26" r="4" fill="#1677ff"></circle>
+          <!-- 兜底率 line（红，右轴示意） -->
+          <polyline points="20,150 106,148 193,152 280,140 366,138 453,132 540,120" fill="none" stroke="#ff4d4f" stroke-width="2" stroke-dasharray="0" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"></polyline>
+          <circle cx="540" cy="120" r="3.5" fill="#ff4d4f"></circle>
+          <text x="20" y="178" font-size="10" fill="rgba(0,0,0,.35)">06-08</text>
+          <text x="280" y="178" font-size="10" fill="rgba(0,0,0,.35)" text-anchor="middle">06-11</text>
+          <text x="540" y="178" font-size="10" fill="rgba(0,0,0,.35)" text-anchor="end">06-14</text>
+        </svg>
+      </div>
+
+      <!-- 质量信号分解（四布尔，各自可筛下钻） -->
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px">
+        <div style="font-size:14px;font-weight:600;margin-bottom:14px">质量信号 · 今日</div>
+        <div style="display:flex;flex-direction:column;gap:13px">
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:rgba(0,0,0,.65)">低召回</span><span style="color:rgba(0,0,0,.45)">4.1% · 53 次</span></div>
+            <div style="height:8px;background:#f5f5f5;border-radius:4px;overflow:hidden"><div style="height:100%;width:41%;background:#faad14;border-radius:4px"></div></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:rgba(0,0,0,.65)">无引用</span><span style="color:rgba(0,0,0,.45)">6.2% · 80 次</span></div>
+            <div style="height:8px;background:#f5f5f5;border-radius:4px;overflow:hidden"><div style="height:100%;width:62%;background:#faad14;border-radius:4px"></div></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:rgba(0,0,0,.65)">生成拒答</span><span style="color:rgba(0,0,0,.45)">6.2% · 80 次</span></div>
+            <div style="height:8px;background:#f5f5f5;border-radius:4px;overflow:hidden"><div style="height:100%;width:62%;background:#ff7875;border-radius:4px"></div></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:rgba(0,0,0,.65)">超时熔断</span><span style="color:rgba(0,0,0,.45)">0.3% · 4 次</span></div>
+            <div style="height:8px;background:#f5f5f5;border-radius:4px;overflow:hidden"><div style="height:100%;width:6%;background:#ff4d4f;border-radius:4px"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 底部：应用分布 + 坏样本下钻入口 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px">
+        <div style="font-size:14px;font-weight:600;margin-bottom:14px">应用问答分布 · 今日</div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:rgba(0,0,0,.65)">售后支持</span><span style="color:rgba(0,0,0,.45)">591 次</span></div><div style="height:8px;background:#f5f5f5;border-radius:4px;overflow:hidden"><div style="height:100%;width:46%;background:#1677ff;border-radius:4px"></div></div></div>
+          <div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:rgba(0,0,0,.65)">课程顾问</span><span style="color:rgba(0,0,0,.45)">411 次</span></div><div style="height:8px;background:#f5f5f5;border-radius:4px;overflow:hidden"><div style="height:100%;width:32%;background:#722ed1;border-radius:4px"></div></div></div>
+          <div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px"><span style="color:rgba(0,0,0,.65)">学习助手</span><span style="color:rgba(0,0,0,.45)">231 次</span></div><div style="height:8px;background:#f5f5f5;border-radius:4px;overflow:hidden"><div style="height:100%;width:18%;background:#13c2c2;border-radius:4px"></div></div></div>
+        </div>
+      </div>
+
+      <!-- Badcase 下钻入口（点任意 → 跳 Trace 列表带筛选） -->
+      <div style="background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div style="font-size:14px;font-weight:600">坏样本 · 今日</div>
+          <div style="font-size:12px;color:#1677ff;cursor:pointer">全部 →</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#fafafa;border-radius:6px;cursor:pointer">
+            <span style="font-size:11px;color:#fa8c16;background:#fff7e6;border:1px solid #ffd591;border-radius:4px;padding:1px 6px;flex:none">兜底</span>
+            <span style="font-size:13px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:rgba(0,0,0,.75)">课程能开发票吗？可以对公转账…</span>
+            <span style="font-size:11px;color:rgba(0,0,0,.35);flex:none">→ trace</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#fafafa;border-radius:6px;cursor:pointer">
+            <span style="font-size:11px;color:#ff4d4f;background:#fff1f0;border:1px solid #ffccc7;border-radius:4px;padding:1px 6px;flex:none">超时</span>
+            <span style="font-size:13px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:rgba(0,0,0,.75)">帮我把这三门课的大纲逐条对比…</span>
+            <span style="font-size:11px;color:rgba(0,0,0,.35);flex:none">→ trace</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#fafafa;border-radius:6px;cursor:pointer">
+            <span style="font-size:11px;color:#fa8c16;background:#fff7e6;border:1px solid #ffd591;border-radius:4px;padding:1px 6px;flex:none">低召回</span>
+            <span style="font-size:13px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:rgba(0,0,0,.75)">直播回放能下载到本地吗…</span>
+            <span style="font-size:11px;color:rgba(0,0,0,.35);flex:none">→ trace</span>
+          </div>
+        </div>
+        <div style="margin-top:12px;font-size:11px;color:rgba(0,0,0,.4);border-top:1px dashed #f0f0f0;padding-top:10px">点任意坏样本 → 跳已有 Trace 详情页；「全部」→ Trace 列表带该筛选（M11 评测集出口）</div>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;font-size:12px;color:rgba(0,0,0,.4);text-align:center">
+      数据来自 <code style="background:#f0f0f0;padding:1px 5px;border-radius:3px">GET /metrics/overview</code> · 每个数字可下钻到具体问答（总览 → 应用 → 样本三层）· 花费待模型定价接入
+    </div>
+  </div>
+</div>

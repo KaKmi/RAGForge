@@ -21,7 +21,13 @@ function makeService(chat: jest.Mock, chatStream?: jest.Mock) {
   const models = {
     chat,
     chatStream: chatStream ?? jest.fn(),
-    get: jest.fn(async () => ({ id: "m1", protocol: "openai_compat", type: "llm" })),
+    get: jest.fn(async () => ({
+      id: "m1",
+      protocol: "openai_compat",
+      type: "llm",
+      deploymentId: null,
+      name: "deepseek-chat",
+    })),
   } as unknown as ModelsService;
   return new NodeRuntimeService(models);
 }
@@ -478,6 +484,31 @@ describe("NodeRuntimeService.streamTextChunks · reply 逐 token", () => {
     expect(returned).toBe(true);
   });
 
+  it("消费者 abort 前把已知 model 与累计 usage 通知调用方", async () => {
+    const onModel = jest.fn();
+    const onUsage = jest.fn();
+    const chatStream = jest.fn(async function* () {
+      yield { usage: { inputTokens: 30, outputTokens: 0 } };
+      yield { delta: "答" };
+      yield { usage: { inputTokens: 0, outputTokens: 12 } };
+      yield { delta: "案" };
+    });
+    const svc = makeService(jest.fn(), chatStream);
+    const gen = svc.streamTextChunks(
+      "reply",
+      1,
+      "{query}",
+      "m1",
+      { query: "hi", history: "" },
+      { citations: [] },
+      { metricsObserver: { onModel, onUsage } },
+    );
+    await gen.next();
+    await gen.return(undefined);
+    expect(onModel).toHaveBeenCalledWith("deepseek-chat");
+    expect(onUsage).toHaveBeenCalledWith({ inputTokens: 30, outputTokens: 0 });
+  });
+
   it("input 校验失败 → 不调 chatStream，outcome=fallback", async () => {
     const chatStream = jest.fn();
     const svc = makeService(jest.fn(), chatStream);
@@ -758,6 +789,47 @@ describe("NodeRuntimeService · gen_ai.usage (M8 T3)", () => {
     const a = attrs("node_runtime.stream_text");
     expect(a["gen_ai.usage.input_tokens"]).toBe(30);
     expect(a["gen_ai.usage.output_tokens"]).toBe(12);
+  });
+
+  it("streamTextChunks(reply) 末值带 usage 与 model 标签", async () => {
+    const chatStream = jest.fn(async function* () {
+      yield { delta: "答" };
+      yield { usage: { inputTokens: 20, outputTokens: 15 } };
+      yield { done: true };
+    });
+    const svc = makeService(jest.fn(), chatStream);
+    const it = svc.streamTextChunks(
+      "reply",
+      1,
+      "body {query}",
+      "m1",
+      { query: "q", history: "", retrievalContext: "" },
+      { citations: [] },
+      { temperature: 0 },
+      undefined,
+    );
+    let r = await it.next();
+    while (!r.done) r = await it.next();
+    expect(r.value.usage).toEqual({ inputTokens: 20, outputTokens: 15 });
+    expect(r.value.model).toBe("deepseek-chat");
+  });
+
+  it("executeStructured 返回 usage", async () => {
+    const chat = jest.fn(async () => ({
+      content: '{"rewrittenQuery":"q","keywords":[]}',
+      usage: { inputTokens: 20, outputTokens: 15 },
+    }));
+    const svc = makeService(chat);
+    const res = await svc.executeStructured(
+      "rewrite",
+      1,
+      "body {query}",
+      "m1",
+      { query: "q", history: "" },
+      {},
+      { temperature: 0 },
+    );
+    expect(res.usage).toEqual({ inputTokens: 20, outputTokens: 15 });
   });
 
   it("无 usage → 不 set 属性、不抛", async () => {

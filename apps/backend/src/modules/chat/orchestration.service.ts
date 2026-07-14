@@ -48,6 +48,47 @@ interface PrepResult {
   fallbackInfo: FallbackInfo;
 }
 
+type TokenUsage = { inputTokens: number; outputTokens: number };
+
+interface ExecuteNodeOptions {
+  spanEnrich?: (output: unknown) => Record<string, string | number | boolean>;
+  onUsage?: (usage: TokenUsage) => void;
+}
+
+class ChainMetricsAccumulator {
+  private readonly prepUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  private readonly replyUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  private model = "";
+
+  readonly replyObserver = {
+    onModel: (model: string) => {
+      this.model = model;
+    },
+    onUsage: (usage: TokenUsage) => {
+      this.replyUsage.inputTokens = usage.inputTokens;
+      this.replyUsage.outputTokens = usage.outputTokens;
+    },
+  };
+
+  readonly addPrepUsage = (usage: TokenUsage): void => {
+    this.prepUsage.inputTokens += usage.inputTokens;
+    this.prepUsage.outputTokens += usage.outputTokens;
+  };
+
+  captureReply(usage?: TokenUsage, model?: string): void {
+    if (usage) this.replyObserver.onUsage(usage);
+    if (model) this.replyObserver.onModel(model);
+  }
+
+  applyTo(span: { setAttribute(key: string, value: string | number): void }): void {
+    const inputTokens = this.prepUsage.inputTokens + this.replyUsage.inputTokens;
+    const outputTokens = this.prepUsage.outputTokens + this.replyUsage.outputTokens;
+    if (inputTokens > 0) span.setAttribute(GEN_AI.USAGE_INPUT_TOKENS, inputTokens);
+    if (outputTokens > 0) span.setAttribute(GEN_AI.USAGE_OUTPUT_TOKENS, outputTokens);
+    if (this.model) span.setAttribute(GEN_AI.REQUEST_MODEL, this.model);
+  }
+}
+
 /**
  * M8 RAG 编排内核（013 §编排 + 014 意图路由）：
  * resolvePublic → rewrite → intent → 路由映射 → 逐 KB 检索合并 → 生成/兜底 → 派生指标 → 落库。
@@ -93,6 +134,7 @@ export class OrchestrationService {
     // 首轮新会话的真实 convId 在 persist() 内 createConversation 才产生 → 捕获返回、finally end 前写 session.id。
     let sessionId = "";
     let replyText = "";
+    const metrics = new ChainMetricsAccumulator();
     let completed = false;
     let prep: PrepResult | undefined;
     let persistCtx: { agentId: string; query: string; convId?: string; userId?: string } | undefined;
@@ -133,7 +175,9 @@ export class OrchestrationService {
 
     try {
       // —— 预备阶段：整段在 chainCtx 内（内部无 yield），子 span（rewrite/intent/检索）自动挂 chain ——
-      prep = await runInContext(chainCtx, () => this.prepare(agentId, query, convId, cfg));
+      prep = await runInContext(chainCtx, () =>
+        this.prepare(agentId, query, convId, cfg, metrics),
+      );
       persistCtx = { agentId, query, convId: prep.validConvId, userId };
 
       // —— 流式阶段 ——
@@ -153,7 +197,10 @@ export class OrchestrationService {
           cfg.nodes.reply.modelId,
           { query, history: prep.history, retrievalContext: prep.retrievalContext },
           { citations: prep.citations },
-          { temperature: cfg.nodes.reply.temperature },
+          {
+            temperature: cfg.nodes.reply.temperature,
+            metricsObserver: metrics.replyObserver,
+          },
           chainCtx,
         );
         replyIt = it; // 供 finally 级联 return()（abort 时取消上游 + 结束 reply span，AC6）
@@ -165,6 +212,7 @@ export class OrchestrationService {
             res = await it.next();
           }
           const summary = res.value;
+          metrics.captureReply(summary.usage, summary.model);
           if (summary.outcome === "timeout") {
             // 降级路径也要在后端日志留痕（不只 span），否则无 ClickHouse 时排查无迹（QA 观察 2）。
             this.logger.warn(`reply 首 token 超时熔断（agentId=${agentId}, traceId=${traceId}）`);
@@ -245,6 +293,7 @@ export class OrchestrationService {
       finalizeChainSignals(false);
       // M9 W1：session.id 待此写——首轮新会话的真 convId 已由各 persist 路径捕获进 sessionId。
       if (sessionId) chain.setAttribute(SESSION_ID, sessionId);
+      metrics.applyTo(chain);
       chain.end(); // 手动生命周期：所有路径必 end
     }
   }
@@ -255,6 +304,7 @@ export class OrchestrationService {
     query: string,
     convId: string | undefined,
     cfg: Awaited<ReturnType<ApplicationsService["resolvePublic"]>>,
+    metrics: ChainMetricsAccumulator,
   ): Promise<PrepResult> {
     const kbRows = await this.kbs.findByIds(cfg.kbIds);
     const kbNameById = new Map(kbRows.map((k) => [k.id, k.name]));
@@ -269,6 +319,7 @@ export class OrchestrationService {
       "rewrite",
       { query, history },
       {},
+      { onUsage: metrics.addPrepUsage },
     );
     const rewrittenQuery = rewrite.rewrittenQuery;
 
@@ -280,13 +331,16 @@ export class OrchestrationService {
       "intent",
       { query, history },
       { availableIntents: INTENT_TABLE },
-      (out) => {
-        const cls = (out as { intent: string }).intent;
-        const kbNames =
-          cls === CHAT_INTENT_KEY
-            ? []
-            : resolveRetrievalKbIds(cls, cfg, kbRows).map((id) => kbNameById.get(id) ?? id);
-        return { [RAG.INTENT]: cls, [RAG.ROUTE_KB_NAMES]: JSON.stringify(kbNames) };
+      {
+        spanEnrich: (out) => {
+          const cls = (out as { intent: string }).intent;
+          const kbNames =
+            cls === CHAT_INTENT_KEY
+              ? []
+              : resolveRetrievalKbIds(cls, cfg, kbRows).map((id) => kbNameById.get(id) ?? id);
+          return { [RAG.INTENT]: cls, [RAG.ROUTE_KB_NAMES]: JSON.stringify(kbNames) };
+        },
+        onUsage: metrics.addPrepUsage,
       },
     );
     const intent = intentOut.intent;
@@ -396,7 +450,7 @@ export class OrchestrationService {
     name: "rewrite" | "intent",
     input: Record<string, unknown>,
     reserved: unknown,
-    spanEnrich?: (output: unknown) => Record<string, string | number | boolean>,
+    options: ExecuteNodeOptions = {},
   ): Promise<TOutput> {
     const r = await this.nodeRuntime.executeStructured<Record<string, unknown>, TOutput, unknown>(
       name,
@@ -405,8 +459,9 @@ export class OrchestrationService {
       node.modelId,
       input,
       reserved,
-      { temperature: node.temperature, spanEnrich },
+      { temperature: node.temperature, spanEnrich: options.spanEnrich },
     );
+    if (r.usage) options.onUsage?.(r.usage);
     return r.output;
   }
 
