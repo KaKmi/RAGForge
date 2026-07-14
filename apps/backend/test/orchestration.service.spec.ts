@@ -93,14 +93,25 @@ function makeDeps() {
           output: { rewrittenQuery: "改写后的退货问题", keywords: [] },
           fallbackUsed: false,
           validateSteps: [],
+          usage: { inputTokens: 5, outputTokens: 3 },
         };
-      return { output: { intent: "SUPPORT", confidence: 0.9 }, fallbackUsed: false, validateSteps: [] };
+      return {
+        output: { intent: "SUPPORT", confidence: 0.9 },
+        fallbackUsed: false,
+        validateSteps: [],
+        usage: { inputTokens: 5, outputTokens: 3 },
+      };
     }),
     // reply 走 streamTextChunks（逐 token）——默认吐两段拼成 "答案[1][2]"
     streamTextChunks: jest.fn(async function* () {
       yield { delta: "答案" };
       yield { delta: "[1][2]" };
-      return { outcome: "ok", text: "答案[1][2]" };
+      return {
+        outcome: "ok",
+        text: "答案[1][2]",
+        usage: { inputTokens: 20, outputTokens: 15 },
+        model: "deepseek-chat",
+      };
     }),
     // streamText 仅 fallback 路径调用（整段）
     streamText: jest.fn(async (node: string) =>
@@ -428,6 +439,15 @@ describe("OrchestrationService · chain span 质量信号 + IO (M8 T3)", () => {
     expect(a["rag.quality.no_citations"]).toBe(false);
     expect(a["rag.quality.refusal"]).toBe(false);
     expect(a["rag.quality.timeout"]).toBe(false);
+  });
+
+  it("根 chain span 落 token 总和与生成模型标签", async () => {
+    const d = makeDeps();
+    await collect(makeSvc(d).run("app1", "q", undefined, "u"));
+    const a = chainAttrs();
+    expect(a["gen_ai.usage.input_tokens"]).toBe(30);
+    expect(a["gen_ai.usage.output_tokens"]).toBe(21);
+    expect(a["gen_ai.request.model"]).toBe("deepseek-chat");
   });
 
   // M9 W1：根 span 身份富化 —— session/agent/user + 兜底状态标记

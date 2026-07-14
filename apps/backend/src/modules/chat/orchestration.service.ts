@@ -46,6 +46,7 @@ interface PrepResult {
   isFallback: boolean;
   reasons: FallbackReason[];
   fallbackInfo: FallbackInfo;
+  usage: { inputTokens: number; outputTokens: number };
 }
 
 /**
@@ -93,6 +94,8 @@ export class OrchestrationService {
     // 首轮新会话的真实 convId 在 persist() 内 createConversation 才产生 → 捕获返回、finally end 前写 session.id。
     let sessionId = "";
     let replyText = "";
+    const totalUsage = { inputTokens: 0, outputTokens: 0 };
+    let genModel = "";
     let completed = false;
     let prep: PrepResult | undefined;
     let persistCtx: { agentId: string; query: string; convId?: string; userId?: string } | undefined;
@@ -134,6 +137,8 @@ export class OrchestrationService {
     try {
       // —— 预备阶段：整段在 chainCtx 内（内部无 yield），子 span（rewrite/intent/检索）自动挂 chain ——
       prep = await runInContext(chainCtx, () => this.prepare(agentId, query, convId, cfg));
+      totalUsage.inputTokens += prep.usage.inputTokens;
+      totalUsage.outputTokens += prep.usage.outputTokens;
       persistCtx = { agentId, query, convId: prep.validConvId, userId };
 
       // —— 流式阶段 ——
@@ -165,6 +170,11 @@ export class OrchestrationService {
             res = await it.next();
           }
           const summary = res.value;
+          if (summary.usage) {
+            totalUsage.inputTokens += summary.usage.inputTokens;
+            totalUsage.outputTokens += summary.usage.outputTokens;
+          }
+          if (summary.model) genModel = summary.model;
           if (summary.outcome === "timeout") {
             // 降级路径也要在后端日志留痕（不只 span），否则无 ClickHouse 时排查无迹（QA 观察 2）。
             this.logger.warn(`reply 首 token 超时熔断（agentId=${agentId}, traceId=${traceId}）`);
@@ -245,6 +255,13 @@ export class OrchestrationService {
       finalizeChainSignals(false);
       // M9 W1：session.id 待此写——首轮新会话的真 convId 已由各 persist 路径捕获进 sessionId。
       if (sessionId) chain.setAttribute(SESSION_ID, sessionId);
+      if (totalUsage.inputTokens > 0) {
+        chain.setAttribute(GEN_AI.USAGE_INPUT_TOKENS, totalUsage.inputTokens);
+      }
+      if (totalUsage.outputTokens > 0) {
+        chain.setAttribute(GEN_AI.USAGE_OUTPUT_TOKENS, totalUsage.outputTokens);
+      }
+      if (genModel) chain.setAttribute(GEN_AI.REQUEST_MODEL, genModel);
       chain.end(); // 手动生命周期：所有路径必 end
     }
   }
@@ -256,6 +273,7 @@ export class OrchestrationService {
     convId: string | undefined,
     cfg: Awaited<ReturnType<ApplicationsService["resolvePublic"]>>,
   ): Promise<PrepResult> {
+    const usage = { inputTokens: 0, outputTokens: 0 };
     const kbRows = await this.kbs.findByIds(cfg.kbIds);
     const kbNameById = new Map(kbRows.map((k) => [k.id, k.name]));
     // review P2：convId 归属校验——客户端自报的 convId 若属于别的 agentId，不得读其历史
@@ -269,6 +287,8 @@ export class OrchestrationService {
       "rewrite",
       { query, history },
       {},
+      undefined,
+      usage,
     );
     const rewrittenQuery = rewrite.rewrittenQuery;
 
@@ -288,6 +308,7 @@ export class OrchestrationService {
             : resolveRetrievalKbIds(cls, cfg, kbRows).map((id) => kbNameById.get(id) ?? id);
         return { [RAG.INTENT]: cls, [RAG.ROUTE_KB_NAMES]: JSON.stringify(kbNames) };
       },
+      usage,
     );
     const intent = intentOut.intent;
 
@@ -303,6 +324,7 @@ export class OrchestrationService {
         isFallback: true,
         reasons,
         fallbackInfo: { reasons, scopeKbNames: [] },
+        usage,
       };
     }
 
@@ -347,6 +369,7 @@ export class OrchestrationService {
         isFallback: true,
         reasons: decision.reasons,
         fallbackInfo,
+        usage,
       };
     }
 
@@ -368,6 +391,7 @@ export class OrchestrationService {
       isFallback: false,
       reasons: [],
       fallbackInfo,
+      usage,
     };
   }
 
@@ -397,6 +421,7 @@ export class OrchestrationService {
     input: Record<string, unknown>,
     reserved: unknown,
     spanEnrich?: (output: unknown) => Record<string, string | number | boolean>,
+    usageAcc?: { inputTokens: number; outputTokens: number },
   ): Promise<TOutput> {
     const r = await this.nodeRuntime.executeStructured<Record<string, unknown>, TOutput, unknown>(
       name,
@@ -407,6 +432,10 @@ export class OrchestrationService {
       reserved,
       { temperature: node.temperature, spanEnrich },
     );
+    if (usageAcc && r.usage) {
+      usageAcc.inputTokens += r.usage.inputTokens;
+      usageAcc.outputTokens += r.usage.outputTokens;
+    }
     return r.output;
   }
 
