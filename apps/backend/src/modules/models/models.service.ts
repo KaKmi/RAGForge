@@ -134,11 +134,13 @@ export class ModelsService {
     modelId: string,
     messages: ChatMessage[],
     opts?: ChatOptions,
+    onProviderStart?: () => void,
   ): Promise<AsyncIterable<ChatStreamChunk>> {
     const row = await this.mustFind(modelId);
     if (row.type !== "llm") {
       throw new BadRequestException(`model ${modelId} 不是 llm 类型，无法 chatStream`);
     }
+    onProviderStart?.();
     return this.provider.chatStream(this.toCallConfig(row), messages, opts);
   }
 

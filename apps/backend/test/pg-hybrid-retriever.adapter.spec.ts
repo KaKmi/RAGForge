@@ -142,15 +142,17 @@ describe("PgHybridRetriever.retrieve — rerank 分支", () => {
       rerankFails: true,
     });
     const retriever = new PgHybridRetriever(chunks, models, kbs);
+    const observer = jest.fn();
     const hits = await retriever.retrieve({
       ...baseReq,
       multi: false,
       threshold: 0,
       rerankModelId: "rr1",
-    });
+    }, observer);
     expect(hits[0]).toEqual(
       expect.objectContaining({ chunkId: "c1", finalScore: 0.9, rerankScore: undefined }),
     );
+    expect(observer).toHaveBeenCalledWith("rerank_degraded");
   });
 });
 
@@ -169,8 +171,26 @@ describe("PgHybridRetriever.retrieve — 降级路径", () => {
       kwFails: true,
     });
     const retriever = new PgHybridRetriever(chunks, models, kbs);
-    const hits = await retriever.retrieve({ ...baseReq, threshold: 0 });
+    const observer = jest.fn();
+    const hits = await retriever.retrieve({ ...baseReq, threshold: 0 }, observer);
     expect(hits[0]).toEqual(expect.objectContaining({ chunkId: "c1", finalScore: 0.9 }));
+    expect(observer).toHaveBeenCalledWith("keyword_degraded");
+  });
+
+  it("keyword and rerank degradations are reported independently on the same retrieval", async () => {
+    const { chunks, models, kbs } = makeDeps({
+      vecRows: [{ chunkId: "c1", docId: "d1", docName: "doc1", text: "t", section: "s", vecScore: 0.9 }],
+      kwFails: true,
+      rerankFails: true,
+    });
+    const observer = jest.fn();
+    const hits = await new PgHybridRetriever(chunks, models, kbs).retrieve({
+      ...baseReq, threshold: 0, rerankModelId: "rr1",
+    }, observer);
+    expect(hits[0].finalScore).toBe(0.9);
+    expect(observer.mock.calls.map(([signal]) => signal)).toEqual([
+      "keyword_degraded", "rerank_degraded",
+    ]);
   });
 });
 
@@ -244,6 +264,18 @@ describe("PgHybridRetriever — 检索 span 三拆 + 命中分表 (M8 T3)", () =
   ];
   const spanByName = (name: string) =>
     exporter.getFinishedSpans().find((s) => s.name === name);
+
+  it("writes independent degradation attributes as booleans", async () => {
+    const { chunks, models, kbs } = makeDeps({ vecRows: oneHit, kwFails: true, rerankFails: true });
+    await new PgHybridRetriever(chunks, models, kbs).retrieve({
+      ...baseReq,
+      threshold: 0,
+      rerankModelId: "rk1",
+    });
+    const parent = spanByName("retrieval.retrieve")!;
+    expect(parent.attributes["rag.degraded.keyword_recall"]).toBe(true);
+    expect(parent.attributes["rag.degraded.rerank"]).toBe(true);
+  });
 
   it("rerank 开启 → retrieve 下挂 embedding + rerank 子 span", async () => {
     const { chunks, models, kbs } = makeDeps({ vecRows: oneHit, rerankResults: [{ index: 0, score: 0.95 }] });

@@ -323,6 +323,59 @@ describe("ClickHouseTracesRepository · M9 W1 list/session", () => {
     expect(res.summary.failRate).toBeCloseTo(0.25);
   });
 
+  it("stage uses a spans semi-join and composes with application/time filters", async () => {
+    const { client, raw } = buildRoutingClient({ tableExists: true });
+    const repo = new ClickHouseTracesRepository(client);
+    await repo.listTraces({
+      stage: "rerank", agentId: "app1",
+      from: "2026-07-01T00:00:00Z", to: "2026-07-08T00:00:00Z",
+      page: 1, pageSize: 20,
+    });
+    const sql = raw.query.mock.calls
+      .map(([call]: [{ query: string }]) => call.query)
+      .filter((query: string) => query.includes("codecrush_traces"))
+      .join("\n");
+    expect(sql).toContain("trace_id IN (SELECT trace_id FROM codecrush_trace_spans");
+    expect(sql).toContain("name = 'retrieval.rerank'");
+    expect(sql).toContain("agent_id = {agentId:String}");
+    expect(sql).toContain("start_time >= parseDateTimeBestEffortOrNull");
+  });
+
+  it.each([
+    ["repair", "rag.repair.attempt_count"],
+    ["keyword_degraded", "rag.degraded.keyword_recall.count"],
+    ["rerank_degraded", "rag.degraded.rerank.count"],
+    ["confidence_very_low", "rag.quality.confidence"],
+    ["confidence_low", "rag.quality.confidence"],
+    ["confidence_medium", "rag.quality.confidence"],
+    ["confidence_high", "rag.quality.confidence"],
+    ["citations_none", "rag.citation.count"],
+    ["citations_one", "rag.citation.count"],
+    ["citations_two_three", "rag.citation.count"],
+    ["citations_four_plus", "rag.citation.count"],
+    ["coverage_full", "rag.citation.coverage"],
+    ["coverage_partial", "rag.citation.coverage"],
+  ] as const)("signal %s uses the typed root-span predicate %s", async (signal, attribute) => {
+    const { client, raw } = buildRoutingClient({ tableExists: true });
+    const repo = new ClickHouseTracesRepository(client);
+    await repo.listTraces({ signal, model: "deepseek-chat", page: 1, pageSize: 20 });
+    const calls = raw.query.mock.calls
+      .map(([call]: [{ query: string; query_params?: Record<string, unknown> }]) => call)
+      .filter((call: { query: string }) => call.query.includes("codecrush_traces"));
+    expect(calls.every((call: { query: string }) => call.query.includes(attribute))).toBe(true);
+    expect(calls.every((call: { query: string }) => call.query.includes("attributes['gen_ai.request.model'] = {model:String}"))).toBe(true);
+    expect(calls.every((call: { query_params?: Record<string, unknown> }) => call.query_params?.model === "deepseek-chat")).toBe(true);
+  });
+
+  it("uses stable ordering for candidate pagination", async () => {
+    const { client, raw } = buildRoutingClient({ tableExists: true });
+    await new ClickHouseTracesRepository(client).listTraces({ page: 1, pageSize: 20 });
+    const itemSql = raw.query.mock.calls
+      .map(([call]: [{ query: string }]) => call.query)
+      .find((sql: string) => sql.includes("LIMIT {limit:UInt32}"));
+    expect(itemSql).toContain("ORDER BY start_time DESC, trace_id DESC");
+  });
+
   it("listSessions maps rows", async () => {
     const { client } = buildRoutingClient({
       tableExists: true,

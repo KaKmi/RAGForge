@@ -9,7 +9,7 @@ configure({ asyncUtilTimeout: 5000 });
 vi.setConfig({ testTimeout: 15_000 });
 
 const NAV_LABELS = [
-  "快速开始",
+  "运行看板",
   "模型接入",
   "知识库",
   "Prompt 管理",
@@ -59,14 +59,14 @@ it("renders admin sider with brand, grouped nav (10 items + 3 group headers) whe
   // 品牌区文案为「控制台」（对齐原型），breadcrumb「CodeCrushBot 控制台」非精确匹配不会冲突
   expect(await screen.findByText("控制台")).toBeInTheDocument();
   for (const label of NAV_LABELS) {
-    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.getAllByText(label).length).toBeGreaterThan(0);
   }
   for (const group of NAV_GROUPS) {
     expect(screen.getByText(group)).toBeInTheDocument();
   }
   // M7a：导航入口由「Agent 管理」替换为「应用管理」（旧 /admin/agents 仅保留可直达）
   expect(screen.queryByText("Agent 管理")).not.toBeInTheDocument();
-});
+}, 10_000);
 
 it("renders GapsPage shell on /admin/gaps (数据飞轮壳页)", async () => {
   localStorage.setItem("token", "fake-token");

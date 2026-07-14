@@ -38,7 +38,10 @@ export class PgHybridRetriever implements RetrieverPort {
     private readonly kbs: KnowledgeBasesService,
   ) {}
 
-  async retrieve(req: RetrievalTestRequest): Promise<RetrievalHit[]> {
+  async retrieve(
+    req: RetrievalTestRequest,
+    observer?: (signal: "keyword_degraded" | "rerank_degraded") => void,
+  ): Promise<RetrievalHit[]> {
     return await withSpan(
       "retrieval.retrieve",
       {
@@ -55,13 +58,14 @@ export class PgHybridRetriever implements RetrieverPort {
           ...(req.topN !== undefined ? { [RAG.RETRIEVAL_TOP_N]: req.topN } : {}),
         },
       },
-      (span) => this.doRetrieve(req, (k, v) => span.setAttribute(k, v)),
+      (span) => this.doRetrieve(req, (k, v) => span.setAttribute(k, v), observer),
     );
   }
 
   private async doRetrieve(
     req: RetrievalTestRequest,
-    tag: (key: string, value: string) => void,
+    tag: (key: string, value: string | number | boolean) => void,
+    observer?: (signal: "keyword_degraded" | "rerank_degraded") => void,
   ): Promise<RetrievalHit[]> {
     const kb = await this.kbs.get(req.kbId);
     // M8 T3：embed 子 span——doRetrieve 整段在 retrieval.retrieve 的活动上下文内，
@@ -99,10 +103,8 @@ export class PgHybridRetriever implements RetrieverPort {
     const kwDegraded = req.multi && kwOutcome.status === "rejected";
     if (kwDegraded) {
       // 独立 key（非共用 "rag.degraded"）：同请求可能双降级（关键词+rerank），共用 key 会互相覆盖
-      tag(
-        "rag.degraded.keyword_recall",
-        ((kwOutcome as PromiseRejectedResult).reason as Error).message,
-      );
+      tag(RAG.DEGRADED_KEYWORD_RECALL, true);
+      try { observer?.("keyword_degraded"); } catch { /* best effort */ }
     }
     const useFusion = req.multi && !kwDegraded;
 
@@ -143,9 +145,10 @@ export class PgHybridRetriever implements RetrieverPort {
             (c) => c.rerankScore === undefined || c.rerankScore >= min,
           );
         }
-      } catch (err) {
+      } catch {
         // rerank 失败/超时 → 降级为跳过重排，保留融合分作为 finalScore（008 Invariant 3）
-        tag("rag.degraded.rerank", (err as Error).message);
+        tag(RAG.DEGRADED_RERANK, true);
+        try { observer?.("rerank_degraded"); } catch { /* best effort */ }
       }
     }
 

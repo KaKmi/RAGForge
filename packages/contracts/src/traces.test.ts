@@ -195,6 +195,11 @@ describe("M9 W1 trace 列表契约", () => {
     expect(TraceListQuerySchema.safeParse({ pageSize: "500" }).success).toBe(false);
   });
 
+  it("query accepts a fixed stage and rejects an unknown stage", () => {
+    expect(TraceListQuerySchema.parse({ stage: "rerank" }).stage).toBe("rerank");
+    expect(TraceListQuerySchema.safeParse({ stage: "made_up" }).success).toBe(false);
+  });
+
   it("accepts a valid SessionListRow", () => {
     const s = {
       sessionId: "conv1",

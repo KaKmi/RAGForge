@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MetricsStageKeySchema } from "./metrics";
 
 const traceIdSchema = z.string().regex(/^[a-f0-9]{32}$/i);
 const spanIdSchema = z.string().regex(/^[a-f0-9]{16}$/i);
@@ -134,7 +135,15 @@ export const TraceListQuerySchema = z.object({
   q: z.string().optional(),
   agentId: z.string().optional(),
   status: z.enum(["全部", "成功", "兜底", "失败"]).optional(),
-  quick: z.enum(["全部", "失败", "慢请求", "低分召回"]).optional(),
+  quick: z.enum(["全部", "失败", "慢请求", "低分召回", "无引用", "拒答", "超时"]).optional(),
+  stage: MetricsStageKeySchema.optional(),
+  model: z.string().optional(),
+  signal: z.enum([
+    "repair", "keyword_degraded", "rerank_degraded",
+    "confidence_very_low", "confidence_low", "confidence_medium", "confidence_high",
+    "citations_none", "citations_one", "citations_two_three", "citations_four_plus",
+    "coverage_full", "coverage_partial",
+  ]).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
   page: z.coerce.number().int().positive().default(1),

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { useNavigate } from "react-router-dom";
-import { message, Segmented, Spin } from "antd";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Button, DatePicker, Input, message, Pagination, Segmented, Spin, Tag } from "antd";
+import { DownloadOutlined } from "@ant-design/icons";
 import type {
   Application,
   QualitySignal,
@@ -8,14 +9,36 @@ import type {
   TraceListResponse,
   TraceListRow,
   TraceStatus,
+  MetricsStageKey,
+  TraceListQuery,
 } from "@codecrush/contracts";
-import { getApplications, getTraces, getTraceSessions } from "../../api/client";
+import { downloadTraceCandidates, getApplications, getTraces, getTraceSessions } from "../../api/client";
+import dayjs from "dayjs";
 
 /** Trace 追踪：Trace/Session 双列表接真实读模型（ClickHouse VIEW）。M9 W1。 */
 
 const STATUSES = ["全部", "成功", "兜底", "失败"] as const;
 const QUICKS = ["全部", "失败", "慢请求", "低分召回"] as const;
 const RANGES = ["今日", "近 7 日", "近 30 日"] as const;
+const STAGES: MetricsStageKey[] = ["rewrite", "intent", "embedding", "retrieval", "rerank", "generation"];
+type SignalFilter = NonNullable<TraceListQuery["signal"]>;
+const SIGNALS: SignalFilter[] = [
+  "repair", "keyword_degraded", "rerank_degraded",
+  "confidence_very_low", "confidence_low", "confidence_medium", "confidence_high",
+  "citations_none", "citations_one", "citations_two_three", "citations_four_plus",
+  "coverage_full", "coverage_partial",
+];
+const SIGNAL_FILTER_LABELS: Record<SignalFilter, string> = {
+  repair: "发生结构化修复", keyword_degraded: "关键词召回降级", rerank_degraded: "Rerank 降级",
+  confidence_very_low: "可信度很低", confidence_low: "可信度低", confidence_medium: "可信度中",
+  confidence_high: "可信度高", citations_none: "无引用", citations_one: "1 条引用",
+  citations_two_three: "2–3 条引用", citations_four_plus: "4+ 条引用",
+  coverage_full: "引用覆盖完整", coverage_partial: "引用覆盖部分",
+};
+const STAGE_LABELS: Record<MetricsStageKey, string> = {
+  rewrite: "问题改写", intent: "意图识别", embedding: "向量化",
+  retrieval: "检索总段", rerank: "重排", generation: "回复生成",
+};
 type StatusFilter = (typeof STATUSES)[number];
 type QuickFilter = (typeof QUICKS)[number];
 type RangeFilter = (typeof RANGES)[number];
@@ -59,16 +82,62 @@ function rangeFrom(range: RangeFilter): string | undefined {
 
 export default function TracesPage() {
   const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialStatus = searchParams.get("status");
+  const initialQuick = searchParams.get("quick");
   const [tab, setTab] = useState<"trace" | "session">("trace");
   const [query, setQuery] = useState("");
-  const [agentId, setAgentId] = useState(""); // ""=全部
-  const [status, setStatus] = useState<StatusFilter>("全部");
-  const [quick, setQuick] = useState<QuickFilter>("全部");
+  const [agentId, setAgentId] = useState(searchParams.get("agentId") ?? ""); // ""=全部
+  const [status, setStatus] = useState<StatusFilter>(
+    STATUSES.includes(initialStatus as StatusFilter) ? (initialStatus as StatusFilter) : "全部",
+  );
+  const [quick, setQuick] = useState<QuickFilter>(
+    QUICKS.includes(initialQuick as QuickFilter) ? (initialQuick as QuickFilter) : "全部",
+  );
+  const initialStage = searchParams.get("stage");
+  const [stage, setStage] = useState<MetricsStageKey | undefined>(
+    STAGES.includes(initialStage as MetricsStageKey) ? (initialStage as MetricsStageKey) : undefined,
+  );
+  const initialSignal = searchParams.get("signal");
+  const [signal, setSignal] = useState<SignalFilter | undefined>(
+    SIGNALS.includes(initialSignal as SignalFilter) ? (initialSignal as SignalFilter) : undefined,
+  );
+  const [model, setModel] = useState(searchParams.get("model") ?? "");
   const [range, setRange] = useState<RangeFilter>("今日");
+  const [urlRange, setUrlRange] = useState({
+    from: searchParams.get("from") ?? undefined,
+    to: searchParams.get("to") ?? undefined,
+  });
+  const didMountSearchSync = useRef(false);
+
+  useEffect(() => {
+    if (!didMountSearchSync.current) {
+      didMountSearchSync.current = true;
+      return;
+    }
+    const nextStatus = searchParams.get("status");
+    const nextQuick = searchParams.get("quick");
+    const nextStage = searchParams.get("stage");
+    const nextSignal = searchParams.get("signal");
+    setAgentId(searchParams.get("agentId") ?? "");
+    setStatus(STATUSES.includes(nextStatus as StatusFilter) ? (nextStatus as StatusFilter) : "全部");
+    setQuick(QUICKS.includes(nextQuick as QuickFilter) ? (nextQuick as QuickFilter) : "全部");
+    setStage(STAGES.includes(nextStage as MetricsStageKey) ? (nextStage as MetricsStageKey) : undefined);
+    setSignal(SIGNALS.includes(nextSignal as SignalFilter) ? (nextSignal as SignalFilter) : undefined);
+    setModel(searchParams.get("model") ?? "");
+    setUrlRange({ from: searchParams.get("from") ?? undefined, to: searchParams.get("to") ?? undefined });
+  }, [searchParams]);
 
   const [apps, setApps] = useState<Application[]>([]);
   const [data, setData] = useState<TraceListResponse | null>(null);
+  const [tracePage, setTracePage] = useState(1);
   const [sessions, setSessions] = useState<SessionListRow[] | null>(null);
+  const [sessionIdSearch, setSessionIdSearch] = useState("");
+  const [sessionUserSearch, setSessionUserSearch] = useState("");
+  const [sessionAppSearch, setSessionAppSearch] = useState("");
+  const [sessionQuestionSearch, setSessionQuestionSearch] = useState("");
+  const [sessionDate, setSessionDate] = useState<dayjs.Dayjs | null>(null);
+  const [sessionPage, setSessionPage] = useState(1);
   const [loading, setLoading] = useState(true);
 
   // Agent 下拉（id→name）——一次性加载
@@ -90,9 +159,13 @@ export default function TracesPage() {
       agentId: agentId || undefined,
       status,
       quick,
-      from: rangeFrom(range),
-      page: 1,
-      pageSize: 50,
+      stage,
+      signal,
+      model: model || undefined,
+      from: urlRange.from ?? rangeFrom(range),
+      to: urlRange.to,
+      page: tracePage,
+      pageSize: 20,
     })
       .then((r) => {
         if (live) setData(r);
@@ -106,7 +179,7 @@ export default function TracesPage() {
     return () => {
       live = false;
     };
-  }, [tab, query, agentId, status, quick, range]);
+  }, [tab, query, agentId, status, quick, stage, signal, model, range, urlRange, tracePage]);
 
   // Session 列表
   useEffect(() => {
@@ -134,13 +207,21 @@ export default function TracesPage() {
   const p95Label = summary ? (p95s >= 10 ? p95s.toFixed(1) : p95s.toFixed(2)) + "s" : "—";
   const p95Color = summary && summary.p95Ms >= 5000 ? "#ff4d4f" : "#52c41a";
 
-  const hasFilter = query !== "" || agentId !== "" || status !== "全部" || quick !== "全部";
+  const hasFilter = query !== "" || agentId !== "" || status !== "全部" || quick !== "全部" || stage !== undefined || signal !== undefined || model !== "" || urlRange.from !== undefined || urlRange.to !== undefined;
   const reset = () => {
+    setTracePage(1);
     setQuery("");
     setAgentId("");
     setStatus("全部");
     setQuick("全部");
+    setStage(undefined);
+    setSignal(undefined);
+    setModel("");
+    setUrlRange({ from: undefined, to: undefined });
+    setSearchParams({});
   };
+
+  const effectiveFrom = urlRange.from ?? rangeFrom(range);
 
   const agentOptions = useMemo(() => [{ id: "", name: "全部" }, ...apps.map((a) => ({ id: a.id, name: a.name }))], [apps]);
 
@@ -159,6 +240,13 @@ export default function TracesPage() {
   const quickChip = (on: boolean): CSSProperties => ({ ...chip(on), borderRadius: 14, padding: "0 12px" });
 
   const traceCount = data?.items.length ?? 0;
+  const filteredSessions = (sessions ?? []).filter((s) => {
+    const contains = (value: string | null | undefined, term: string) => !term || (value ?? "").toLowerCase().includes(term.toLowerCase());
+    return contains(s.sessionId, sessionIdSearch) && contains(s.userId, sessionUserSearch) && contains(s.agentName, sessionAppSearch)
+      && contains(s.firstQuestion, sessionQuestionSearch) && (!sessionDate || dayjs(s.firstTs).isSame(sessionDate, "day"));
+  });
+  const sessionPageSize = 8;
+  const visibleSessions = filteredSessions.slice((sessionPage - 1) * sessionPageSize, sessionPage * sessionPageSize);
 
   return (
     <div>
@@ -170,19 +258,43 @@ export default function TracesPage() {
       </div>
 
       {/* Trace / Session 分段控件（antd Segmented，样式还原原型 pill） */}
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
         <Segmented
           value={tab}
-          onChange={(v) => setTab(v as "trace" | "session")}
+          onChange={(v) => { setTab(v as "trace" | "session"); setTracePage(1); }}
+          size="large"
+          className="trace-view-switcher"
           options={[
-            { label: "Trace", value: "trace" },
-            { label: "Session · 会话", value: "session" },
+            { label: "Trace 追踪", value: "trace" },
+            { label: "Session 会话", value: "session" },
           ]}
         />
+        {tab === "trace" && <Button icon={<DownloadOutlined />} onClick={() => downloadTraceCandidates({ q: query || undefined, agentId: agentId || undefined, status, quick, stage, signal, model: model || undefined, from: effectiveFrom, to: urlRange.to, page: tracePage, pageSize: 20 }).catch((error: unknown) => message.error(error instanceof Error ? error.message : "导出失败"))}>导出当前结果 CSV</Button>}
       </div>
 
       {tab === "trace" && (
         <>
+          {stage && (
+            <div style={{ marginBottom: 12, padding: "9px 12px", border: "1px solid #bae0ff", borderRadius: 8, background: "#f0f8ff", color: "#0958d9", fontSize: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ color: "#64748b" }}>当前筛选：</span><Tag color="blue" closable onClose={() => setStage(undefined)}>阶段筛选：{STAGE_LABELS[stage]}</Tag>
+            </div>
+          )}
+          {(signal || model) && (
+            <div style={{ marginBottom: 12, padding: "9px 12px", border: "1px solid #d9f7be", borderRadius: 8, background: "#f6ffed", color: "#237804", fontSize: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ color: "#64748b" }}>当前筛选：</span>
+              {signal && <Tag color="green" closable onClose={() => setSignal(undefined)}>信号筛选：{SIGNAL_FILTER_LABELS[signal]}</Tag>}
+              {model && <Tag color="green" closable onClose={() => setModel("")}>模型：{model}</Tag>}
+            </div>
+          )}
+          <div style={{ display: "none" }}>
+            <Button
+              icon={<DownloadOutlined />}
+              onClick={() => downloadTraceCandidates({
+                q: query || undefined, agentId: agentId || undefined, status, quick, stage, signal,
+                model: model || undefined, from: effectiveFrom, to: urlRange.to, page: 1, pageSize: 50,
+              }).catch((error: unknown) => message.error(error instanceof Error ? error.message : "导出失败"))}
+            >导出当前候选样本 CSV</Button>
+          </div>
           <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
             <div style={{ flex: 1, background: "#fff", border: "1px solid #f0f0f0", borderRadius: 8, padding: "14px 18px" }}>
               <div style={{ fontSize: 12, color: "rgba(0,0,0,.45)", marginBottom: 6 }}>采样 Trace 数</div>
@@ -256,7 +368,10 @@ export default function TracesPage() {
               {RANGES.map((r, i) => (
                 <div
                   key={r}
-                  onClick={() => setRange(r)}
+                  onClick={() => {
+                    setUrlRange({ from: undefined, to: undefined });
+                    setRange(r);
+                  }}
                   style={{
                     height: 30,
                     padding: "0 12px",
@@ -364,6 +479,7 @@ export default function TracesPage() {
                 {(data?.items.length ?? 0) === 0 && (
                   <div style={{ padding: 48, textAlign: "center", color: "rgba(0,0,0,.3)", fontSize: 13 }}>没有符合条件的 Trace</div>
                 )}
+                <div style={{ display: "flex", justifyContent: "flex-end", padding: "14px 16px" }}><Pagination current={tracePage} pageSize={20} total={data?.total ?? 0} showSizeChanger={false} showTotal={(total) => `共 ${total} 条`} onChange={setTracePage} /></div>
               </>
             )}
           </div>
@@ -371,11 +487,20 @@ export default function TracesPage() {
       )}
 
       {tab === "session" && (
-        <div style={{ background: "#fff", border: "1px solid #f0f0f0", borderRadius: 8, overflow: "hidden" }}>
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 12, padding: 14, background: "#fff", border: "1px solid #e8edf3", borderRadius: 10 }}>
+            <Input allowClear value={sessionIdSearch} onChange={(e) => { setSessionIdSearch(e.target.value); setSessionPage(1); }} placeholder="Session ID" />
+            <Input allowClear value={sessionUserSearch} onChange={(e) => { setSessionUserSearch(e.target.value); setSessionPage(1); }} placeholder="用户 ID" />
+            <Input allowClear value={sessionAppSearch} onChange={(e) => { setSessionAppSearch(e.target.value); setSessionPage(1); }} placeholder="应用名称" />
+            <Input allowClear value={sessionQuestionSearch} onChange={(e) => { setSessionQuestionSearch(e.target.value); setSessionPage(1); }} placeholder="首轮问题" />
+            <DatePicker allowClear value={sessionDate} onChange={(value) => { setSessionDate(value); setSessionPage(1); }} placeholder="开始日期" format="YYYY-MM-DD" />
+            <span style={{ color: "#94a3b8", fontSize: 12 }}>共 {filteredSessions.length} 个会话</span>
+          </div>
+        <div style={{ background: "#fff", border: "1px solid #e8edf3", borderRadius: 10, overflow: "hidden", boxShadow: "0 4px 16px rgba(15,23,42,.04)" }}>
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "180px 110px 120px 70px 1fr 90px",
+              gridTemplateColumns: "minmax(170px,1.2fr) minmax(150px,1fr) 150px 70px minmax(220px,2fr) 140px 90px",
               padding: "12px 16px",
               background: "#fafafa",
               borderBottom: "1px solid #f0f0f0",
@@ -389,6 +514,7 @@ export default function TracesPage() {
             <div>Agent</div>
             <div>轮次</div>
             <div>首轮问题</div>
+            <div>最近活动</div>
             <div>状态</div>
           </div>
           {loading ? (
@@ -397,7 +523,7 @@ export default function TracesPage() {
             </div>
           ) : (
             <>
-              {(sessions ?? []).map((s) => {
+              {visibleSessions.map((s) => {
                 const t = SESSION_TAG[s.status];
                 return (
                   <div
@@ -405,7 +531,7 @@ export default function TracesPage() {
                     onClick={() => nav(`/admin/traces/sessions/${s.sessionId}`)}
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "180px 110px 120px 70px 1fr 90px",
+                      gridTemplateColumns: "minmax(170px,1.2fr) minmax(150px,1fr) 150px 70px minmax(220px,2fr) 140px 90px",
                       padding: "12px 16px",
                       borderBottom: "1px solid #f0f0f0",
                       fontSize: 13,
@@ -422,6 +548,7 @@ export default function TracesPage() {
                       <span style={{ fontSize: 12, fontWeight: 600 }}>{s.roundCount} 轮</span>
                     </div>
                     <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", paddingRight: 10, color: "rgba(0,0,0,.6)" }}>{s.firstQuestion}</div>
+                    <div style={{ color: "#64748b", fontSize: 12 }}>{new Date(s.lastTs).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
                     <div>
                       <span style={{ fontSize: 12, lineHeight: "20px", padding: "0 8px", borderRadius: 4, background: t.bg, color: t.c, border: `1px solid ${t.bd}` }}>
                         {t.label}
@@ -435,6 +562,8 @@ export default function TracesPage() {
               )}
             </>
           )}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 14 }}><Pagination current={sessionPage} pageSize={sessionPageSize} total={filteredSessions.length} showSizeChanger={false} showTotal={(total) => `共 ${total} 个会话`} onChange={setSessionPage} /></div>
         </div>
       )}
     </div>

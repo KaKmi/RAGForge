@@ -270,6 +270,28 @@ describe("ModelsService.chatStream", () => {
       undefined,
     );
   });
+  it("notifies provider start after model lookup and immediately before provider.chatStream", async () => {
+    const repo = makeRepo();
+    const order: string[] = [];
+    repo.findById.mockImplementation(async (id: string) => {
+      order.push("lookup");
+      return repo.rows.find((row) => row.id === id);
+    });
+    const chatPort = {
+      testConnection: jest.fn(), embed: jest.fn(), rerank: jest.fn(), chat: jest.fn(),
+      chatStream: jest.fn(() => {
+        order.push("provider");
+        return (async function* () { yield { done: true }; })();
+      }),
+    } as unknown as jest.Mocked<ModelProviderPort>;
+    const svc = new ModelsService(repo as unknown as ModelsRepository, enc, chatPort);
+    const created = await svc.create(createReq);
+    order.length = 0;
+    await svc.chatStream(created.id, [{ role: "user", content: "q" }], undefined, () => {
+      order.push("start");
+    });
+    expect(order).toEqual(["lookup", "start", "provider"]);
+  });
 });
 
 describe("ModelsService.rerankTexts", () => {

@@ -73,3 +73,77 @@ describe("getOverview", () => {
     expect(sqls).toContain("toString(bucket) AS bucketText");
   });
 });
+
+describe("getAppMetrics", () => {
+  it("按 chain 身份和时间/模型筛选阶段，并固定补齐无样本阶段", async () => {
+    const query = jest.fn().mockImplementation(({ query: sql }: { query: string }) => {
+      if (sql.includes("EXISTS TABLE")) return { json: async () => [{ result: 1 }] };
+      if (sql.includes("SELECT count() AS c")) return { json: async () => [{ c: 1 }] };
+      if (sql.includes("GROUP BY stage")) {
+        return {
+          json: async () => [
+            { stage: "generation", sampleCount: 10, p50Ms: 900, p95Ms: 1800 },
+            { stage: "retrieval", sampleCount: 8, p50Ms: 300, p95Ms: 700 },
+          ],
+        };
+      }
+      if (sql.includes("ttftSamples")) {
+        return { json: async () => [{
+          ttftSamples: 10, ttftP50: 200, ttftP95: 500,
+          rateSamples: 8, rateP50: 24, rateP95: 40,
+          repairAttempts: 2, repairEligible: 20,
+          keywordCount: 1, keywordEligible: 8, rerankCount: 1, rerankEligible: 5,
+          confidenceSamples: 8, confidenceP50: 0.75,
+          confidenceVeryLow: 1, confidenceLow: 2, confidenceMedium: 3, confidenceHigh: 2,
+          citationSamples: 10, citationAverage: 1.8,
+          citationsNone: 2, citationsOne: 3, citationsTwoThree: 4, citationsFourPlus: 1,
+          coverageFull: 6, coveragePartial: 3, coverageUnknown: 1,
+        }] };
+      }
+      if (sql.includes("GROUP BY bucket")) return { json: async () => [] };
+      return {
+        json: async () => [{
+          qaCount: 10, failCount: 0, fallbackCount: 0, lowRecallCount: 0,
+          noCiteCount: 0, refusalCount: 0, timeoutCount: 0, p50Ms: 1000,
+          p95Ms: 2000, inputTokens: 100, outputTokens: 50, costUsd: 0,
+        }],
+      };
+    });
+    const command = jest.fn().mockResolvedValue(undefined);
+    const repo = new ClickHouseMetricsRepository({ command, query } as never);
+
+    const result = await repo.getAppMetrics("app-1", {
+      from: "2026-07-01T00:00:00Z",
+      to: "2026-07-08T00:00:00Z",
+      model: "qwen-plus",
+    });
+
+    expect(result.stages.map((stage) => stage.stage)).toEqual([
+      "rewrite", "intent", "embedding", "retrieval", "rerank", "generation",
+    ]);
+    expect(result.stages.find((stage) => stage.stage === "rerank")).toEqual({
+      stage: "rerank", sampleCount: 0, p50Ms: null, p95Ms: null,
+    });
+    expect(result.stages.find((stage) => stage.stage === "generation")?.p95Ms).toBe(1800);
+    expect(result.signals.ttft).toEqual({ sampleCount: 10, p50Ms: 200, p95Ms: 500 });
+    expect(result.signals.generationRate.p50TokensPerSecond).toBe(24);
+    const signalCall = query.mock.calls.find(([call]) =>
+      (call as { query: string }).query.includes("ttftSamples"),
+    )?.[0] as { query: string };
+    expect(signalCall.query).toContain("rag.keyword.requested_count");
+    expect(signalCall.query).toContain("rag.citation.count'] != '' AND");
+
+    const stageCall = query.mock.calls.find(([call]) =>
+      (call as { query: string }).query.includes("GROUP BY stage"),
+    )?.[0] as { query: string; query_params: Record<string, unknown> };
+    expect(stageCall.query).toContain("root.kind = 'chain'");
+    expect(stageCall.query).toContain("rag.preview");
+    expect(stageCall.query).toContain("quantileTDigest(0.95)");
+    expect(stageCall.query_params).toEqual({
+      agentId: "app-1",
+      from: "2026-07-01T00:00:00Z",
+      to: "2026-07-08T00:00:00Z",
+      model: "qwen-plus",
+    });
+  });
+});

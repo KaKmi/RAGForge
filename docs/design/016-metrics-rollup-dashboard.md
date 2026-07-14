@@ -16,6 +16,7 @@ last_modified: "2026-07-14"
 `draft` — 指标读模型设计。**承接 `004-trace-observability`**：004 的存储分层（Session→Trace→Span、OTLP「结束即写」、读侧经自有 schema 防腐、大 payload offload）**全部不变**；004 第「演进路径」节明确规划「VIEW 投影 → ClickHouse Materialized View 宽表」两步（004 §读模型演进 step 2、Revisit「VIEW 性能不足 → 落物化表」），**本文就是那一步的落地**：不推翻既有 VIEW，在其旁增量加一层预聚合表，专供指标聚合与看板。
 
 2026-07-14：**W-a 后端已落地**。实现采用 D2′：`codecrush_metrics_1m` 只存一列可合并 `dur_tdigest` state，窗口与趋势查询直接对该自有表执行 `xxxMerge`；不建会诱导跨桶/跨应用错误聚合的 finalize VIEW。cost 真算与前端看板拆为后续独立波。
+2026-07-14：**W-b1 已落地**。前端总览、筛选、阈值染色与候选 Trace 下钻已接真实 API；单应用响应新增固定六阶段 P50/P95/样本数，直接从 `codecrush_trace_spans` 现算。cost 仍未启用。
 
 **对抗强度：完整对抗**（架构性任务——新增 ClickHouse 存储 schema 决策 + 写侧根 span delta；按 `CLAUDE.md` 分级：碰存储 schema 取高档）。
 
@@ -183,6 +184,32 @@ GROUP BY bucket, agent_id, gen_model;
 - `GET /metrics/apps/:id?from&to` → 单应用维度（含分阶段耗时，读 `codecrush_trace_spans` 现算或后续入表）。
 - 下钻**不新建端点**：看板点击 → 跳已有 `GET /traces`，带 `agentId/status/from/to/quality` 筛选（部分筛选项 015 已支持，缺的补 where）。
 
+### W-b1 应用分阶段耗时口径（2026-07-14）
+
+`GET /metrics/apps/:id` 在总览同形的 `window + series` 外增加 `stages`。阶段耗时首版直接从
+`codecrush_trace_spans` 现算，只查询所选应用与时间窗的正式 trace；不改写侧、不新增物化表，避免在
+问答关键路径引入任何成本。返回阶段固定为：
+
+| stage | 中文 | span 识别规则 |
+|---|---|---|
+| `rewrite` | 问题改写 | `kind='llm' AND attributes['rag.node.name']='rewrite'` |
+| `intent` | 意图识别 | `kind='llm' AND attributes['rag.node.name']='intent'` |
+| `embedding` | 向量化 | `name='retrieval.embedding'` |
+| `retrieval` | 检索总段 | `name='retrieval.retrieve'` |
+| `rerank` | 重排 | `name='retrieval.rerank'` |
+| `generation` | 回复生成 | `kind='llm' AND attributes['rag.node.name'] IN ('reply','fallback')` |
+
+每阶段返回 `sample_count / p50_ms / p95_ms`，没有样本的阶段仍按固定顺序返回，计数为 0、分位值为
+`null`，避免把“未执行”误写成 0ms。筛选身份与正式流量取同 trace 的 chain span：
+`gen_ai.agent.id=:id`、chain `Timestamp` 落在 `from/to`、`rag.preview!='true'`；模型筛选使用 chain
+上的 D-metrics `gen_ai.request.model`。阶段查询按 span 样本统计：多 KB 检索可能在一条 trace 中产生多个
+`retrieval.retrieve` 样本，`sample_count` 因而不等于问答量。
+
+`retrieval.retrieve` 是父 span，包含其 `retrieval.embedding` 与可选 `retrieval.rerank` 子 span；首版图表
+展示各阶段独立 P50/P95，**不得相加**、不得画成暗示互斥分段的堆叠总耗时。前端仅在选定具体应用时
+展示阶段面板；点击阶段携带相同 `agentId/from/to` 下钻 trace 列表，但现有 trace API 尚无 span-stage
+筛选，故首版下钻是该应用同时间窗的候选样本而非精确阶段集合。
+
 ## Design — 指标清单（按域 · 优先级）
 
 > 🟢 span 已埋，直接聚合　🟡 已有一半/需补属性　🔴 需新埋点或离线　★ 第一批必做
@@ -248,13 +275,45 @@ GROUP BY bucket, agent_id, gen_model;
 ## Rollout & 分波
 
 - **W-a（已交付）**：D-metrics 写侧 delta（根 span 落 token/model 汇总）+ `codecrush_metrics_1m` + MV + 守卫回填 + `GET /metrics/overview|apps`。cost 列恒 0，不建 finalize VIEW。
-- **W-b**：前端运行看板、三层下钻与阈值染色；分阶段耗时、TTFT/修复率/降级率补属性、Badcase 出口列表按依赖继续拆波。
+- **W-b1（已交付）**：前端运行看板、应用筛选、候选 Trace 下钻、阈值染色与单应用六阶段 P50/P95。
+- **W-b2**：TTFT/修复率/降级率补属性、精确阶段下钻与 Badcase 出口列表按依赖继续拆波。
 - **W-cost**：定价模型、配置 UI、`rag.cost.usd` emit 与历史重算，独立设计实施。
 - **W-c（线 B，独立）**：Collector metrics pipeline → Prometheus + 平台健康看板 + 告警通道。
 
 **「在工作」信号**：跑 N 条真实问答（含至少一条兜底、一条失败）→ 看板数字与手动 `SELECT … FROM codecrush_traces` 现算结果一致 → 点兜底率下钻能落到那条兜底 trace 详情。
 
 ## Revisit triggers
+
+## W-b2 诊断信号契约（2026-07-14）
+
+W-b2 不包含 W-cost，也不提前创建 M11 评测集或 Badcase 持久化模型。新增信号仍沿用
+OTLP → Collector → ClickHouse 事实链路；写侧只做进程内、best-effort 的 observer 汇总，observer
+异常必须被吞掉，不得等待外部 I/O。
+
+- `rag.ttft_ms`：调用 provider stream 前的单调时钟至首个非空 delta；超时、首 token 前失败或
+  abort 时缺省，不写 0。
+- `rag.generation.duration_ms`：reply 流从 provider 调用开始至结束的持续时间。
+- `rag.generation.tokens_per_second`：`output_tokens / ((duration_ms - ttft_ms) / 1000)`；分母
+  非正或无 output token 时缺省。界面必须标为“生成 token/s（首 token 后）”。
+- `rag.repair.attempt_count / eligible_count`：发生修复的结构化节点调用数 / 已执行且可判断的
+  结构化节点调用数。
+- `rag.degraded.keyword_recall.count / rag.retrieval.execution_count` 与
+  `rag.degraded.rerank.count / rag.rerank.requested_count` 分别是两类独立降级的分子分母；属于
+  检索执行样本，不等于问答数。子 span 只写无敏感正文的布尔属性。
+- `rag.quality.confidence` 是现有检索分数派生的启发式可信度，不是正确率；fallback/无可用值时
+  缺省。`rag.citation.count` 与 `rag.citation.coverage=full|partial` 描述引用数量与覆盖，不宣称
+  引用正确性。
+
+`GET /metrics/apps/:id` 增加 `signals`：TTFT 与 token/s 的样本数和 P50/P95、repair 与两类
+degradation 的分子/分母/nullable rate、可信度固定分桶、引用数固定分桶和覆盖计数。零分母返回
+`null`，无样本的分位值返回 `null`。当前应用详情按所选应用/时间/模型在正式 chain span 上聚合；
+流量或查询规模触发性能阈值时迁移到独立 `codecrush_metrics_quality_1m`，不得原地修改既有
+`codecrush_metrics_1m`。
+
+Trace 查询增加 typed `signal` 与 `model`，所有条件与 stage/application/time/status 组合。Badcase
+仅是这些信号对应的只读候选 Trace 集合；`GET /traces/export` 复用同一查询、稳定时间倒序、上限
+10,000，CSV 对引号/换行和表格公式前缀转义，只导出 trace 身份、时间、应用、问题、状态、耗时和
+质量信号，不导出 span IO、引用正文或秘密。加入评测集、回放、标签和所有权继续属于 M11。
 
 - 单分钟桶维度组合（应用×模型）过多致汇总表膨胀 → 降维或拆姊妹表。
 - 时间窗查询仍慢（跨大量 1m 桶）→ 加 1h/1d 多分辨率 rollup（rollup 的 rollup）。

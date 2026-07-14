@@ -37,6 +37,32 @@ export class TracesService {
     return await this.tracesRepository.listTraces(query);
   }
 
+  async exportTraceCandidates(query: TraceListQuery): Promise<{ csv: string; truncated: boolean }> {
+    const cap = 10_000;
+    const items: TraceListResponse["items"] = [];
+    let total = 0;
+    for (let page = 1; items.length < cap; page += 1) {
+      const batch = await this.tracesRepository.listTraces({ ...query, page, pageSize: 100 });
+      total = batch.total;
+      items.push(...batch.items);
+      if (items.length >= batch.total || batch.items.length === 0) break;
+    }
+    const truncated = total > cap;
+    const safe = (value: unknown): string => {
+      let text = String(value ?? "");
+      if (/^\s*[=+\-@]/.test(text)) text = `'${text}`;
+      return `"${text.replaceAll('"', '""')}"`;
+    };
+    const rows = items.slice(0, cap).map((item) => [
+      item.traceId, item.startTime, item.agentName ?? item.agentId, item.userInput,
+      item.status, item.durationMs, item.qualitySignals.join("|"),
+    ]);
+    return {
+      csv: ["trace_id,start_time,application,question,status,duration_ms,quality_signals", ...rows.map((row) => row.map(safe).join(","))].join("\r\n"),
+      truncated,
+    };
+  }
+
   async listSessions(): Promise<SessionListResponse> {
     return await this.tracesRepository.listSessions();
   }

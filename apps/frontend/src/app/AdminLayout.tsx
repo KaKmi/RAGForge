@@ -1,24 +1,26 @@
 import { Avatar, Button, Layout } from "antd";
+import { AppstoreOutlined, BarChartOutlined, DatabaseOutlined, ExperimentOutlined, FileSearchOutlined, FundOutlined, RobotOutlined, SettingOutlined } from "@ant-design/icons";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
+import type { ReactNode } from "react";
 
 const { Header, Sider, Content } = Layout;
 
 /** 分组侧栏导航（对齐新原型 NAV：配置 / 验证 & 观测 / 数据飞轮） */
-type NavEntry = { kind: "group"; label: string } | { kind: "item"; key: string; label: string };
+type NavEntry = { kind: "group"; label: string } | { kind: "item"; key: string; label: string; icon?: ReactNode };
 const NAV_ENTRIES: NavEntry[] = [
-  { kind: "item", key: "/admin", label: "快速开始" },
+  { kind: "item", key: "/admin", label: "运行看板", icon: <BarChartOutlined /> },
   { kind: "group", label: "配置" },
-  { kind: "item", key: "/admin/models", label: "模型接入" },
-  { kind: "item", key: "/admin/knowledge-bases", label: "知识库" },
-  { kind: "item", key: "/admin/prompts", label: "Prompt 管理" },
-  { kind: "item", key: "/admin/applications", label: "应用管理" },
+  { kind: "item", key: "/admin/models", label: "模型接入", icon: <SettingOutlined /> },
+  { kind: "item", key: "/admin/knowledge-bases", label: "知识库", icon: <DatabaseOutlined /> },
+  { kind: "item", key: "/admin/prompts", label: "Prompt 管理", icon: <RobotOutlined /> },
+  { kind: "item", key: "/admin/applications", label: "应用管理", icon: <AppstoreOutlined /> },
   { kind: "group", label: "验证 & 观测" },
-  { kind: "item", key: "/admin/retrieval-test", label: "检索测试" },
-  { kind: "item", key: "/admin/traces", label: "Trace 追踪" },
+  { kind: "item", key: "/admin/retrieval-test", label: "检索测试", icon: <ExperimentOutlined /> },
+  { kind: "item", key: "/admin/traces", label: "Trace 追踪", icon: <FileSearchOutlined /> },
   { kind: "group", label: "数据飞轮" },
   { kind: "item", key: "/admin/gaps", label: "知识缺口" },
   { kind: "item", key: "/admin/evalsets", label: "评测集" },
-  { kind: "item", key: "/admin/evaluations", label: "效果评测" },
+  { kind: "item", key: "/admin/evaluations", label: "效果评测", icon: <FundOutlined /> },
 ];
 
 /** 子路由需要高亮父级菜单的路径前缀（dashboard 不在侧栏） */
@@ -36,7 +38,8 @@ const PREFIX_KEYS = [
 ];
 
 const PAGE_TITLES: Record<string, string> = {
-  "/admin": "快速开始",
+  "/admin": "运行看板",
+  "/admin/start": "快速开始",
   "/admin/dashboard": "运行看板",
   "/admin/models": "模型接入",
   "/admin/knowledge-bases": "知识库",
@@ -126,9 +129,12 @@ export function AdminLayout() {
                       fontSize: 14,
                       color: on ? "#fff" : "rgba(255,255,255,.65)",
                       background: on ? "#1677ff" : "transparent",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
                     }}
                   >
-                    {entry.label}
+                    <span style={{ width: 16 }}>{entry.icon}</span>{entry.label}
                   </div>
                 </Link>
               );

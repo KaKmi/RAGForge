@@ -30,6 +30,7 @@ export interface ExecuteStructuredResult<TOutput> {
    *  校验失败提前返回（无 span）路径为 undefined。 */
   traceId?: string;
   usage?: { inputTokens: number; outputTokens: number };
+  repairRetryCount?: number;
 }
 
 export interface StreamTextResult {
@@ -92,6 +93,8 @@ export interface NodeExecuteOptions {
   metricsObserver?: {
     onModel?: (model: string) => void;
     onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
+    onRepair?: (retryCount: number) => void;
+    onGenerationTiming?: (timing: { ttftMs?: number; generationDurationMs: number }) => void;
   };
 }
 
@@ -192,6 +195,7 @@ export class NodeRuntimeService {
         fallbackUsed: true,
         validateSteps: [...steps, { step: "fallback", ok: true }],
         usage: { inputTokens: 0, outputTokens: 0 },
+        repairRetryCount: 0,
       };
     }
 
@@ -207,6 +211,7 @@ export class NodeRuntimeService {
         fallbackUsed: true,
         validateSteps: [...steps, { step: "fallback", ok: true }],
         usage: { inputTokens: 0, outputTokens: 0 },
+        repairRetryCount: 0,
       };
     }
     // 后续统一用校验/归一后的值（含 Zod default，如 REPLY_CONTRACT.citations 缺省 []），
@@ -298,12 +303,18 @@ export class NodeRuntimeService {
           span.setAttribute(RAG.REPAIR_RETRY_COUNT, 0);
           setUsageAttrs(span, uin, uout);
           applyEnrich(first.output);
+          try {
+            opts?.metricsObserver?.onRepair?.(0);
+          } catch {
+            /* best effort */
+          }
           return {
             output: first.output,
             fallbackUsed: false,
             validateSteps: steps,
             traceId: span.spanContext().traceId,
             usage: { inputTokens: uin, outputTokens: uout },
+            repairRetryCount: 0,
           };
         }
         steps.push({ step: first.step, ok: false, issues: first.issues });
@@ -318,6 +329,11 @@ export class NodeRuntimeService {
         ];
         const second = await attempt(repairMessages);
         span.setAttribute(RAG.REPAIR_RETRY_COUNT, 1);
+        try {
+          opts?.metricsObserver?.onRepair?.(1);
+        } catch {
+          /* best effort */
+        }
         if (second.ok) {
           steps.push({ step: "repair", ok: true });
           span.setAttribute(RAG.FALLBACK_USED, false);
@@ -329,6 +345,7 @@ export class NodeRuntimeService {
             validateSteps: steps,
             traceId: span.spanContext().traceId,
             usage: { inputTokens: uin, outputTokens: uout },
+            repairRetryCount: 1,
           };
         }
         steps.push({ step: "repair", ok: false, issues: second.issues });
@@ -344,6 +361,7 @@ export class NodeRuntimeService {
           validateSteps: steps,
           traceId: span.spanContext().traceId,
           usage: { inputTokens: uin, outputTokens: uout },
+          repairRetryCount: 1,
         };
       },
     );
@@ -504,6 +522,8 @@ export class NodeRuntimeService {
     );
     const traceId = span.spanContext().traceId;
     let text = "";
+    let streamStartedAt: number | undefined;
+    let firstDeltaAt: number | undefined;
     const usageAcc = { inputTokens: 0, outputTokens: 0 }; // M8 T3：跨帧累计 usage，finally 统一落 span
     let interrupted = false; // 已发 token 后 error/异常中断 → partial（区别于正常读完的 ok）
     let timer: ReturnType<typeof setTimeout> | undefined; // 单一首 token 计时器，外层 finally 统一清
@@ -517,6 +537,8 @@ export class NodeRuntimeService {
       });
       const stream = await this.models.chatStream(modelId, messages, {
         temperature: opts?.temperature,
+      }, () => {
+        streamStartedAt = performance.now();
       });
       it = stream[Symbol.asyncIterator]();
 
@@ -550,6 +572,10 @@ export class NodeRuntimeService {
           if (chunk.delta) {
             if (!sawDelta) {
               sawDelta = true;
+              firstDeltaAt = performance.now();
+              if (streamStartedAt !== undefined) {
+                span.setAttribute(RAG.TTFT_MS, firstDeltaAt - streamStartedAt);
+              }
               if (timer) clearTimeout(timer); // 首 delta 到达，撤计时器，后续不再熔断/不再 race deadline
             }
             text += chunk.delta;
@@ -596,6 +622,18 @@ export class NodeRuntimeService {
       if (timer) clearTimeout(timer);
       // M8 T3：所有结束路径（ok/partial/fallback/timeout/abort）统一落 usage span 属性
       setUsageAttrs(span, usageAcc.inputTokens, usageAcc.outputTokens);
+      if (streamStartedAt !== undefined) {
+        const generationDurationMs = performance.now() - streamStartedAt;
+        span.setAttribute(RAG.GENERATION_DURATION_MS, generationDurationMs);
+        try {
+          opts?.metricsObserver?.onGenerationTiming?.({
+            ...(firstDeltaAt === undefined ? {} : { ttftMs: firstDeltaAt - streamStartedAt }),
+            generationDurationMs,
+          });
+        } catch {
+          /* best effort */
+        }
+      }
       // 级联取消上游：消费者提前 return()（abort）/ 超时 / error 后，显式 return 底层 chatStream 迭代器，
       // 触发其 finally 的 reader.cancel()，避免上游 fetch 悬挂到 CHAT_TIMEOUT_MS（review 发现，AC6）。
       // return() 对已读完/已 return 的迭代器是安全 no-op。

@@ -24,6 +24,10 @@ const overview = {
   },
   series: [],
 };
+const appMetrics = {
+  ...overview,
+  stages: [{ stage: "generation", sampleCount: 1, p50Ms: 100, p95Ms: 100 }],
+};
 
 describe("metrics endpoints", () => {
   let app: INestApplication;
@@ -36,7 +40,7 @@ describe("metrics endpoints", () => {
           provide: ClickHouseMetricsRepository,
           useValue: {
             getOverview: jest.fn(async () => overview),
-            getAppMetrics: jest.fn(async () => overview),
+            getAppMetrics: jest.fn(async () => appMetrics),
           },
         },
       ],
@@ -67,5 +71,6 @@ describe("metrics endpoints", () => {
   it("GET /metrics/apps/:id 限定应用", async () => {
     const res = await request(app.getHttpServer()).get("/api/metrics/apps/app-1");
     expect(res.status).toBe(200);
+    expect(res.body.stages).toEqual(appMetrics.stages);
   });
 });

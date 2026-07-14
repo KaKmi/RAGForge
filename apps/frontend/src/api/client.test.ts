@@ -9,6 +9,8 @@ import {
   getDocumentLifecycle,
   getDocuments,
   getKnowledgeBases,
+  getMetricsOverview,
+  getApplicationMetrics,
   getProcessingProfiles,
   getProcessingRuns,
   rebuildKnowledgeBase,
@@ -418,5 +420,55 @@ describe("chunks", () => {
     expect(init?.method).toBe("POST");
     expect(JSON.parse(init?.body as string)).toEqual({ ids: ["c1", "c2"] });
     expect(result).toEqual({ deletedCount: 2 });
+  });
+});
+
+describe("metrics", () => {
+  const response = {
+    window: {
+      qaCount: 1, failCount: 0, failRate: 0, fallbackCount: 0, fallbackRate: 0,
+      lowRecallCount: 0, noCiteCount: 0, refusalCount: 0, timeoutCount: 0,
+      p50Ms: 10, p95Ms: 20, inputTokens: 30, outputTokens: 40, costUsd: 0,
+    },
+    series: [],
+  };
+
+  it("getMetricsOverview encodes the supported filters and parses the response", async () => {
+    const fetchMock = mockFetch(jsonResponse(response));
+    const result = await getMetricsOverview({
+      from: "2026-07-01T00:00:00.000Z",
+      to: "2026-07-08T00:00:00.000Z",
+      agentId: "app/1",
+      model: "qwen plus",
+    });
+    const [url] = callArgs(fetchMock);
+    expect(url).toBe(
+      "/api/metrics/overview?from=2026-07-01T00%3A00%3A00.000Z&to=2026-07-08T00%3A00%3A00.000Z&agentId=app%2F1&model=qwen+plus",
+    );
+    expect(result.window.inputTokens).toBe(30);
+  });
+
+  it("getApplicationMetrics encodes the application id and uses its endpoint", async () => {
+    const fetchMock = mockFetch(jsonResponse({
+      ...response,
+      stages: [{ stage: "generation", sampleCount: 1, p50Ms: 10, p95Ms: 20 }],
+      signals: {
+        ttft: { sampleCount: 0, p50Ms: null, p95Ms: null },
+        generationRate: { sampleCount: 0, p50TokensPerSecond: null, p95TokensPerSecond: null },
+        repair: { attemptCount: 0, eligibleCount: 0, rate: null },
+        degradation: {
+          keyword: { count: 0, eligibleCount: 0, rate: null },
+          rerank: { count: 0, eligibleCount: 0, rate: null },
+        },
+        confidence: { sampleCount: 0, p50: null, buckets: [] },
+        citations: { sampleCount: 0, averageCount: null, countBuckets: [], coverage: { full: 0, partial: 0, unknown: 0 } },
+      },
+    }));
+    const result = await getApplicationMetrics("app/1", { from: "2026-07-01T00:00:00.000Z" });
+    const [url] = callArgs(fetchMock);
+    expect(url).toBe(
+      "/api/metrics/apps/app%2F1?from=2026-07-01T00%3A00%3A00.000Z",
+    );
+    expect(result.stages[0]?.stage).toBe("generation");
   });
 });

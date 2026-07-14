@@ -439,6 +439,9 @@ describe("OrchestrationService · chain span 质量信号 + IO (M8 T3)", () => {
     expect(a["rag.quality.no_citations"]).toBe(false);
     expect(a["rag.quality.refusal"]).toBe(false);
     expect(a["rag.quality.timeout"]).toBe(false);
+    expect(a["rag.quality.confidence"]).toBeCloseTo(0.9);
+    expect(a["rag.citation.count"]).toBe(2);
+    expect(a["rag.citation.coverage"]).toBe("full");
   });
 
   it("根 chain span 落 token 总和与生成模型标签", async () => {
@@ -448,6 +451,81 @@ describe("OrchestrationService · chain span 质量信号 + IO (M8 T3)", () => {
     expect(a["gen_ai.usage.input_tokens"]).toBe(30);
     expect(a["gen_ai.usage.output_tokens"]).toBe(21);
     expect(a["gen_ai.request.model"]).toBe("deepseek-chat");
+  });
+
+  it("chain root summarizes TTFT, generation duration and post-first-token token/s", async () => {
+    const d = makeDeps();
+    d.nodeRuntime.streamTextChunks.mockImplementation(
+      ((...args: unknown[]) => {
+        const observer = (args[6] as {
+          metricsObserver?: {
+            onModel?: (model: string) => void;
+            onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
+            onGenerationTiming?: (timing: { ttftMs: number; generationDurationMs: number }) => void;
+          };
+        }).metricsObserver;
+        return (async function* () {
+          observer?.onModel?.("deepseek-chat");
+          observer?.onUsage?.({ inputTokens: 20, outputTokens: 15 });
+          observer?.onGenerationTiming?.({ ttftMs: 200, generationDurationMs: 1200 });
+          yield { delta: "answer[1]" };
+          return { outcome: "ok", text: "answer[1]", usage: { inputTokens: 20, outputTokens: 15 }, model: "deepseek-chat" };
+        })();
+      }) as never,
+    );
+    await collect(makeSvc(d).run("app1", "q", undefined, "u"));
+    const a = chainAttrs();
+    expect(a["rag.ttft_ms"]).toBe(200);
+    expect(a["rag.generation.duration_ms"]).toBe(1200);
+    expect(a["rag.generation.tokens_per_second"]).toBe(15);
+  });
+
+  it("chain root aggregates repair attempts and eligible structured-node calls", async () => {
+    const d = makeDeps();
+    d.nodeRuntime.executeStructured.mockImplementation(async (node: string, ...args: unknown[]) => {
+      const observer = (args[5] as { metricsObserver?: { onRepair?: (retryCount: number) => void } } | undefined)?.metricsObserver;
+      const retryCount = node === "rewrite" ? 1 : 0;
+      observer?.onRepair?.(retryCount);
+      return node === "rewrite"
+        ? { output: { rewrittenQuery: "q", keywords: [] }, fallbackUsed: false, validateSteps: [], usage: { inputTokens: 5, outputTokens: 3 } }
+        : { output: { intent: "SUPPORT", confidence: 0.9 }, fallbackUsed: false, validateSteps: [], usage: { inputTokens: 5, outputTokens: 3 } };
+    });
+    await collect(makeSvc(d).run("app1", "q", undefined, "u"));
+    const a = chainAttrs();
+    expect(a["rag.repair.attempt_count"]).toBe(1);
+    expect(a["rag.repair.eligible_count"]).toBe(2);
+  });
+
+  it("chain root aggregates independent degradation counts and configured denominators", async () => {
+    const d = makeDeps();
+    d.applications.resolvePublic.mockResolvedValue({
+      ...cfg(),
+      retrieval: { ...cfg().retrieval, rerankEnabled: true, rerankModelId: "rr1" },
+    });
+    d.retrieval.test.mockImplementation(async (req: { kbId: string }, observer?: (signal: "keyword_degraded" | "rerank_degraded") => void) => {
+      if (req.kbId === "kb_a") observer?.("keyword_degraded");
+      if (req.kbId === "kb_b") observer?.("rerank_degraded");
+      return { hits: [hit(req.kbId, 0.9)] };
+    });
+    await collect(makeSvc(d).run("app1", "q", undefined, "u"));
+    const a = chainAttrs();
+    expect(a["rag.retrieval.execution_count"]).toBe(2);
+    expect(a["rag.keyword.requested_count"]).toBe(2);
+    expect(a["rag.rerank.requested_count"]).toBe(2);
+    expect(a["rag.degraded.keyword_recall.count"]).toBe(1);
+    expect(a["rag.degraded.rerank.count"]).toBe(1);
+  });
+
+  it("does not count vector-only retrievals as keyword eligible", async () => {
+    const d = makeDeps();
+    d.applications.resolvePublic.mockResolvedValue({
+      ...cfg(),
+      retrieval: { ...cfg().retrieval, hybridEnabled: false },
+    });
+    await collect(makeSvc(d).run("app1", "q", undefined, "u"));
+    const a = chainAttrs();
+    expect(a["rag.retrieval.execution_count"]).toBe(2);
+    expect(a["rag.keyword.requested_count"]).toBe(0);
   });
 
   it("prepare 后段失败仍把 rewrite/intent 已消费 token 落根 span", async () => {

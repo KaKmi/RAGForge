@@ -26,6 +26,14 @@ const TRACE_VIEW_SQL_RELPATH = "infra/clickhouse/views/001-trace-views.sql";
 
 /** quick=慢请求 的耗时阈值（ms）；对齐前端 mock（≥3s）与 P95 红线 5s 分离。 */
 const SLOW_MS = 3000;
+const STAGE_WHERE: Record<NonNullable<TraceListQuery["stage"]>, string> = {
+  rewrite: "kind = 'llm' AND attributes['rag.node.name'] = 'rewrite'",
+  intent: "kind = 'llm' AND attributes['rag.node.name'] = 'intent'",
+  embedding: "name = 'retrieval.embedding'",
+  retrieval: "name = 'retrieval.retrieve'",
+  rerank: "name = 'retrieval.rerank'",
+  generation: "kind = 'llm' AND attributes['rag.node.name'] IN ('reply', 'fallback')",
+};
 
 /** 中文状态筛选 → CH 英文 token（响应/存储统一英文，query 用中文对齐前端筛选值）。 */
 const STATUS_ZH_TO_TOKEN: Record<string, TraceStatus> = {
@@ -291,6 +299,36 @@ export class ClickHouseTracesRepository {
         params.slow = SLOW_MS;
       } else if (q.quick === "低分召回") conds.push("low_recall");
     }
+    if (q.stage) {
+      conds.push(`trace_id IN (SELECT trace_id FROM codecrush_trace_spans WHERE ${STAGE_WHERE[q.stage]})`);
+    }
+    if (q.model) {
+      conds.push(`trace_id IN (
+        SELECT trace_id FROM codecrush_trace_spans
+        WHERE kind = 'llm' AND attributes['rag.node.name'] = 'reply'
+          AND attributes['gen_ai.request.model'] = {model:String}
+      )`);
+      params.model = q.model;
+    }
+    if (q.signal) {
+      const root = "trace_id IN (SELECT trace_id FROM codecrush_trace_spans WHERE kind = 'chain' AND ";
+      const signalWhere: Record<NonNullable<TraceListQuery["signal"]>, string> = {
+        repair: `${root}toUInt64OrZero(attributes['rag.repair.attempt_count']) > 0)`,
+        keyword_degraded: `${root}toUInt64OrZero(attributes['rag.degraded.keyword_recall.count']) > 0)`,
+        rerank_degraded: `${root}toUInt64OrZero(attributes['rag.degraded.rerank.count']) > 0)`,
+        confidence_very_low: `${root}toFloat64OrZero(attributes['rag.quality.confidence']) < 0.4 AND attributes['rag.quality.confidence'] != '')`,
+        confidence_low: `${root}toFloat64OrZero(attributes['rag.quality.confidence']) >= 0.4 AND toFloat64OrZero(attributes['rag.quality.confidence']) < 0.7)`,
+        confidence_medium: `${root}toFloat64OrZero(attributes['rag.quality.confidence']) >= 0.7 AND toFloat64OrZero(attributes['rag.quality.confidence']) < 0.9)`,
+        confidence_high: `${root}toFloat64OrZero(attributes['rag.quality.confidence']) >= 0.9)`,
+        citations_none: `${root}attributes['rag.citation.count'] = '0')`,
+        citations_one: `${root}attributes['rag.citation.count'] = '1')`,
+        citations_two_three: `${root}toUInt64OrZero(attributes['rag.citation.count']) BETWEEN 2 AND 3)`,
+        citations_four_plus: `${root}toUInt64OrZero(attributes['rag.citation.count']) >= 4)`,
+        coverage_full: `${root}attributes['rag.citation.coverage'] = 'full')`,
+        coverage_partial: `${root}attributes['rag.citation.coverage'] = 'partial')`,
+      };
+      conds.push(signalWhere[q.signal]);
+    }
     if (q.q) {
       conds.push("(user_input ILIKE {kw:String} OR trace_id ILIKE {kw:String})");
       params.kw = `%${q.q}%`;
@@ -316,7 +354,7 @@ export class ClickHouseTracesRepository {
     const { where, params } = this.buildTraceWhere(q);
     const offset = (q.page - 1) * q.pageSize;
     const rows = await this.runView<TracesViewRow>(
-      `SELECT * FROM ${TRACES_VIEW_NAME} ${where} ORDER BY start_time DESC LIMIT {limit:UInt32} OFFSET {offset:UInt32}`,
+      `SELECT * FROM ${TRACES_VIEW_NAME} ${where} ORDER BY start_time DESC, trace_id DESC LIMIT {limit:UInt32} OFFSET {offset:UInt32}`,
       { ...params, limit: q.pageSize, offset },
     );
     const [agg] = await this.runView<SummaryRow>(

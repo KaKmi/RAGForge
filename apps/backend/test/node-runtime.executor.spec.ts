@@ -20,7 +20,10 @@ function makeService(chat: jest.Mock, chatStream?: jest.Mock) {
   // 不 mock 会让下面所有既有用例在到达真正测的逻辑前就因协议检查失败短路。
   const models = {
     chat,
-    chatStream: chatStream ?? jest.fn(),
+    chatStream: jest.fn((...args: unknown[]) => {
+      (args[3] as (() => void) | undefined)?.();
+      return (chatStream ?? jest.fn())(...args);
+    }),
     get: jest.fn(async () => ({
       id: "m1",
       protocol: "openai_compat",
@@ -135,6 +138,36 @@ describe("NodeRuntimeService.executeStructured · rewrite", () => {
     );
     expect(res.fallbackUsed).toBe(true);
     expect(chat).not.toHaveBeenCalled();
+  });
+});
+
+describe("NodeRuntimeService repair metrics observer", () => {
+  it.each([
+    ["first attempt success", [{ content: '{"rewrittenQuery":"q","keywords":[]}' }], 0, false],
+    ["repair success", [{ content: "bad" }, { content: '{"rewrittenQuery":"q","keywords":[]}' }], 1, false],
+    ["repair failure fallback", [{ content: "bad" }, { content: "still bad" }], 1, true],
+  ] as const)("%s reports retry count %s", async (_name, responses, expectedRetry, fallbackUsed) => {
+    const chat = jest.fn();
+    for (const response of responses) chat.mockResolvedValueOnce(response);
+    const onRepair = jest.fn();
+    const result = await makeService(chat).executeStructured(
+      "rewrite", 1, "{query}", "m1", { query: "q", history: "" }, {},
+      { metricsObserver: { onRepair } },
+    );
+    expect(onRepair).toHaveBeenCalledWith(expectedRetry);
+    expect(onRepair).toHaveBeenCalledTimes(1);
+    expect(result.fallbackUsed).toBe(fallbackUsed);
+  });
+
+  it("validation before model call is not eligible and does not notify repair", async () => {
+    const chat = jest.fn();
+    const onRepair = jest.fn();
+    await makeService(chat).executeStructured(
+      "rewrite", 1, "{query}", "m1", { query: "" }, {},
+      { metricsObserver: { onRepair } },
+    );
+    expect(chat).not.toHaveBeenCalled();
+    expect(onRepair).not.toHaveBeenCalled();
   });
 });
 
@@ -444,8 +477,12 @@ describe("NodeRuntimeService.streamTextChunks · reply 逐 token", () => {
     } as unknown as AsyncIterableIterator<{ delta?: string }>;
     const chatStream = jest.fn(() => hanging);
     const svc = makeService(jest.fn(), chatStream);
+    const onGenerationTiming = jest.fn();
     jest.useFakeTimers();
-    const gen = svc.streamTextChunks("reply", 1, "{query}", "m1", { query: "hi", history: "" }, { citations: [] });
+    const gen = svc.streamTextChunks(
+      "reply", 1, "{query}", "m1", { query: "hi", history: "" }, { citations: [] },
+      { metricsObserver: { onGenerationTiming } },
+    );
     const p = gen.next();
     await jest.advanceTimersByTimeAsync(20_000);
     const r = await p;
@@ -453,6 +490,8 @@ describe("NodeRuntimeService.streamTextChunks · reply 逐 token", () => {
     expect(r.done).toBe(true);
     expect((r.value as { outcome: string }).outcome).toBe("timeout");
     expect(returned).toBe(true);
+    expect(onGenerationTiming).toHaveBeenCalledTimes(1);
+    expect(onGenerationTiming.mock.calls[0][0]).not.toHaveProperty("ttftMs");
   });
 
   it("首 token 前的空/keepalive 帧被跳过、不重置窗口、不泄漏计时器（单一 deadline）", async () => {
@@ -465,6 +504,62 @@ describe("NodeRuntimeService.streamTextChunks · reply 逐 token", () => {
     );
     expect(deltas).toEqual(["x"]);
     expect(summary).toMatchObject({ outcome: "ok", text: "x" });
+  });
+
+  it("TTFT starts immediately before provider streaming; empty keepalives do not stop it", async () => {
+    const now = jest.spyOn(performance, "now")
+      .mockReturnValueOnce(100)
+      .mockReturnValueOnce(145)
+      .mockReturnValueOnce(180);
+    const onGenerationTiming = jest.fn();
+    const chatStream = jest.fn(() => replyStream([{}, { delta: "x" }, { done: true }])());
+    const svc = makeService(jest.fn(), chatStream);
+    await drain(svc.streamTextChunks(
+      "reply", 1, "{query}", "m1", { query: "hi", history: "" }, { citations: [] },
+      { metricsObserver: { onGenerationTiming } },
+    ));
+    expect(onGenerationTiming).toHaveBeenCalledWith({ ttftMs: 45, generationDurationMs: 80 });
+    now.mockRestore();
+  });
+
+  it("empty stream omits TTFT but reports generation duration", async () => {
+    const now = jest.spyOn(performance, "now").mockReturnValueOnce(10).mockReturnValueOnce(30);
+    const onGenerationTiming = jest.fn();
+    const svc = makeService(jest.fn(), jest.fn(() => replyStream([{ done: true }])()));
+    const { summary } = await drain(svc.streamTextChunks(
+      "reply", 1, "{query}", "m1", { query: "hi", history: "" }, { citations: [] },
+      { metricsObserver: { onGenerationTiming } },
+    ));
+    expect(summary.outcome).toBe("fallback");
+    expect(onGenerationTiming).toHaveBeenCalledWith({ generationDurationMs: 20 });
+    now.mockRestore();
+  });
+
+  it("timing observer failure never changes the stream result", async () => {
+    const svc = makeService(jest.fn(), jest.fn(() => replyStream([{ delta: "x" }, { done: true }])()));
+    const { deltas, summary } = await drain(svc.streamTextChunks(
+      "reply", 1, "{query}", "m1", { query: "hi", history: "" }, { citations: [] },
+      { metricsObserver: { onGenerationTiming: () => { throw new Error("telemetry down"); } } },
+    ));
+    expect(deltas).toEqual(["x"]);
+    expect(summary).toMatchObject({ outcome: "ok", text: "x" });
+  });
+
+  it("abort after first token preserves TTFT and reports duration from finally", async () => {
+    const now = jest.spyOn(performance, "now")
+      .mockReturnValueOnce(50)
+      .mockReturnValueOnce(70)
+      .mockReturnValueOnce(95);
+    const onGenerationTiming = jest.fn();
+    const svc = makeService(jest.fn(), jest.fn(() => replyStream([{ delta: "x" }, { delta: "y" }])()));
+    const gen = svc.streamTextChunks(
+      "reply", 1, "{query}", "m1", { query: "hi", history: "" }, { citations: [] },
+      { metricsObserver: { onGenerationTiming } },
+    );
+    await gen.next();
+    await gen.return(undefined);
+    expect(onGenerationTiming).toHaveBeenCalledWith({ ttftMs: 20, generationDurationMs: 45 });
+    now.mockRestore();
   });
 
   it("消费者提前 return()（abort）→ 级联 return 底层迭代器（reader.cancel）", async () => {
