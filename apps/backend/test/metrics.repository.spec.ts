@@ -26,6 +26,11 @@ describe("ClickHouseMetricsRepository.ensureMetricsViews", () => {
     const repo = new ClickHouseMetricsRepository(client);
     expect(await repo.ensureMetricsViews()).toBe(true);
     expect(command).toHaveBeenCalledTimes(3);
+    const backfill = (command.mock.calls[2]?.[0] as { query: string }).query;
+    expect(backfill).toContain("LEFT JOIN");
+    expect(backfill).toContain("child_input_tokens");
+    expect(backfill).toContain("root.SpanAttributes['gen_ai.usage.input_tokens'] != ''");
+    expect(backfill).toContain("rag.node.name'] = 'reply'");
   });
 
   it("非空表：只建 DDL 两条，跳过 backfill", async () => {
@@ -39,7 +44,7 @@ describe("ClickHouseMetricsRepository.ensureMetricsViews", () => {
 describe("getOverview", () => {
   it("窗口用 xxxMerge、series GROUP BY bucket；率由 count 计算", async () => {
     const windowRow = {
-      bucket: "2026-07-14 08:00:00",
+      bucketText: "2026-07-14 08:00:00",
       qaCount: 10,
       failCount: 2,
       fallbackCount: 3,
@@ -58,11 +63,13 @@ describe("getOverview", () => {
     const r = await repo.getOverview({});
     expect(r.window.failRate).toBeCloseTo(0.2);
     expect(r.window.fallbackRate).toBeCloseTo(0.3);
+    expect(r.series[0]?.bucket).toBe("2026-07-14T08:00:00.000Z");
     const sqls = query.mock.calls
       .map(([call]) => (call as { query: string }).query)
       .join("\n");
     expect(sqls).toContain("quantileTDigestMerge");
     expect(sqls).toContain("codecrush_metrics_1m");
     expect(sqls).not.toContain("codecrush_metrics ");
+    expect(sqls).toContain("toString(bucket) AS bucketText");
   });
 });

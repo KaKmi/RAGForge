@@ -222,6 +222,11 @@ describe("ClickHouseTracesRepository · M9 W1 list/session", () => {
       /CREATE (OR REPLACE )?VIEW/i.test(c.query),
     );
     expect(createViewCmds).toHaveLength(3);
+    const tracesView = createViewCmds
+      .map(([c]: [QueryCall]) => c.query)
+      .find((query: string) => query.includes("codecrush_traces AS"));
+    expect(tracesView).toContain("root.SpanAttributes['gen_ai.usage.input_tokens'] != ''");
+    expect(tracesView).toContain("agg.child_input_tokens");
   });
 
   it("listTraces maps status/tokens/qualitySignals/startTime + summary", async () => {

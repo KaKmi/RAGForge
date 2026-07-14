@@ -177,7 +177,7 @@ export class ClickHouseMetricsRepository implements OnModuleInit {
     const rows = await res.json<Record<string, number | string>>();
     const n = (v: unknown) => Number(v ?? 0);
     return rows.map((r) => ({
-      bucket: toIsoUtc(String(r.bucket)),
+      bucket: toIsoUtc(String(r.bucketText)),
       qaCount: n(r.qaCount),
       failCount: n(r.failCount),
       fallbackCount: n(r.fallbackCount),
@@ -199,7 +199,7 @@ const WINDOW_SELECT = `SELECT
   sumMerge(input_tokens) AS inputTokens, sumMerge(output_tokens) AS outputTokens, sumMerge(cost_usd) AS costUsd
 FROM codecrush_metrics_1m`;
 
-const SERIES_SELECT = `SELECT toString(bucket) AS bucket,
+const SERIES_SELECT = `SELECT toString(bucket) AS bucketText,
   countMerge(qa_count) AS qaCount, sumMerge(fail_count) AS failCount, sumMerge(fallback_count) AS fallbackCount,
   quantileTDigestMerge(0.5)(dur_tdigest) AS p50Ms, quantileTDigestMerge(0.95)(dur_tdigest) AS p95Ms,
   sumMerge(input_tokens) AS inputTokens, sumMerge(output_tokens) AS outputTokens, sumMerge(cost_usd) AS costUsd
@@ -207,20 +207,53 @@ FROM codecrush_metrics_1m`;
 
 const BACKFILL_SQL = `INSERT INTO codecrush_metrics_1m
 SELECT
-  toStartOfMinute(Timestamp) AS bucket,
-  SpanAttributes['gen_ai.agent.id'] AS agent_id,
-  SpanAttributes['gen_ai.request.model'] AS gen_model,
+  toStartOfMinute(root.Timestamp) AS bucket,
+  root.SpanAttributes['gen_ai.agent.id'] AS agent_id,
+  if(
+    root.SpanAttributes['gen_ai.request.model'] != '',
+    root.SpanAttributes['gen_ai.request.model'],
+    child.reply_model
+  ) AS gen_model,
   countState(),
-  sumState(toUInt64(StatusCode IN ('Error','STATUS_CODE_ERROR'))),
-  sumState(toUInt64(SpanAttributes['rag.fallback.used']='true')),
-  sumState(toUInt64(SpanAttributes['rag.quality.low_recall']='true')),
-  sumState(toUInt64(SpanAttributes['rag.quality.no_citations']='true')),
-  sumState(toUInt64(SpanAttributes['rag.quality.refusal']='true')),
-  sumState(toUInt64(SpanAttributes['rag.quality.timeout']='true')),
-  quantileTDigestState(toFloat64(Duration)/1000000),
-  sumState(toUInt64OrZero(SpanAttributes['gen_ai.usage.input_tokens'])),
-  sumState(toUInt64OrZero(SpanAttributes['gen_ai.usage.output_tokens'])),
-  sumState(toFloat64OrZero(SpanAttributes['rag.cost.usd']))
-FROM otel_traces
-WHERE SpanAttributes['codecrush.span.kind']='chain' AND SpanAttributes['rag.preview']!='true'
+  sumState(toUInt64(root.StatusCode IN ('Error','STATUS_CODE_ERROR'))),
+  sumState(toUInt64(root.SpanAttributes['rag.fallback.used']='true')),
+  sumState(toUInt64(root.SpanAttributes['rag.quality.low_recall']='true')),
+  sumState(toUInt64(root.SpanAttributes['rag.quality.no_citations']='true')),
+  sumState(toUInt64(root.SpanAttributes['rag.quality.refusal']='true')),
+  sumState(toUInt64(root.SpanAttributes['rag.quality.timeout']='true')),
+  quantileTDigestState(toFloat64(root.Duration)/1000000),
+  sumState(if(
+    root.SpanAttributes['gen_ai.usage.input_tokens'] != '',
+    toUInt64OrZero(root.SpanAttributes['gen_ai.usage.input_tokens']),
+    child.child_input_tokens
+  )),
+  sumState(if(
+    root.SpanAttributes['gen_ai.usage.output_tokens'] != '',
+    toUInt64OrZero(root.SpanAttributes['gen_ai.usage.output_tokens']),
+    child.child_output_tokens
+  )),
+  sumState(toFloat64OrZero(root.SpanAttributes['rag.cost.usd']))
+FROM otel_traces AS root
+LEFT JOIN
+(
+  SELECT
+    TraceId,
+    sumIf(
+      toUInt64OrZero(SpanAttributes['gen_ai.usage.input_tokens']),
+      SpanAttributes['codecrush.span.kind'] = 'llm'
+    ) AS child_input_tokens,
+    sumIf(
+      toUInt64OrZero(SpanAttributes['gen_ai.usage.output_tokens']),
+      SpanAttributes['codecrush.span.kind'] = 'llm'
+    ) AS child_output_tokens,
+    argMaxIf(
+      SpanAttributes['gen_ai.request.model'],
+      Timestamp,
+      SpanAttributes['rag.node.name'] = 'reply'
+    ) AS reply_model
+  FROM otel_traces
+  GROUP BY TraceId
+) AS child ON child.TraceId = root.TraceId
+WHERE root.SpanAttributes['codecrush.span.kind']='chain'
+  AND root.SpanAttributes['rag.preview']!='true'
 GROUP BY bucket, agent_id, gen_model`;
