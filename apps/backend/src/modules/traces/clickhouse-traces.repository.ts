@@ -62,7 +62,7 @@ function resolveTraceViewSqlPath(): string {
  * ClickHouse DateTime64 经 JSONEachRow 默认返回 "YYYY-MM-DD hh:mm:ss[.fraction]"（UTC、无时区）。
  * 直接 `new Date(该串)` 会被当本地时区解析产生偏移；这里按 UTC 显式解析并规整到毫秒 ISO。
  */
-function toIsoUtc(chTime: string): string {
+export function toIsoUtc(chTime: string): string {
   const m = chTime.trim().match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?/);
   if (!m) return new Date(chTime).toISOString();
   const frac = (m[3] ?? "").padEnd(3, "0").slice(0, 3);
