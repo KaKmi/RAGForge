@@ -95,6 +95,7 @@ export class OrchestrationService {
     let sessionId = "";
     let replyText = "";
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
+    const replyUsage = { inputTokens: 0, outputTokens: 0 };
     let genModel = "";
     let completed = false;
     let prep: PrepResult | undefined;
@@ -136,9 +137,9 @@ export class OrchestrationService {
 
     try {
       // —— 预备阶段：整段在 chainCtx 内（内部无 yield），子 span（rewrite/intent/检索）自动挂 chain ——
-      prep = await runInContext(chainCtx, () => this.prepare(agentId, query, convId, cfg));
-      totalUsage.inputTokens += prep.usage.inputTokens;
-      totalUsage.outputTokens += prep.usage.outputTokens;
+      prep = await runInContext(chainCtx, () =>
+        this.prepare(agentId, query, convId, cfg, totalUsage),
+      );
       persistCtx = { agentId, query, convId: prep.validConvId, userId };
 
       // —— 流式阶段 ——
@@ -158,7 +159,18 @@ export class OrchestrationService {
           cfg.nodes.reply.modelId,
           { query, history: prep.history, retrievalContext: prep.retrievalContext },
           { citations: prep.citations },
-          { temperature: cfg.nodes.reply.temperature },
+          {
+            temperature: cfg.nodes.reply.temperature,
+            metricsObserver: {
+              onModel: (model) => {
+                genModel = model;
+              },
+              onUsage: (usage) => {
+                replyUsage.inputTokens = usage.inputTokens;
+                replyUsage.outputTokens = usage.outputTokens;
+              },
+            },
+          },
           chainCtx,
         );
         replyIt = it; // 供 finally 级联 return()（abort 时取消上游 + 结束 reply span，AC6）
@@ -171,8 +183,8 @@ export class OrchestrationService {
           }
           const summary = res.value;
           if (summary.usage) {
-            totalUsage.inputTokens += summary.usage.inputTokens;
-            totalUsage.outputTokens += summary.usage.outputTokens;
+            replyUsage.inputTokens = summary.usage.inputTokens;
+            replyUsage.outputTokens = summary.usage.outputTokens;
           }
           if (summary.model) genModel = summary.model;
           if (summary.outcome === "timeout") {
@@ -255,11 +267,13 @@ export class OrchestrationService {
       finalizeChainSignals(false);
       // M9 W1：session.id 待此写——首轮新会话的真 convId 已由各 persist 路径捕获进 sessionId。
       if (sessionId) chain.setAttribute(SESSION_ID, sessionId);
-      if (totalUsage.inputTokens > 0) {
-        chain.setAttribute(GEN_AI.USAGE_INPUT_TOKENS, totalUsage.inputTokens);
+      const inputTokens = totalUsage.inputTokens + replyUsage.inputTokens;
+      const outputTokens = totalUsage.outputTokens + replyUsage.outputTokens;
+      if (inputTokens > 0) {
+        chain.setAttribute(GEN_AI.USAGE_INPUT_TOKENS, inputTokens);
       }
-      if (totalUsage.outputTokens > 0) {
-        chain.setAttribute(GEN_AI.USAGE_OUTPUT_TOKENS, totalUsage.outputTokens);
+      if (outputTokens > 0) {
+        chain.setAttribute(GEN_AI.USAGE_OUTPUT_TOKENS, outputTokens);
       }
       if (genModel) chain.setAttribute(GEN_AI.REQUEST_MODEL, genModel);
       chain.end(); // 手动生命周期：所有路径必 end
@@ -272,8 +286,8 @@ export class OrchestrationService {
     query: string,
     convId: string | undefined,
     cfg: Awaited<ReturnType<ApplicationsService["resolvePublic"]>>,
+    usage: { inputTokens: number; outputTokens: number },
   ): Promise<PrepResult> {
-    const usage = { inputTokens: 0, outputTokens: 0 };
     const kbRows = await this.kbs.findByIds(cfg.kbIds);
     const kbNameById = new Map(kbRows.map((k) => [k.id, k.name]));
     // review P2：convId 归属校验——客户端自报的 convId 若属于别的 agentId，不得读其历史

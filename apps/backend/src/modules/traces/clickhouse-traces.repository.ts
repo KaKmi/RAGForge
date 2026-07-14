@@ -128,8 +128,19 @@ function buildTraceMeta(spans: TraceSpan[]): TraceDetailMeta {
   const lastLlm = [...spans].reverse().find((s) => s.kind === "llm");
   const genModel =
     ((reply ?? lastLlm)?.attributes as Record<string, unknown> | undefined)?.["gen_ai.request.model"];
-  const sumTok = (key: string): number =>
-    spans.reduce((sum, s) => sum + Number((s.attributes as Record<string, unknown>)[key] ?? 0), 0);
+  const traceTokens = (key: string): number => {
+    const rootValue = a[key];
+    if (rootValue !== undefined && rootValue !== null && rootValue !== "") {
+      return Number(rootValue);
+    }
+    return spans.reduce(
+      (sum, s) =>
+        s.kind === "llm"
+          ? sum + Number((s.attributes as Record<string, unknown>)[key] ?? 0)
+          : sum,
+      0,
+    );
+  };
   return {
     userInput: String(a["codecrush.io.input"] ?? ""),
     agentName: (a["gen_ai.agent.name"] as string) || null,
@@ -137,8 +148,8 @@ function buildTraceMeta(spans: TraceSpan[]): TraceDetailMeta {
     genModelVersion: null,
     promptVersionId: (a["rag.prompt.version_id"] as string) || null,
     durationMs: root.durationMs,
-    inputTokens: sumTok("gen_ai.usage.input_tokens"),
-    outputTokens: sumTok("gen_ai.usage.output_tokens"),
+    inputTokens: traceTokens("gen_ai.usage.input_tokens"),
+    outputTokens: traceTokens("gen_ai.usage.output_tokens"),
     cost: null,
     status,
     qualitySignals: signalsFromAttrs(a),

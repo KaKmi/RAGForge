@@ -13,7 +13,9 @@ last_modified: "2026-07-14"
 
 ## Status
 
-`draft` — 指标读模型设计。**承接 `004-trace-observability`**：004 的存储分层（Session→Trace→Span、OTLP「结束即写」、读侧只经自有 VIEW 防腐、大 payload offload）**全部不变**；004 第「演进路径」节明确规划「VIEW 投影 → ClickHouse Materialized View 宽表」两步（004 §读模型演进 step 2、Revisit「VIEW 性能不足 → 落物化表」），**本文就是那一步的落地**：不推翻既有 VIEW，在其旁增量加一层预聚合表，专供指标聚合与看板。落地对照代码后升 `current`。
+`draft` — 指标读模型设计。**承接 `004-trace-observability`**：004 的存储分层（Session→Trace→Span、OTLP「结束即写」、读侧经自有 schema 防腐、大 payload offload）**全部不变**；004 第「演进路径」节明确规划「VIEW 投影 → ClickHouse Materialized View 宽表」两步（004 §读模型演进 step 2、Revisit「VIEW 性能不足 → 落物化表」），**本文就是那一步的落地**：不推翻既有 VIEW，在其旁增量加一层预聚合表，专供指标聚合与看板。
+
+2026-07-14：**W-a 后端已落地**。实现采用 D2′：`codecrush_metrics_1m` 只存一列可合并 `dur_tdigest` state，窗口与趋势查询直接对该自有表执行 `xxxMerge`；不建会诱导跨桶/跨应用错误聚合的 finalize VIEW。cost 真算与前端看板拆为后续独立波。
 
 **对抗强度：完整对抗**（架构性任务——新增 ClickHouse 存储 schema 决策 + 写侧根 span delta；按 `CLAUDE.md` 分级：碰存储 schema 取高档）。
 
@@ -21,8 +23,8 @@ last_modified: "2026-07-14"
 
 平台三词「可配置、可追踪、**可优化**」中，「可优化」目前最弱：trace 全量落了 ClickHouse，但没有度量优化效果的指标层与看板。本文补两块，**都在读侧增量、不改写侧关键路径**：
 
-1. **指标读模型（存储/技术）**：在导出器建的 `otel_traces` 之上，用**物化视图（增量触发）**把热点指标按 `(分钟桶 × 应用 × 模型)` 卷积进一张 `AggregatingMergeTree` 汇总表 `codecrush_metrics_1m`；读侧再盖一个防腐 VIEW `codecrush_metrics` 做最终合并。看板查汇总表（秒回），每个数字可下钻回原始 trace（明细）。
-2. **第一批看板（产品）**：8 个指标（兜底率、失败率、P95、分阶段耗时、问答量、token 量、成本、可信度分布），**埋点全部已在 span 里**，第一批纯 SQL + 前端。产品做**总览 → 应用 → 样本**三层下钻，每个聚合数字点得进具体问答。
+1. **指标读模型（存储/技术）**：在导出器建的 `otel_traces` 之上，用**物化视图（增量触发）**把热点指标按 `(分钟桶 × 应用 × 模型)` 卷积进一张 `AggregatingMergeTree` 汇总表 `codecrush_metrics_1m`；后端直接合并该自有表的聚合 state（秒回），每个数字可下钻回原始 trace（明细）。
+2. **第一批看板（产品）**：后端 W-a 先交付问答量、兜底/失败/质量计数、P50/P95、token 与预留 cost 的契约/API；前端看板、cost 真算、分阶段耗时和可信度分布按独立后续波交付。产品最终仍做**总览 → 应用 → 样本**三层下钻。
 
 指标信号分两条线：**产品/RAG 指标**从 trace 聚合（本文主体，线 A）；**平台自身健康**（Collector 队列、CH 写入、pg-boss 积压）跨请求、聚合不出来，走独立 OTel Metrics → Prometheus（线 B，本文只登记边界，落地延后）。
 
@@ -31,22 +33,23 @@ last_modified: "2026-07-14"
 > 反漂移边界。改架构/范围先改本文。
 
 **In-scope（本文首波）**
-- `codecrush_metrics_1m`（AggregatingMergeTree 汇总表）+ 增量物化视图 + `codecrush_metrics` 读 VIEW（防腐层，读侧只查它）。
+- `codecrush_metrics_1m`（AggregatingMergeTree 汇总表）+ 增量物化视图；读侧直接对自有聚合 state 做 `xxxMerge`。
 - 历史回填一次性 `INSERT … SELECT …State`（物化视图只捕获新 INSERT，需回填既有数据）。
-- 写侧 delta **D-metrics**：根 chain span 落整条 trace 的 `gen_ai.usage.*` 汇总与 `rag.cost.usd`（见下方「关键决策」）。
+- 写侧 delta **D-metrics**：根 chain span 落整条 trace 的 `gen_ai.usage.*` 汇总与生成模型标签（见下方「关键决策」）；cost 无定价源，本波不 emit。
 - 只读 API：`GET /metrics/overview`、`GET /metrics/apps/:id`；下钻复用已有 `GET /traces`（带筛选）。
-- 前端：首页运行看板（M10 占位实体化）第一批 8 指标 + 时间范围/应用/模型筛选 + 阈值染色 + 样本下钻入口。
 
 **Out-of-scope（本文不做，schema 不堵死）**
 - 线 B 平台自监控 Metrics（Collector/CH/pg-boss/PG）→ Prometheus 与告警：单独一波。
 - 热门问题聚类、问题归一（需 NLP，归 M10 深化）。
 - 需要标准答案的检索命中率/引用正确率/回答准确率 → 离线评测集（M11），不进实时看板。
 - TTFT（首 token 时间）、结构化输出修复率、单路召回降级率：需各补一个 span 属性，第三波。
+- 前端：首页运行看板、阈值染色与样本下钻入口，走独立前端 plan。
+- cost 真算、分阶段耗时与可信度分布，分别等待定价/额外聚合信号后落地。
 - 多分辨率汇总表（1h/1d rollup 的 rollup）、冷热分层、CH 分片/副本：规模触发前不做（见 Revisit）。
 
 **Invariants（不可违反）**
 1. **指标绝不进入问答关键路径**（延续 004/001 Invariant 1）：物化视图、汇总表、看板查询全在读侧；物化视图即便报错也**不得阻塞 `otel_traces` 写入**（CH MV 失败默认不回滚源插入，需显式保持该行为，不加会抛的约束）。
-2. **读侧只查 VIEW 不碰原始表**（延续 015）：后端指标查询一律走 `codecrush_metrics` / `codecrush_traces`，导出器 schema 漂移只改 VIEW SQL。
+2. **原始导出器表经防腐层读取**（延续 015）：常规查询不直接依赖 `otel_traces` schema；`codecrush_metrics_1m` 是平台自有派生表，后端可直接合并其聚合 state。建表与一次性回填是受控初始化例外。
 3. **preview 不入正式统计**：试运行流量（`rag.preview='true'`）在物化视图 `WHERE` 处即排除（对齐 `codecrush_sessions`）。
 4. **汇总表是派生数据、可重建**：`codecrush_metrics_1m` 任何时候可 `TRUNCATE` 后从 `otel_traces` 全量回填；它不是事实源，`otel_traces` 才是。
 
@@ -56,10 +59,10 @@ last_modified: "2026-07-14"
 
 **否决的做法**：让物化视图对 `otel_traces` 全表按 `TraceId` GROUP BY 求 token——那是每批次重扫全表，违背增量卷积初衷，量大即崩。
 
-**采用的做法（D-metrics 写侧 delta）**：让**根 chain span 在关闭时就带上整条 trace 的汇总**——`gen_ai.usage.input_tokens` / `output_tokens` 总和与 `rag.cost.usd`。编排内核本已在 node-runtime 累计各节点 usage（013 T3）、W3 已算 cost，把它们额外 set 到根 span 属性即可。这样：
+**采用的做法（D-metrics 写侧 delta）**：让**根 chain span 在关闭时就带上整条 trace 的汇总**——`gen_ai.usage.input_tokens` / `output_tokens` 总和与 reply 的 `gen_ai.request.model` 标签。编排内核从 node-runtime 的真实 usage 累计；流式路径在终态 summary 之外同步观察已知累计值，保证失败/取消路径也尽量完整。cost 待定价基础设施落地后再接。这样：
 
 - 物化视图**只读根 chain span**（`WHERE codecrush.span.kind='chain'`），**每行 = 一条 trace**，所有指标都是「单行投影 + 分组聚合」，无跨行 join，增量卷积干净且正确。
-- 与既有架构一致：根 chain span 已经是「trace 级身份/质量/状态」的载体（015 W1），token/cost 汇总落它是同一模式的自然延伸。
+- 与既有架构一致：根 chain span 已经是「trace 级身份/质量/状态」的载体（015 W1），token/model 汇总落它是同一模式的自然延伸。
 
 > D-metrics 是本文唯一的写侧改动，且是**加属性**（非破坏性）；`codecrush_traces` 现有 `LEFT JOIN 子 span 求 token` 的逻辑保留兼容，读根 span 的汇总属性优先、缺失回退 JOIN。
 
@@ -74,9 +77,9 @@ otel_traces (导出器建, 唯一事实源, 一 span 一行)
    │                                            AggregatingMergeTree
    │                                            (分钟桶 × 应用 × 模型, 存聚合中间态)
    │                                                 │
-   │                                            codecrush_metrics (读 VIEW, xxxMerge 合并)
    │                                                 │
-   │                                            GET /metrics/*  ──► 运行看板
+   │                                            GET /metrics/*
+   │                                            (直接 xxxMerge state) ──► 运行看板
    │
    └─(现算下钻)──► codecrush_traces (015 既有 VIEW) ──► GET /traces ──► trace 列表/详情
 ```
@@ -98,8 +101,7 @@ CREATE TABLE codecrush_metrics_1m
   no_cite_count    AggregateFunction(sum, UInt64),
   refusal_count    AggregateFunction(sum, UInt64),
   timeout_count    AggregateFunction(sum, UInt64),
-  dur_p50          AggregateFunction(quantileTDigest, Float64),
-  dur_p95          AggregateFunction(quantileTDigest, Float64),
+  dur_tdigest      AggregateFunction(quantileTDigest, Float64),
   input_tokens     AggregateFunction(sum, UInt64),
   output_tokens    AggregateFunction(sum, UInt64),
   cost_usd         AggregateFunction(sum, Float64)
@@ -125,8 +127,7 @@ SELECT
   sumState(toUInt64(SpanAttributes['rag.quality.no_citations']= 'true')) AS no_cite_count,
   sumState(toUInt64(SpanAttributes['rag.quality.refusal']  = 'true')) AS refusal_count,
   sumState(toUInt64(SpanAttributes['rag.quality.timeout']  = 'true')) AS timeout_count,
-  quantileTDigestState(toFloat64(Duration) / 1000000)  AS dur_p50,
-  quantileTDigestState(toFloat64(Duration) / 1000000)  AS dur_p95,
+  quantileTDigestState(toFloat64(Duration) / 1000000)  AS dur_tdigest,
   sumState(toUInt64OrZero(SpanAttributes['gen_ai.usage.input_tokens']))  AS input_tokens,
   sumState(toUInt64OrZero(SpanAttributes['gen_ai.usage.output_tokens'])) AS output_tokens,
   sumState(toFloat64OrZero(SpanAttributes['rag.cost.usd']))              AS cost_usd
@@ -138,14 +139,12 @@ GROUP BY bucket, agent_id, gen_model;
 
 > `input/output_tokens` 依赖 D-metrics 已把 trace 级汇总落到根 span；未落地前该两列读根 span 会偏低（只有生成节点自身或空），故 **D-metrics 是本表 token/cost 准确的前置**。
 
-### 读 VIEW（防腐 + 合并中间态）
+### 读查询（D2′：直接合并中间态）
 
-后端只查这个，不查汇总表本身（延续「读侧只碰 VIEW」纪律）：
+不建立按 `(bucket, agent, model)` finalize 的读 VIEW。窗口 P50/P95 必须跨分钟桶和应用维度合并 t-digest state；先 finalize 为标量后再聚合会产生统计错误。窗口查询直接从自有汇总表合并：
 
 ```sql
-CREATE VIEW codecrush_metrics AS
 SELECT
-  bucket, agent_id, gen_model,
   countMerge(qa_count)                       AS qa_count,
   sumMerge(fail_count)                       AS fail_count,
   sumMerge(fallback_count)                   AS fallback_count,
@@ -153,16 +152,16 @@ SELECT
   sumMerge(no_cite_count)                    AS no_cite_count,
   sumMerge(refusal_count)                    AS refusal_count,
   sumMerge(timeout_count)                    AS timeout_count,
-  quantileTDigestMerge(0.50)(dur_p50)        AS p50_ms,
-  quantileTDigestMerge(0.95)(dur_p95)        AS p95_ms,
+  quantileTDigestMerge(0.50)(dur_tdigest)    AS p50_ms,
+  quantileTDigestMerge(0.95)(dur_tdigest)    AS p95_ms,
   sumMerge(input_tokens)                     AS input_tokens,
   sumMerge(output_tokens)                    AS output_tokens,
   sumMerge(cost_usd)                         AS cost_usd
 FROM codecrush_metrics_1m
-GROUP BY bucket, agent_id, gen_model;
+WHERE bucket >= {from:DateTime} AND bucket <= {to:DateTime};
 ```
 
-查询时按时间范围再 `GROUP BY`（跨桶合并）即得任意窗口的率与分位：`fallback_rate = sumMerge(fallback_count) / countMerge(qa_count)`。
+趋势查询使用同一组 `xxxMerge` 并 `GROUP BY bucket`；筛选应用/模型仍作用于 state 合并前。`fallback_rate = sumMerge(fallback_count) / countMerge(qa_count)`。
 
 ### 历史回填
 
@@ -176,7 +175,7 @@ WHERE SpanAttributes['codecrush.span.kind']='chain' AND SpanAttributes['rag.prev
 GROUP BY bucket, agent_id, gen_model;
 ```
 
-> 不用 `POPULATE`（建 MV 时并发回填有丢数据窗口）；改「先建 MV 接新增，再手动回填历史，靠 AggregatingMergeTree 幂等合并去重」——回填与新增在 merge 时按 ORDER BY 键合并，同桶重复只是多一次合并，不重复计数（因存的是可合并中间态，同一 span 不会被回填与 MV 同时算：回填按时间早于建 MV 的数据，边界桶可能小幅重叠，用 `FINAL` 或按建 MV 时刻切分回填范围规避）。
+> 不用 `POPULATE`。W-a 采用「先建 MV，再在汇总表为空时回填」的单实例低 QPS 简化语义；空表守卫避免重启重复回填。MV 建成与回填间的极小并发窗口可能重复计入边界 trace，严格重建时使用 `TRUNCATE codecrush_metrics_1m` 后停写/按建 MV 时刻切分回填范围。
 
 ### 只读 API
 
@@ -207,7 +206,7 @@ GROUP BY bucket, agent_id, gen_model;
 | **检索** | 命中分数分布、召回空率 | 🟢 | `rag.chunk.scores` |
 | | 命中率/引用正确率/回答准确率 | 🔴 | 需 ground truth → 评测集 M11，离线 |
 
-**第一批 8 指标（本波交付）**：兜底率、失败率、端到端 P95、问答量、input/output token 量、花费 $（跟 W3）、可信度分布（回填）——全部 🟢/🟡，主要工作是读侧 SQL 与看板 UI。
+**W-a 后端已交付指标**：问答量、兜底/失败计数与率、四类质量计数、端到端 P50/P95、input/output token；`cost_usd` 列与响应字段预留且恒 0。前端展示、cost 真算与可信度分布后续交付。
 
 ## Design — 产品/看板
 
@@ -248,8 +247,9 @@ GROUP BY bucket, agent_id, gen_model;
 
 ## Rollout & 分波
 
-- **W-a（本波）**：D-metrics 写侧 delta（根 span 落 token/cost 汇总）+ `codecrush_metrics_1m` + MV + `codecrush_metrics` VIEW + 回填 + `GET /metrics/overview|apps` + 首页看板第一批 8 指标 + 三层下钻 + 阈值染色。VIEW SQL 进 `infra/clickhouse/views/`（延续 015 的 `CREATE OR REPLACE` 平滑升级）。
-- **W-b**：分阶段耗时入看板、TTFT/修复率/降级率补属性、Badcase 出口列表。
+- **W-a（已交付）**：D-metrics 写侧 delta（根 span 落 token/model 汇总）+ `codecrush_metrics_1m` + MV + 守卫回填 + `GET /metrics/overview|apps`。cost 列恒 0，不建 finalize VIEW。
+- **W-b**：前端运行看板、三层下钻与阈值染色；分阶段耗时、TTFT/修复率/降级率补属性、Badcase 出口列表按依赖继续拆波。
+- **W-cost**：定价模型、配置 UI、`rag.cost.usd` emit 与历史重算，独立设计实施。
 - **W-c（线 B，独立）**：Collector metrics pipeline → Prometheus + 平台健康看板 + 告警通道。
 
 **「在工作」信号**：跑 N 条真实问答（含至少一条兜底、一条失败）→ 看板数字与手动 `SELECT … FROM codecrush_traces` 现算结果一致 → 点兜底率下钻能落到那条兜底 trace 详情。

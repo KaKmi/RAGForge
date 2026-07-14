@@ -484,6 +484,31 @@ describe("NodeRuntimeService.streamTextChunks · reply 逐 token", () => {
     expect(returned).toBe(true);
   });
 
+  it("消费者 abort 前把已知 model 与累计 usage 通知调用方", async () => {
+    const onModel = jest.fn();
+    const onUsage = jest.fn();
+    const chatStream = jest.fn(async function* () {
+      yield { usage: { inputTokens: 30, outputTokens: 0 } };
+      yield { delta: "答" };
+      yield { usage: { inputTokens: 0, outputTokens: 12 } };
+      yield { delta: "案" };
+    });
+    const svc = makeService(jest.fn(), chatStream);
+    const gen = svc.streamTextChunks(
+      "reply",
+      1,
+      "{query}",
+      "m1",
+      { query: "hi", history: "" },
+      { citations: [] },
+      { metricsObserver: { onModel, onUsage } },
+    );
+    await gen.next();
+    await gen.return(undefined);
+    expect(onModel).toHaveBeenCalledWith("deepseek-chat");
+    expect(onUsage).toHaveBeenCalledWith({ inputTokens: 30, outputTokens: 0 });
+  });
+
   it("input 校验失败 → 不调 chatStream，outcome=fallback", async () => {
     const chatStream = jest.fn();
     const svc = makeService(jest.fn(), chatStream);

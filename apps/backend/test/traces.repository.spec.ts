@@ -54,6 +54,8 @@ describe("ClickHouseTracesRepository", () => {
           attributes: {
             "codecrush.io.input": "怎么退款",
             "gen_ai.agent.name": "退款助手",
+            "gen_ai.usage.input_tokens": "1200",
+            "gen_ai.usage.output_tokens": "200",
             "rag.prompt.version_id": "cv1",
             "rag.fallback.used": "false",
             "rag.quality.low_recall": "false",

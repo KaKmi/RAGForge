@@ -41,7 +41,7 @@ last_modified: "2026-07-13"
 | **M7b** | 应用发布闭环 | ✅ | | 009 |
 | **M8** | 问答 / RAG 编排 | ✅ | 四波全交付：**T1**（PR #16）/ **T2**（PR #18）/ **T3**（PR #19）/ **T4**（PR #20，C 端问答页真实化 + markdown）——见附录 A | 013 / 014 |
 | **M9** | Trace 追踪（完整版） | 🔄 | W1+W2（#21）/P1 修复（#22）/每节点面板（#23）已合并；**W3a Session 详情**（#25）+ 路线图回写（#24）待合；**cost 真算按用户决策移出首期**（先算 token）——见附录 A | 015 |
-| **M10** | 运行看板 | ⬜ | 里程碑 2；**读模型地基 + 看板已设计（016），后端/前端 plan 已拟（`.ship` 本地）、未实现** | 016 |
+| **M10** | 运行看板 | 🔄 | 里程碑 2；**W-a 后端读模型已交付**（D-metrics + 汇总表/MV/回填 + `/metrics/*`）；前端看板与 cost 真算待后续独立波 | 016 |
 | **M11** | 评测集 / 管理 / 报告 | ⬜ | 里程碑 2（首期不做） | — |
 | **M12** | RBAC 权限 | ⬜ | 里程碑 2（首期不做） | — |
 
@@ -215,7 +215,7 @@ M9 按 015 拆三波（见 015「建议分波」），逐波闭环：
 
 ## 变更记录
 
-- **2026-07-14**：**016 指标读模型设计**（喂 M10 运行看板）——在 `otel_traces` 上加 `AggregatingMergeTree` 汇总层（物化视图增量卷积、只读根 chain span）+ **D-metrics 写侧**（trace 级 token 总和 + 生成模型 id 落根 span）+ `/metrics/*` 只读 API + 管理台运行看板前端（接 `/metrics`、三层下钻、阈值染色、坏样本预览）。两 plan 已拟（`.ship` 本地）：后端 `metrics-rollup-dashboard`（完整对抗：peer 调查+diff+drill）/ 前端 `metrics-dashboard-frontend`（轻量对抗：peer 调查+diff）。**cost 真算仍移出首期**（无定价源，`RAG.COST_USD` 尚为 dead constant，汇总表留 `cost_usd` 恒 0）。**尚未实现**——分支 `feat/m10-metrics-rollup`，交由 Codex 实现。
+- **2026-07-14**：**016 指标读模型 W-a 后端已交付**——`otel_traces` 上新增 `AggregatingMergeTree` 汇总层（物化视图只读根 chain span）+ **D-metrics 写侧**（trace 级 token 总和 + 生成模型标签落根 span）+ 守卫历史回填 + `/metrics/*` 只读 API。D2′ 使用单 `dur_tdigest` state 并由仓库直接 `xxxMerge`，不建 finalize VIEW。运行时 QA 修复 series 别名与旧数据回填，随后 review 补齐 trace 详情防重复计数及失败/中断 usage 汇总。**前端看板仍待 `metrics-dashboard-frontend` plan；cost 真算继续独立延后**。
 - **2026-07-13**：M9 设计（015）+ W1/W2 交付（分支 m9-trace-read-model-w1，未合并）。M9 拆三波：W1 读模型地基（根 span 身份 delta + traces/sessions VIEW + list/summary/sessions API + 前端双列表）、W2 详情下钻（detail meta + StatusMessage + 写侧 chunk.scores doc/citation.ids + 前端 TraceDetailPage 真数据 + e2e）。决策：读模型单一事实源=ClickHouse（决策 A，不 join Postgres，doc 名/引用走写侧富化）；OTLP JSON 前端构建不建端点（收敛 015 决策 C）；cost/Session 详情延后 W3；评测集/重放/Badcase 出口延后 M11。完整对抗档全程（peer 调查+diff+drill+per-story review）。运行时 QA 待人工起 docker。**下一步 W3**。
 - **2026-07-13**：M8 T4（C 端问答页真实化）交付（PR #20）——`/chat/:agentId` 真接 `POST /chat` SSE 逐 token、单 Agent 信息卡（删 M2 切换器）、行内 `[n]` 角标 ⇄ 右栏真实原文（`ChatCitation.text`）、可信度/引用完整度/兜底来自 `done`、未上线占位（`resolvePublic` 404）、markdown 渲染（`react-markdown` + 自定义 `[n]` 角标插件）。后端最小改动：citation 带 `text`、`done` 带 `convId`、会话读接口 `agentId`+`userId` 归属过滤（IDOR）。完整对抗档：peer 独立调查 + diff（4 分歧证据消解）+ execution drill + 每波 peer review。真实 infra+LLM 浏览器 QA 验证逐 token/角标联动/可信度/未上线占位/markdown。QA 反馈修正：撑满视口高、可信度仅真引用时展示、移除转人工。**M8 四波（T1–T4）全交付、M8 完结，下一步 M9。**
 - **2026-07-13**：M8 T3（trace 写侧富化）交付（PR #19）——检索 span 三拆（`retrieval.embedding`/`retrieval.rerank` 子 span 自动挂父，rerank 失败标 ERROR 不破降级）、LLM `gen_ai.usage.*`（三协议 builder 取数 + node-runtime 累计，reply 流式末帧 usage）、命中分表 `rag.chunk.scores`、质量信号四布尔 `rag.quality.*` + 通用 `codecrush.io.input/output`、`@codecrush/otel` 导出前 `RedactingSpanExporter` PII 脱敏（Luhn 防误伤 + `codecrush.redacted`）。完整对抗档：每 story peer review + T5 信任边界单独审。真实 infra+LLM QA（deepseek/qwen3-rerank/text-embedding-v4 + 39 文档 KB）验证 5 项写侧数据全部 ClickHouse 落库、PII 0 泄漏、端到端产出带引用回答。下一步 T4。

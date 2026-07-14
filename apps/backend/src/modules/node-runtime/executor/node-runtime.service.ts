@@ -85,6 +85,14 @@ export interface NodeExecuteOptions {
    * 仅结构化成功/修复/兜底路径调用；抛错被吞（遥测不得中断请求）。
    */
   spanEnrich?: (output: unknown) => Record<string, string | number | boolean>;
+  /**
+   * D-metrics：流式末值可能因消费者 abort 不可达，故把已知模型与累计 usage 同步通知根 span 所有者。
+   * 回调异常必须被吞，避免指标富化进入问答关键路径。
+   */
+  metricsObserver?: {
+    onModel?: (model: string) => void;
+    onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
+  };
 }
 
 export interface NodeSampleRequest {
@@ -473,6 +481,12 @@ export class NodeRuntimeService {
     const validInput = inputCheck.data;
     const validReserved = reservedCheck.data;
     const model = await this.resolveModel(modelId);
+    const modelLabel = model.deploymentId ?? model.name;
+    try {
+      opts?.metricsObserver?.onModel?.(modelLabel);
+    } catch {
+      /* 指标富化失败静默：不影响回答产出 */
+    }
 
     const { span } = startManualSpan(
       "node_runtime.stream_text",
@@ -482,7 +496,7 @@ export class NodeRuntimeService {
           [RAG.PROMPT_CONTRACT_VERSION]: contractVersion,
           [GEN_AI.OPERATION_NAME]: OTEL_OPERATIONS.CHAT,
           [GEN_AI.SYSTEM]: model.protocol,
-          [GEN_AI.REQUEST_MODEL]: model.deploymentId ?? model.name,
+          [GEN_AI.REQUEST_MODEL]: modelLabel,
           "codecrush.span.kind": CODECRUSH_SPAN_KIND.LLM,
         },
       },
@@ -521,7 +535,14 @@ export class NodeRuntimeService {
         let res = await firstTokenGate(it.next());
         while (!res.done) {
           const chunk = res.value;
-          if (chunk.usage) mergeStreamUsage(usageAcc, chunk.usage); // usage 帧无 delta，仅记账
+          if (chunk.usage) {
+            mergeStreamUsage(usageAcc, chunk.usage); // usage 帧无 delta，仅记账
+            try {
+              opts?.metricsObserver?.onUsage?.({ ...usageAcc });
+            } catch {
+              /* 指标富化失败静默：不影响回答产出 */
+            }
+          }
           if (chunk.error) {
             interrupted = true; // 首 token 前：text 仍空 → 下方转 fallback；已发 token：保留为 partial
             break;
@@ -546,7 +567,7 @@ export class NodeRuntimeService {
             outcome: "timeout",
             traceId,
             usage: { ...usageAcc },
-            model: model.deploymentId ?? model.name,
+            model: modelLabel,
           };
         }
         interrupted = true; // 网络层异常：只看已产出（text 非空保留为 partial，空则下方 fallback）
@@ -559,7 +580,7 @@ export class NodeRuntimeService {
           text: contract.fallback(validInput, validReserved).text,
           traceId,
           usage: { ...usageAcc },
-          model: model.deploymentId ?? model.name,
+          model: modelLabel,
         };
       }
       span.setStatus({ code: SpanStatusCode.OK });
@@ -569,7 +590,7 @@ export class NodeRuntimeService {
         text,
         traceId,
         usage: { ...usageAcc },
-        model: model.deploymentId ?? model.name,
+        model: modelLabel,
       };
     } finally {
       if (timer) clearTimeout(timer);
