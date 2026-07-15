@@ -344,7 +344,7 @@ export class ClickHouseEvaluationsRepository {
         FROM (
           SELECT agent_id, argMax(agent_name, start_time) AS agent_name
           FROM codecrush_traces
-          WHERE preview = 0
+          WHERE preview = 0 AND agent_id != ''
             AND start_time >= {from:DateTime64(9)} AND start_time < {to:DateTime64(9)}
             AND ({agentId:String} = '' OR agent_id = {agentId:String})
           GROUP BY agent_id
@@ -459,9 +459,9 @@ export class ClickHouseEvaluationsRepository {
     if (!(await this.ensureEvalViews())) return [];
     const result = await this.clickhouse.query({
       query: `
-        SELECT latest.target_trace_id, traces.user_input AS question,
-          latest.faithfulness, latest.answer_relevancy, latest.context_precision,
-          raw.evidence
+        SELECT latest.target_trace_id AS target_trace_id, traces.user_input AS question,
+          latest.faithfulness AS faithfulness, latest.answer_relevancy AS answer_relevancy,
+          latest.context_precision AS context_precision, raw.evidence AS evidence
         FROM (${LATEST_EVAL_SQL}) AS latest
         LEFT JOIN codecrush_traces AS traces ON traces.trace_id = latest.target_trace_id
         LEFT JOIN (

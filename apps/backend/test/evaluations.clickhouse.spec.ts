@@ -102,6 +102,50 @@ describe("ClickHouseEvaluationsRepository SQL", () => {
     const sql = clickhouse.query.mock.calls.at(-1)?.[0].query as string;
     expect(sql).toContain("FROM codecrush_traces");
     expect(sql).toContain("LEFT JOIN");
+    // 幽灵行防回归：eligible 枚举必须排除空 agent_id，否则整行违反 min(1) 契约崩前端
+    expect(sql).toContain("agent_id != ''");
+  });
+
+  it("maps target_trace_id via an explicit alias so the JSON key survives the USING join", async () => {
+    const clickhouse = {
+      command: jest.fn().mockResolvedValue(undefined),
+      query: jest
+        .fn()
+        .mockResolvedValueOnce(jsonResult([{ result: 1 }]))
+        .mockResolvedValueOnce(jsonResult([{ count: "1" }]))
+        .mockResolvedValueOnce(
+          jsonResult([
+            {
+              target_trace_id: "a".repeat(32),
+              question: "why is the sky blue",
+              faithfulness: 40,
+              answer_relevancy: 55,
+              context_precision: 60,
+              evidence: "{}",
+            },
+          ]),
+        ),
+    };
+    const repo = new ClickHouseEvaluationsRepository(clickhouse as never);
+    await expect(
+      repo.getLowSamples(
+        { from, to, judgeVersion: "online-v1" },
+        { faithfulness: 85, answerRelevancy: 80, contextPrecision: 80 },
+      ),
+    ).resolves.toEqual([
+      {
+        targetTraceId: "a".repeat(32),
+        question: "why is the sky blue",
+        faithfulness: 40,
+        answerRelevancy: 55,
+        contextPrecision: 60,
+        evidence: "{}",
+      },
+    ]);
+    const sql = clickhouse.query.mock.calls.at(-1)?.[0].query as string;
+    // 列名限定防回归：qualified `latest.target_trace_id` 叠加 USING 会让 ClickHouse
+    // 把 JSON key 序列化成 "latest.target_trace_id"，令 targetTraceId 变 undefined 违约。
+    expect(sql).toContain("latest.target_trace_id AS target_trace_id");
   });
 
   it("applies each low-score threshold before limiting rows", async () => {
@@ -187,6 +231,43 @@ async function insertEvalSpan(
         ScopeName: "rag-eval",
         ScopeVersion: "1",
         SpanAttributes: attributes,
+        Duration: 0,
+        StatusCode: "STATUS_CODE_OK",
+        StatusMessage: "",
+        Events: [],
+        Links: [],
+      },
+    ],
+    clickhouse_settings: { input_format_defaults_for_omitted_fields: 1 },
+  });
+}
+
+async function insertAgentRoot(
+  client: ClickHouseClient,
+  row: { traceId: string; agentId: string; agentName: string; at: string },
+) {
+  await client.insert({
+    table: "otel_traces",
+    format: "JSONEachRow",
+    values: [
+      {
+        Timestamp: row.at,
+        TraceId: row.traceId,
+        SpanId: row.traceId.slice(0, 16),
+        ParentSpanId: "",
+        TraceState: "",
+        SpanName: "rag.pipeline",
+        SpanKind: "SPAN_KIND_INTERNAL",
+        ServiceName: "codecrush-backend",
+        ResourceAttributes: {},
+        ScopeName: "rag-chat",
+        ScopeVersion: "1",
+        SpanAttributes: {
+          "codecrush.span.kind": "chain",
+          "gen_ai.agent.id": row.agentId,
+          "gen_ai.agent.name": row.agentName,
+          "codecrush.io.input": "hello",
+        },
         Duration: 0,
         StatusCode: "STATUS_CODE_OK",
         StatusMessage: "",
@@ -345,5 +426,52 @@ describeClickHouse("evaluation read model", () => {
         contextPrecision: null,
       },
     ]);
+  });
+
+  it("exposes a usable targetTraceId for a low-scoring sample (survives the USING join)", async () => {
+    await insertEvalSpan(client, {
+      target,
+      at: "2026-07-15 02:00:01.000000000",
+      version: "online-v1",
+      status: "success",
+      score: 40,
+    });
+    await repository.backfillForTest();
+
+    const rows = await repository.getLowSamples(
+      {
+        from: "2026-07-15T02:00:00.000Z",
+        to: "2026-07-15T03:00:00.000Z",
+        judgeVersion: "online-v1",
+      },
+      { faithfulness: 85, answerRelevancy: 80, contextPrecision: 80 },
+    );
+    expect(rows).toHaveLength(1);
+    // 回归 Finding 1：真实 ClickHouse 序列化下 targetTraceId 必须是真 id，而非 undefined
+    expect(rows[0].targetTraceId).toBe(target);
+    expect(rows[0].faithfulness).toBe(40);
+  });
+
+  it("excludes traces with a blank agent_id from the per-agent breakdown", async () => {
+    await insertAgentRoot(client, {
+      traceId: target,
+      agentId: "agent-real",
+      agentName: "Real Agent",
+      at: "2026-07-15 02:03:00.000000000",
+    });
+    await insertAgentRoot(client, {
+      traceId: emptyTarget,
+      agentId: "",
+      agentName: "",
+      at: "2026-07-15 02:03:00.000000000",
+    });
+
+    const rows = await repository.getByAgent({
+      from: "2026-07-15T02:00:00.000Z",
+      to: "2026-07-15T03:00:00.000Z",
+      judgeVersion: "online-v1",
+    });
+    // 回归 Finding 2：空 agent_id 幽灵行不得进入分应用分布（否则违反 min(1) 契约崩前端）
+    expect(rows.map((row) => row.agentId)).toEqual(["agent-real"]);
   });
 });
