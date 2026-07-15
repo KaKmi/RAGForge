@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RAGForge · 答案质量评测与数据飞轮 — 产品设计文档 v1</title>
+<style>
+  body{font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;background:#f5f5f5;color:rgba(0,0,0,.88);margin:0;line-height:1.65;font-size:14px}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 24px 80px}
+  h1{font-size:24px;margin:8px 0 4px}
+  h2{font-size:19px;margin:44px 0 12px;padding-top:18px;border-top:1px solid #e8e8e8}
+  h3{font-size:15px;margin:22px 0 8px}
+  h4{font-size:13.5px;margin:16px 0 6px;color:rgba(0,0,0,.75)}
+  p{margin:6px 0}
+  .muted{color:rgba(0,0,0,.45)}
+  .card{background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:16px 20px;margin:10px 0}
+  table{border-collapse:collapse;width:100%;margin:8px 0;background:#fff;font-size:13px}
+  th{background:#fafafa;font-weight:500;color:rgba(0,0,0,.55)}
+  th,td{border:1px solid #f0f0f0;padding:7px 10px;text-align:left;vertical-align:top}
+  code{background:#f5f5f5;border-radius:3px;padding:1px 5px;font-size:12.5px;font-family:Consolas,Menlo,monospace}
+  pre{background:#fafafa;border:1px solid #f0f0f0;border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:12.5px;line-height:1.55;font-family:Consolas,Menlo,monospace}
+  .tag{display:inline-block;font-size:11px;border-radius:4px;padding:1px 7px;margin-right:4px;vertical-align:1px}
+  .tag-blue{color:#1677ff;background:#e6f4ff;border:1px solid #91caff}
+  .tag-red{color:#a32d2d;background:#fcebeb;border:1px solid #f7c1c1}
+  .tag-amber{color:#854f0b;background:#faeeda;border:1px solid #fac775}
+  .tag-green{color:#237804;background:#f6ffed;border:1px solid #b7eb8f}
+  .tag-purple{color:#531dab;background:#f9f0ff;border:1px solid #d3adf7}
+  .tag-gray{color:rgba(0,0,0,.55);background:#f5f5f5;border:1px solid #e8e8e8}
+  .callout{border-left:3px solid #1677ff;background:#f0f8ff;border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0}
+  .warn{border-left:3px solid #fa8c16;background:#fff7e6;border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0}
+  .danger{border-left:3px solid #ff4d4f;background:#fff1f0;border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0}
+  .toc{background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:14px 20px;columns:2;column-gap:32px}
+  .toc a{color:#1677ff;text-decoration:none;display:block;padding:2px 0;font-size:13px}
+  .mock{background:#f5f5f5;border:1px solid #e6e6e6;border-radius:10px;padding:16px;margin:12px 0}
+  .mock .mtitle{font-size:11px;color:rgba(0,0,0,.4);margin-bottom:10px;letter-spacing:.5px}
+  .mcard{background:#fff;border:1px solid #f0f0f0;border-radius:8px;padding:12px 16px}
+  .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}
+  .fnode{background:#fff;border:1px solid #e0e0e0;border-radius:6px;padding:5px 10px}
+  .fnode.b{border-color:#91caff;background:#e6f4ff;color:#0958d9}
+  .fnode.g{border-color:#b7eb8f;background:#f6ffed;color:#237804}
+  .fnode.o{border-color:#ffd591;background:#fff7e6;color:#d46b08}
+  .fnode.p{border-color:#d3adf7;background:#f9f0ff;color:#531dab}
+  .farrow{color:#bbb}
+  .kbd{border:1px solid #d9d9d9;border-bottom-width:2px;border-radius:4px;padding:0 6px;font-size:12px;background:#fff}
+  .btnp{display:inline-block;font-size:12px;color:#fff;background:#1677ff;border-radius:5px;padding:3px 12px;font-weight:500}
+  .btns{display:inline-block;font-size:12px;color:rgba(0,0,0,.65);border:1px solid #d9d9d9;border-radius:5px;padding:3px 12px;background:#fff}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .num{display:inline-flex;width:18px;height:18px;border-radius:50%;background:#1677ff;color:#fff;font-size:11px;align-items:center;justify-content:center;margin-right:6px;flex:none}
+  .statusbar{display:flex;gap:8px;flex-wrap:wrap;font-size:12px;margin:6px 0}
+  @media (max-width:760px){.toc{columns:1}.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="muted" style="font-size:12px">RAGForge / CodeCrushBot · 产品设计文档 · v1.1 · 2026-07-15 · 状态:待评审(v1.1 增补 §17-20:组件清单/状态机/文案校验/旅程走查)<br>关联:016(指标读模型/运行看板,已交付)、015(M9 Trace 读模型,已交付)、009(应用版本/production 指针)、002 路线图 M11</p>
+<h1>答案质量评测与数据飞轮(Eval + Flywheel)</h1>
+<p class="muted">让平台从「运行监控与故障定位」升级为「答案质量可度量、可对比、可持续改进」的完整闭环。全部构建在现有 Trace / 指标汇总层 / 应用配置版本之上,不另起平台。</p>
+
+<div class="toc">
+  <a href="#s1">1. 背景·目标·非目标</a>
+  <a href="#s2">2. 总体信息架构与闭环</a>
+  <a href="#s3">3. 核心概念与三大指标计算</a>
+  <a href="#s4">4. 屏1 · 答案质量总览(在线评测)</a>
+  <a href="#s5">5. 屏2 · 评测集管理(gold 题库)</a>
+  <a href="#s6">6. 发起评测(运行弹窗)</a>
+  <a href="#s7">7. 屏3 · 评测报告</a>
+  <a href="#s8">8. 屏4 · 版本对比(A/B)与上线门禁</a>
+  <a href="#s9">9. 屏5 · 知识缺口 / 问题池(飞轮)</a>
+  <a href="#s10">10. Trace 页联动增强 + 重放</a>
+  <a href="#s11">11. 数据流向与技术方案</a>
+  <a href="#s12">12. 数据模型与 API 草案</a>
+  <a href="#s13">13. 边界值与异常总表</a>
+  <a href="#s14">14. 抽样与成本控制</a>
+  <a href="#s15">15. 分波实施建议</a>
+  <a href="#s16">16. 开放问题(待拍板)</a>
+  <a href="#s17">17. 逐屏组件清单与状态矩阵(开发对照表)</a>
+  <a href="#s18">18. 状态机总册(流转表)</a>
+  <a href="#s19">19. 表单校验 · 文案 · 深链参数清单</a>
+  <a href="#s20">20. 端到端旅程走查(验收剧本)</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s1">1. 背景 · 目标 · 非目标</h2>
+<div class="card">
+<p><b>现状(M10 已交付)</b>:平台已具备完整的<b>线上运行监控</b>——运行量/延迟/TTFT/Token/阶段耗时、失败/兜底/超时/降级、修复率,以及 Trace/Session 全链路下钻。这些回答「系统<b>跑得稳不稳</b>」。</p>
+<p><b>缺口</b>:没有任何指标回答「回答<b>好不好</b>」。现有信号的边界必须认清:</p>
+<table>
+<tr><th>现有信号</th><th>它不是</th><th>为什么</th></tr>
+<tr><td>低分召回(rag.quality.low_recall)</td><td>≠ Context Recall</td><td>只是检索分数阈值启发式,不知道「该召回什么」</td></tr>
+<tr><td>引用数量/覆盖</td><td>≠ Faithfulness</td><td>带了引用不代表内容忠于引用</td></tr>
+<tr><td>启发式可信度(引用分最大值)</td><td>≠ 事实正确率</td><td>是检索分数的代理,不判断内容对错</td></tr>
+<tr><td>失败率低</td><td>≠ 回答质量高</td><td>「正常返回了」和「返回的是好答案」是两回事</td></tr>
+</table>
+<p><b>最危险的隐性问题</b>:一个应用可以 <b>兜底率 0%、失败率 0%(看板全绿),但忠实度 60%</b>——在大量一本正经地胡说八道。现有看板抓不到,这正是本设计要解决的第一价值。</p>
+</div>
+<div class="grid2">
+<div class="card"><h4>目标</h4>
+<p>① 在<b>真实流量</b>上持续评估回答质量(免标注,常开)<br>
+② 建立 <b>gold 评测集</b>,可重复严格评测(正确率/召回率)<br>
+③ 任何改动(模型/Prompt/参数/知识库)可 <b>A/B 对比、防回退</b>,并接入上线门禁<br>
+④ 坏样本自动沉淀为<b>知识缺口</b>,分诊后补库/进评测集,形成<b>数据飞轮</b><br>
+⑤ 与 Trace 深度联动:每个质量分可下钻到链路,每条 trace 可一键重放/入池/入集</p></div>
+<div class="card"><h4>非目标(本期不做)</h4>
+<p>· 人工众包标注平台(标注在本系统内轻量完成)<br>
+· 真实成本 USD 评估(依赖定价体系,延续 016 决策继续延后)<br>
+· 线上真实流量灰度 A/B(本期 A/B 只在评测集离线跑)<br>
+· 自动无人审入库(<b>红线:LLM 草拟必须人审</b>)<br>
+· 多租户/权限细分(沿用现状单 admin)</p></div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s2">2. 总体信息架构与闭环</h2>
+<div class="card">
+<h4>导航变化(管理台左侧)</h4>
+<p>「数据飞轮」分组由占位实体化,新增/激活 4 个入口;「验证与观测」组的 Trace 页原地增强:</p>
+<table>
+<tr><th>分组</th><th>页面</th><th>新/改</th><th>一句话</th></tr>
+<tr><td rowspan="4">数据飞轮</td><td>答案质量(屏1)</td><td><span class="tag tag-blue">新</span></td><td>真实流量在线评测总览,免标注,常开</td></tr>
+<tr><td>评测集(屏2)</td><td><span class="tag tag-blue">新</span></td><td>gold 题库管理 + 发起评测</td></tr>
+<tr><td>评测报告(屏3/4)</td><td><span class="tag tag-blue">新</span></td><td>run 列表 → 报告详情;任意两个 run 可对比(屏4)</td></tr>
+<tr><td>知识缺口(屏5)</td><td><span class="tag tag-blue">新</span></td><td>坏样本自动聚类成缺口池,分诊分流</td></tr>
+<tr><td>验证与观测</td><td>Trace 追踪</td><td><span class="tag tag-amber">增强</span></td><td>质量列/筛选、详情质量面板、重放、入池/入集按钮</td></tr>
+<tr><td>首页</td><td>运行看板</td><td><span class="tag tag-amber">增强</span></td><td>追加一行「答案质量」摘要卡,点击跳屏1</td></tr>
+</table>
+<h4>业务闭环(全景)</h4>
+<div class="flow" style="margin:10px 0">
+<span class="fnode">用户问答产生 Trace</span><span class="farrow">→</span>
+<span class="fnode b">屏1 在线评测打分</span><span class="farrow">→</span>
+<span class="fnode o">屏5 坏样本聚类入池</span><span class="farrow">→ 分诊 →</span>
+<span class="fnode g">补知识库(人审)</span><span class="fnode p">进评测集</span><span class="fnode">修检索/Prompt</span><span class="farrow">→</span>
+<span class="fnode">Trace 重放先验一条</span><span class="farrow">→</span>
+<span class="fnode b">发起评测跑全量(屏3)</span><span class="farrow">→</span>
+<span class="fnode p">屏4 A/B 对比</span><span class="farrow">→</span>
+<span class="fnode g">过门禁 → 切 production</span><span class="farrow">→</span>
+<span class="fnode b">回到屏1 验证质量上升</span>
+</div>
+<p class="muted">两个飞轮咬合:<b>知识缺口飞轮</b>(补库,提升上限)+ <b>评测飞轮</b>(回归题库,守住下限),同一批坏样本是共同起点。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s3">3. 核心概念与三大指标计算</h2>
+<table>
+<tr><th style="width:130px">术语</th><th>定义</th></tr>
+<tr><td><b>在线评测</b>(reference-free)</td><td>对真实流量抽样,LLM 裁判打分,<b>不需要标准答案</b>。指标:忠实度 / 回答相关性 / 上下文精确率</td></tr>
+<tr><td><b>gold / 标准答案</b></td><td>评测集用例里人工审定的正确答案(gold answer)与应命中文档(gold docs)。是 reference-based 指标的前提,<b>尺子不准量什么都错</b>,需人工审核+随文档更新维护</td></tr>
+<tr><td><b>离线评测</b>(reference-based)</td><td>在 gold 题库上跑,可算 Context Recall / Answer Correctness / Citation Correctness / NDCG / MRR</td></tr>
+<tr><td><b>根因分诊</b></td><td>答得差的三种根因:缺内容(该补库)/ 检索问题(库里有但没召回,该调参)/ 生成问题(召回对了答砸了,该改 Prompt/模型)。<b>只有「缺内容」才补库</b></td></tr>
+<tr><td><b>重放 replay</b></td><td>把一条 trace 的原始问题重新走一遍编排(原配置=重现 / 候选版本=单条 A/B),产出 preview trace 并排对比</td></tr>
+</table>
+
+<div class="card">
+<h4>3.1 忠实度 Faithfulness — 回答有没有「编」</h4>
+<p><b>输入</b>:回答 + 本次检索片段正文。<b>算法</b>(Ragas 式):</p>
+<p><span class="num">1</span>LLM 把回答拆成独立事实主张 → <span class="num">2</span>逐条问「能否从片段推出?」(是/否) → <span class="num">3</span>忠实度 = 被支持主张数 / 总主张数</p>
+<p class="muted">例:回答含 3 条主张,片段只支持 2 条 → 67 分。<b>抓不到</b>:片段本身过时/错误时,忠实的错误答案仍高分(那是 Correctness 的事,归离线评测)。</p>
+<h4>3.2 回答相关性 Answer Relevancy — 有没有「答到点上」</h4>
+<p><b>输入</b>:问题 + 回答 + embedding 模型。<b>算法</b>:</p>
+<p><span class="num">1</span>只给 LLM 看回答,反推「它在回答什么问题」×N 个 → <span class="num">2</span>反推问题与真实问题做 embedding 余弦相似 → <span class="num">3</span>取平均</p>
+<p class="muted">切题→反推问题≈原问题→高分;跑题/敷衍(「这个我不清楚」)→反推不出→低分。<b>抓不到</b>:切题但事实错误。</p>
+<h4>3.3 上下文精确率 Context Precision — 召回的「相不相关、排得好不好」</h4>
+<p><b>输入</b>:问题 + 召回的每段正文(reference-free 变体)。<b>算法</b>:</p>
+<p><span class="num">1</span>逐段问 LLM「这段对回答该问题有用吗?」 → <span class="num">2</span>按排名加权:在每个相关片段出现的位置 k 算 precision@k,对所有相关位置取平均</p>
+<p class="muted">例:5 段判定 [✓,✗,✓,✗,✗] → (1/1 + 2/3)/2 ≈ 0.83;同样 2 段相关若排在 4、5 位,分数显著更低(惩罚 rerank 没排好)。<b>抓不到</b>:漏召回(Recall,需 gold docs,归离线评测)。</p>
+<h4>3.4 三指标组合 → 定位坏在哪一环</h4>
+<table>
+<tr><th>精确率</th><th>忠实度</th><th>相关性</th><th>诊断</th><th>去修</th></tr>
+<tr><td>低</td><td>低</td><td>尚可</td><td>检索捞回垃圾,模型被带偏</td><td>检索/rerank/清库</td></tr>
+<tr><td>高</td><td>低</td><td>高</td><td>资料对,模型仍编</td><td>reply Prompt / 换模型</td></tr>
+<tr><td>高</td><td>高</td><td>低</td><td>没答到点,问题被改歪</td><td>rewrite / intent</td></tr>
+<tr><td>低</td><td>低</td><td>低</td><td>系统性差</td><td>该应用配置/知识库整体</td></tr>
+</table>
+<h4>3.5 离线评测追加指标(需 gold)</h4>
+<table>
+<tr><th>指标</th><th>判什么</th><th>需要</th></tr>
+<tr><td>Context Recall</td><td>gold docs 中被召回的比例(漏没漏)</td><td>gold docs</td></tr>
+<tr><td>Answer Correctness</td><td>回答与 gold answer 的要点一致度(LLM 比对要点,输出一致/缺失/矛盾清单 → 得分)</td><td>gold answer</td></tr>
+<tr><td>Citation Correctness</td><td>每处引用是否真支持它标注的那句结论(逐引用 LLM 判定)</td><td>—(可 reference-free)</td></tr>
+<tr><td>NDCG@5 / MRR / 命中率@5</td><td>gold docs 在召回列表中的排序质量</td><td>gold docs</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s4">4. 屏1 · 答案质量总览(在线评测)</h2>
+<p>路径 <code>/admin/quality</code> · 评的是<b>真实用户问答</b>(抽样),免标注常开。回答「答得忠实吗 / 答到点了吗 / 召回的相关吗」;<b>测不了</b>漏召回与对错(去屏3)。</p>
+
+<div class="mock"><div class="mtitle">原型 · 屏1 答案质量总览(视觉延续现有运行看板)</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+  <div><div style="font-size:17px;font-weight:600">答案质量总览</div><div style="font-size:11px;color:rgba(0,0,0,.45)"><span style="color:#52c41a;font-weight:600">● 在线 LLM 裁判</span> · 抽样 12% · 近 7 日评 154/1,284 条 · 裁判模型 qwen-plus</div></div>
+  <div style="display:flex;gap:6px"><span class="btns">今日</span><span class="btnp">近 7 日</span><span class="btns">近 30 日</span><span class="btns">全部应用 ▾</span></div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px">
+  <div class="mcard"><div style="font-size:12px;color:rgba(0,0,0,.45)">忠实度 Faithfulness</div><div style="font-size:24px;font-weight:600;color:#52c41a">92.4 <span style="font-size:11px;color:#52c41a">▲1.2</span></div><div style="font-size:11px;color:rgba(0,0,0,.45)">是否严格基于检索内容</div></div>
+  <div class="mcard"><div style="font-size:12px;color:rgba(0,0,0,.45)">回答相关性 Relevancy</div><div style="font-size:24px;font-weight:600;color:#52c41a">88.1 <span style="font-size:11px;color:#ff4d4f">▼0.6</span></div><div style="font-size:11px;color:rgba(0,0,0,.45)">是否答到用户的问题</div></div>
+  <div class="mcard" style="border-color:#ffe0b2"><div style="font-size:12px;color:rgba(0,0,0,.45)">上下文精确率 Precision <span class="tag tag-amber">偏低</span></div><div style="font-size:24px;font-weight:600;color:#faad14">76.3 <span style="font-size:11px;color:#ff4d4f">▼2.1</span></div><div style="font-size:11px;color:#1677ff">看低分样本 →</div></div>
+</div>
+<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:10px">
+  <div class="mcard"><div style="font-size:12px;font-weight:600;margin-bottom:6px">质量趋势(三线) <span style="float:right;font-weight:400;font-size:11px;color:rgba(0,0,0,.45)">▬ 忠实度 ▬ 相关性 ▬ 精确率</span></div>
+  <svg viewBox="0 0 520 100" style="width:100%"><polyline points="10,30 130,32 250,28 370,26 510,24" fill="none" stroke="#1677ff" stroke-width="2"/><polyline points="10,45 130,42 250,46 370,40 510,43" fill="none" stroke="#52c41a" stroke-width="2"/><polyline points="10,62 130,66 250,70 370,74 510,80" fill="none" stroke="#faad14" stroke-width="2"/></svg></div>
+  <div class="mcard"><div style="font-size:12px;font-weight:600;margin-bottom:8px">分应用 · 忠实度</div>
+  <div style="font-size:11px;display:flex;justify-content:space-between"><span>售后支持</span><span style="color:#52c41a">94.1</span></div><div style="height:6px;background:#f5f5f5;border-radius:3px;margin:3px 0 8px"><div style="height:6px;width:94%;background:#52c41a;border-radius:3px"></div></div>
+  <div style="font-size:11px;display:flex;justify-content:space-between"><span>学习助手</span><span style="color:#faad14">81.7</span></div><div style="height:6px;background:#f5f5f5;border-radius:3px;margin:3px 0"><div style="height:6px;width:82%;background:#faad14;border-radius:3px"></div></div></div>
+</div>
+<div class="mcard"><div style="font-size:12px;font-weight:600;margin-bottom:6px">低质量样本 <span style="float:right;font-weight:400;font-size:11px;color:#1677ff">全部 →</span></div>
+<div style="display:flex;gap:8px;align-items:center;font-size:12px;background:#fafafa;border-radius:5px;padding:6px 8px;margin-bottom:4px"><span class="tag tag-red">忠实度 41</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">课程有效期是终身吗?我记得客服说过…</span><span style="color:rgba(0,0,0,.4)">编造了库外信息</span><span style="color:#1677ff">→ trace</span></div>
+<div style="display:flex;gap:8px;align-items:center;font-size:12px;background:#fafafa;border-radius:5px;padding:6px 8px"><span class="tag tag-amber">精确率 55</span><span style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">怎么开发票,能开专票吗…</span><span style="color:rgba(0,0,0,.4)">召回 5 段仅 2 段相关</span><span style="color:#1677ff">→ trace</span></div></div>
+</div>
+
+<div class="card"><h4>交互说明</h4>
+<table>
+<tr><th style="width:180px">控件/区域</th><th>触发</th><th>行为与反馈</th></tr>
+<tr><td>时间范围 Segmented</td><td>点击</td><td>重拉三分卡+趋势+分应用+低分样本;选中态白底加粗(同现有看板)</td></tr>
+<tr><td>应用 Select</td><td>选择</td><td>全部区块限定该应用;分应用卡切换为「该应用分知识库」视图</td></tr>
+<tr><td>三大指标卡</td><td>点击</td><td>跳 Trace 列表带筛选 <code>/admin/traces?evalMetric=faithfulness&evalMax=70&from=…</code>,列表预选「低忠实度」;hover 显示 tooltip:计算口径一句话 + 本窗口样本量 n</td></tr>
+<tr><td>卡片阈值染色</td><td>自动</td><td>默认阈值:忠实度 <85 红 / 精确率 <80 橙(常量,可后台配);超阈值卡加「偏低」tag + 边框变色</td></tr>
+<tr><td>趋势图数据点</td><td>hover</td><td>tooltip:日期 + 三分值 + 当日样本量 n;n<10 的点半透明并注「样本不足」</td></tr>
+<tr><td>分应用条</td><td>点击</td><td>应用 Select 联动选中该应用(整页切换)</td></tr>
+<tr><td>低分样本行</td><td>点击</td><td>新开 Trace 详情(见 §10,质量面板自动展开、低分 span 高亮)</td></tr>
+<tr><td>低分样本「全部 →」</td><td>点击</td><td>跳 Trace 列表带 <code>evalVerdict=low</code> 筛选</td></tr>
+<tr><td>顶部状态行</td><td>常显</td><td>「在线 LLM 裁判 · 抽样 x% · 评 n/m 条 · 裁判模型」——评测是抽样的这件事永远显性,防误读为全量</td></tr>
+</table>
+<h4>状态与边界</h4>
+<table>
+<tr><th style="width:200px">场景</th><th>表现</th></tr>
+<tr><td>评测功能未开启/抽样率=0</td><td>整页空态:「在线评测未开启」+ 说明 + [去设置] 按钮;导航不隐藏</td></tr>
+<tr><td>窗口内样本 n<20</td><td>分卡照常显示,但数值旁加 <span class="tag tag-gray">样本不足</span>,趋势 Δ 不显示(避免小样本误读)</td></tr>
+<tr><td>裁判任务积压/失败</td><td>状态行变橙:「评测滞后 2.1h(积压 37 条)」;分数照常显示已评部分</td></tr>
+<tr><td>某应用窗口内 0 条被评</td><td>分应用条显示「—」,不显示 0 分</td></tr>
+<tr><td>加载/接口失败</td><td>Spin / message.error + 上次成功数据保留(不白屏)</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s5">5. 屏2 · 评测集管理(gold 题库)</h2>
+<p>路径 <code>/admin/eval/sets</code> · 管理 gold 题库;可从坏样本一键生成、LLM 辅助起草、CSV 导入。渐进式标注:先只标 gold answer(能测正确率),gold docs 后补(才能测召回/排序)。</p>
+
+<div class="mock"><div class="mtitle">原型 · 屏2 评测集列表 + 用例编辑</div>
+<div style="display:flex;justify-content:space-between;margin-bottom:8px"><div style="font-size:16px;font-weight:600">评测集</div><div style="display:flex;gap:6px"><span class="btns">导入 CSV</span><span class="btns">从坏样本生成</span><span class="btnp">+ 新建评测集</span></div></div>
+<div class="mcard" style="padding:0;overflow:hidden">
+<div style="display:grid;grid-template-columns:2fr .6fr 1.3fr .8fr 1fr 1fr;gap:6px;padding:8px 12px;background:#fafafa;font-size:11px;color:rgba(0,0,0,.45)"><span>评测集</span><span>用例</span><span>覆盖知识库</span><span>gold docs</span><span>上次得分</span><span>操作</span></div>
+<div style="display:grid;grid-template-columns:2fr .6fr 1.3fr .8fr 1fr 1fr;gap:6px;padding:9px 12px;border-top:1px solid #f5f5f5;font-size:12px;align-items:center"><span style="font-weight:500">售后核心 50 题</span><span>50</span><span class="muted">售后FAQ·退款政策</span><span>38/50</span><span style="color:#52c41a;font-weight:600">82.0</span><span><span class="btnp" style="font-size:11px">发起评测</span></span></div>
+<div style="display:grid;grid-template-columns:2fr .6fr 1.3fr .8fr 1fr 1fr;gap:6px;padding:9px 12px;border-top:1px solid #f5f5f5;font-size:12px;align-items:center"><span style="font-weight:500">高频 Badcase 集 <span class="tag tag-amber">来自线上</span></span><span>34</span><span class="muted">全部</span><span>0/34</span><span class="muted">未运行</span><span><span class="btnp" style="font-size:11px">发起评测</span></span></div>
+</div>
+<div class="mcard" style="margin-top:8px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">用例编辑(抽屉 Drawer)</div>
+<div style="font-size:12px;line-height:2"><b>问题*</b> <span style="border:1px solid #d9d9d9;border-radius:4px;padding:2px 8px;background:#fff">课程可以退款吗</span><br>
+<b>gold 答案*</b> <span style="border:1px solid #d9d9d9;border-radius:4px;padding:2px 8px;background:#fff">7 天内无理由退;已开课按比例;赠品课不退</span> <span class="muted">(按要点分号分隔,判分按要点比对)</span><br>
+<b>gold 文档</b> <span style="border:1px dashed #d9d9d9;border-radius:4px;padding:2px 8px;color:rgba(0,0,0,.45)">检索选择器:退款政策 §2 ×</span> <span class="tag tag-gray">选填,标了才能测召回</span><br>
+<b>标签</b> <span class="tag tag-blue">退款</span><span class="tag tag-blue">售后</span> · <b>来源</b> <span class="muted">trace 4f2a…(点击查看)</span></div></div>
+</div>
+
+<div class="card"><h4>交互说明</h4>
+<table>
+<tr><th style="width:190px">控件</th><th>行为</th></tr>
+<tr><td>+ 新建评测集</td><td>Modal:名称(必填,查重)/ 描述 / 关联知识库(多选,用于 LLM 生成与统计口径)</td></tr>
+<tr><td>从坏样本生成</td><td>Modal 三步:① 选来源(问题池簇 / trace 筛选条件)→ ② 勾选问题(默认全选,LLM 已预填 gold 草稿的标「草稿」)→ ③ 选目标评测集(新建或并入)。生成的用例状态=「待审核」,<b>审核通过前不参与评测运行</b></td></tr>
+<tr><td>导入 CSV</td><td>模板列:question, gold_answer, gold_docs(可空), tags;逐行校验,错误行标红下载回执;导入后同为「待审核」</td></tr>
+<tr><td>行展开/用例列表</td><td>展开显示用例表(问题/gold 要点/gold docs/标签/状态);行点击开编辑抽屉</td></tr>
+<tr><td>用例编辑抽屉</td><td>gold 答案按「要点」编辑(分号分隔),判分按要点逐条比对;gold 文档用检索选择器(输入关键词 → 现有检索测试台接口返回候选 chunk → 勾选);保存即新不可变版本(用例带 version,报告引用具体版本,防「改题后旧报告失真」)</td></tr>
+<tr><td>发起评测</td><td>见 §6 弹窗</td></tr>
+<tr><td>删除评测集/用例</td><td>Popconfirm;被历史 run 引用的做软删(报告仍可回看),列表不再显示</td></tr>
+</table>
+<h4>状态与边界</h4>
+<table>
+<tr><th style="width:220px">场景</th><th>表现</th></tr>
+<tr><td>空评测集(0 条审核通过用例)</td><td>「发起评测」禁用,tooltip:「至少 1 条已审核用例」</td></tr>
+<tr><td>用例上限</td><td>单集软上限 500 条(超出提示拆分;防单 run 成本失控)</td></tr>
+<tr><td>gold 可能过期</td><td>gold docs 引用的文档发生重解析/更新/删除 → 用例标 <span class="tag tag-amber">gold 可能过期</span>,列表可按此筛;不自动改 gold,人工确认</td></tr>
+<tr><td>来源 trace 已过 TTL(30 天)</td><td>用例保留(问题/gold 已快照),「查看来源」置灰:「trace 已过期」</td></tr>
+<tr><td>重复问题</td><td>入集时 embedding 相似度 >0.95 提示「疑似重复,与用例 #12 相似」,可强制加入</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s6">6. 发起评测(运行弹窗)</h2>
+<div class="mock"><div class="mtitle">原型 · 发起评测 Modal</div>
+<div class="mcard" style="max-width:520px;margin:0 auto">
+<div style="font-size:14px;font-weight:600;margin-bottom:10px">发起评测 · 售后核心 50 题</div>
+<div style="font-size:12px;line-height:2.2">
+<b>被评配置版本*</b> <span style="border:1px solid #d9d9d9;border-radius:4px;padding:2px 10px">售后支持 / v7(候选)▾</span> <span class="muted">默认=production 当前版本</span><br>
+<b>范围</b> <span class="tag tag-blue">全部 50 条</span> <span class="tag tag-gray">仅上次低分 9 条</span> <span class="tag tag-gray">按标签…</span><br>
+<b>裁判模型</b> <span style="border:1px solid #d9d9d9;border-radius:4px;padding:2px 10px">qwen-plus ▾</span> · <b>每题重复</b> <span style="border:1px solid #d9d9d9;border-radius:4px;padding:2px 10px">1 次 ▾</span><br>
+<div style="background:#fafafa;border-radius:6px;padding:8px 12px;margin-top:6px;font-size:12px">预估:50 条 × (1 次编排 + ~3 次裁判调用) ≈ <b>耗时 3~6 分钟</b> · Token ~180k · 产出 50 条 preview trace(不入线上统计)</div>
+</div>
+<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><span class="btns">取消</span><span class="btnp">开始运行</span></div>
+</div></div>
+<div class="card">
+<table>
+<tr><th style="width:220px">规则</th><th>说明</th></tr>
+<tr><td>运行方式</td><td>后端 pg-boss 异步 job,逐条把用例问题<b>真实走一遍编排</b>(orchestration),trace 标 <code>rag.preview='true'</code> + <code>rag.eval.run_id</code>;检索/生成与线上完全同路径</td></tr>
+<tr><td>进度反馈</td><td>Modal 关闭后跳 run 详情页,顶部进度条(23/50)实时刷新;可中途「停止」(已完成的保留,run 标「部分完成」)</td></tr>
+<tr><td>幂等</td><td>同评测集×同配置版本存在 <b>1 小时内</b>的完成 run → 提示「已有最近结果,查看 / 仍重新运行」</td></tr>
+<tr><td>并发限制</td><td>全局同时最多 1 个 run(串行队列);评测编排调用限速(默认 2 并发),不与线上抢配额</td></tr>
+<tr><td>成本熔断</td><td>run 级 token 预算(默认 500k),超出自动停止标「预算中断」;单用例编排超时 30s(同线上熔断)记 0 分并标「超时」</td></tr>
+<tr><td>裁判失败</td><td>单指标裁判调用失败重试 1 次,仍失败该指标记「未评」(不记 0 分,不拉低均值),用例标 ⚠</td></tr>
+<tr><td>版本保护</td><td>被 run 引用的配置版本不可删(沿用「被引用不可删」既有原则)</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s7">7. 屏3 · 评测报告</h2>
+<p>路径 <code>/admin/eval/runs/:id</code> · 一次「评测集 × 配置版本」的完整跑分。</p>
+<div class="mock"><div class="mtitle">原型 · 屏3 评测报告(检索层/生成层记分卡 + 逐用例)</div>
+<div class="mcard" style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px"><span>售后核心 50 题 × <b>v7</b>(deepseek-chat)· 07-14 14:20 · <span class="tag tag-green">完成</span></span><span><b style="color:#52c41a">通过 41</b> · <b style="color:#ff4d4f">低分 9</b> · 3m12s · 176k tokens</span></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+<div class="mcard"><div style="font-size:12px;font-weight:600;color:#1677ff;margin-bottom:6px">检索层</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px"><span>Context Precision <b style="color:#faad14">78</b></span><span>Context Recall <b style="color:#52c41a">85</b></span><span>NDCG@5 <b>0.81</b></span><span>命中率@5 <b>92%</b></span></div></div>
+<div class="mcard"><div style="font-size:12px;font-weight:600;color:#722ed1;margin-bottom:6px">生成层</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px"><span>Faithfulness <b style="color:#52c41a">91</b></span><span>Relevancy <b style="color:#52c41a">88</b></span><span>Correctness <b style="color:#faad14">82</b></span><span>Citation <b style="color:#52c41a">86</b></span></div></div>
+</div>
+<div class="mcard" style="padding:0;overflow:hidden"><div style="display:grid;grid-template-columns:.4fr 2.2fr .8fr .8fr .8fr .7fr .9fr;gap:6px;padding:8px 12px;background:#fafafa;font-size:11px;color:rgba(0,0,0,.45)"><span>#</span><span>问题</span><span>忠实度</span><span>相关性</span><span>正确率</span><span>判定</span><span>操作</span></div>
+<div style="display:grid;grid-template-columns:.4fr 2.2fr .8fr .8fr .8fr .7fr .9fr;gap:6px;padding:8px 12px;border-top:1px solid #f5f5f5;font-size:12px;align-items:center"><span>7</span><span>课程有效期是终身吗</span><span style="color:#ff4d4f">41</span><span>79</span><span style="color:#ff4d4f">38</span><span class="tag tag-red">低分</span><span style="color:#1677ff;font-size:11px">trace · 判分依据</span></div>
+<div style="display:grid;grid-template-columns:.4fr 2.2fr .8fr .8fr .8fr .7fr .9fr;gap:6px;padding:8px 12px;border-top:1px solid #f5f5f5;font-size:12px;align-items:center"><span>1</span><span>课程可以退款吗</span><span style="color:#52c41a">96</span><span style="color:#52c41a">93</span><span style="color:#52c41a">95</span><span class="tag tag-green">通过</span><span style="color:#1677ff;font-size:11px">trace · 判分依据</span></div></div>
+</div>
+<div class="card"><h4>交互与规则</h4>
+<table>
+<tr><th style="width:200px">项</th><th>说明</th></tr>
+<tr><td>run 列表页</td><td><code>/admin/eval/runs</code>:时间倒序,列=评测集/配置版本/状态/综合分/耗时;勾选任意 2 个 → 「对比」进屏4</td></tr>
+<tr><td>逐用例排序/筛选</td><td>默认按「最差指标」升序(坏的浮顶);可按判定筛(低分/偏低/通过/未评/超时)</td></tr>
+<tr><td>「trace」</td><td>打开该用例的 preview trace 详情(完整链路+质量面板)——评测与 Trace 的直接接点</td></tr>
+<tr><td>「判分依据」</td><td>抽屉:LLM 裁判原文——忠实度显示逐条主张的支持/不支持;正确率显示 gold 要点比对(一致/缺失/矛盾)。<b>可解释性是信任裁判的关键</b></td></tr>
+<tr><td>判定规则</td><td>用例判定=各指标最低档:任一 <60 →「低分」;60-79 →「偏低」;全部 ≥80 →「通过」(阈值常量可配)</td></tr>
+<tr><td>缺 gold docs 的用例</td><td>检索层指标显示「—」并注「未标 gold docs」;记分卡该项旁标覆盖率(38/50 已标)</td></tr>
+<tr><td>run 状态机</td><td>排队 → 运行中(进度) → 完成 / 部分完成(手动停止) / 预算中断 / 失败;非「完成」状态报告顶部横幅说明</td></tr>
+<tr><td>低分用例快捷操作</td><td>行尾「…」:重放该条(§10)/ 加入问题池 / 标记忽略</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s8">8. 屏4 · 版本对比(A/B)与上线门禁</h2>
+<p>路径 <code>/admin/eval/compare?a=&b=</code> · 本质:<b>同一评测集</b>上两个 run 的逐指标相减。核心原则:控制变量(同一套题)、看逐用例回退(不只总分)、带上延迟/成本、警惕小样本噪音。</p>
+<div class="mock"><div class="mtitle">原型 · 屏4 版本对比</div>
+<div class="mcard" style="background:#f6ffed;border-color:#b7eb8f;font-size:12px;margin-bottom:8px"><b style="color:#237804">综合 +3.6 · 建议上线</b> — v7 在忠实度/正确率/精确率均提升;<b style="color:#d46b08">注意:5 条用例回退</b>,其中「专票」类 2 条,建议查看后再切 production。</div>
+<div class="mcard" style="padding:0;overflow:hidden;margin-bottom:8px">
+<div style="display:grid;grid-template-columns:1.8fr .7fr .7fr .8fr;gap:6px;padding:8px 12px;background:#fafafa;font-size:11px;color:rgba(0,0,0,.45)"><span>指标</span><span>v6(线上)</span><span>v7(候选)</span><span>Δ</span></div>
+<div style="display:grid;grid-template-columns:1.8fr .7fr .7fr .8fr;gap:6px;padding:8px 12px;border-top:1px solid #f5f5f5;font-size:12px"><span>Faithfulness</span><span>87</span><b>91</b><span style="color:#52c41a">▲ +4</span></div>
+<div style="display:grid;grid-template-columns:1.8fr .7fr .7fr .8fr;gap:6px;padding:8px 12px;border-top:1px solid #f5f5f5;font-size:12px"><span>Answer Correctness</span><span>76</span><b>82</b><span style="color:#52c41a">▲ +6</span></div>
+<div style="display:grid;grid-template-columns:1.8fr .7fr .7fr .8fr;gap:6px;padding:8px 12px;border-top:1px solid #f5f5f5;font-size:12px"><span>Answer Relevancy</span><span>88</span><b>88</b><span class="muted">— 无显著差异</span></div>
+<div style="display:grid;grid-template-columns:1.8fr .7fr .7fr .8fr;gap:6px;padding:8px 12px;border-top:1px solid #f5f5f5;font-size:12px;background:#fffbe6"><span>P95 延迟 / 每题均 Token</span><span>4.6s / 3.2k</span><b>5.1s / 3.6k</b><span style="color:#fa8c16">▲ +0.5s / +12%</span></div>
+</div>
+<div class="mcard" style="font-size:12px"><b>逐用例:</b> <span class="tag tag-green">变好 12</span><span class="tag tag-red">变差 5</span><span class="tag tag-gray">持平 33</span> — 点「变差 5」展开:#12 能开专票吗(82→61)… 每条可开双 trace 并排</div>
+<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><span class="btns">导出报告</span><span class="btnp">通过评测,去上线 v7 →</span></div>
+</div>
+<div class="card"><h4>规则与门禁</h4>
+<table>
+<tr><th style="width:220px">项</th><th>说明</th></tr>
+<tr><td>可比性校验</td><td>仅允许同一评测集(且用例版本集合一致)的两个 run 对比;不一致直接拦:「评测集已变更,结论不可比,请用当前题库重跑基线」</td></tr>
+<tr><td>显著性提示</td><td>|Δ|<3(或样本 <30)显示「— 无显著差异」灰字,不给涨跌箭头——LLM 裁判有方差,小 Δ 不当真</td></tr>
+<tr><td>逐用例回退</td><td>「变差」定义:判定降档或任一指标降 ≥10;变差列表每条可开 v6/v7 双 trace 并排(复用重放对比视图)</td></tr>
+<tr><td>质量之外</td><td>P95 延迟与每题均 token 强制并排展示(评测 run 的 trace 里现成),防「为 1 分质量上一个又慢又贵的版本」</td></tr>
+<tr><td>上线联动(门禁)</td><td>「去上线」跳应用发布页并携带评测结论;<b>门禁开关(应用级配置)</b>:开启后,切 production 要求「候选版本存在 24h 内、对当前 production 的对比 run,且综合 Δ≥0 且变差数=0(阈值可配)」,否则发布按钮禁用并给原因;默认关(仅提示),由用户决定是否升级为硬卡点 → 见 §16 待拍板</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s9">9. 屏5 · 知识缺口 / 问题池(飞轮)</h2>
+<p>路径 <code>/admin/gaps</code> · 坏样本<b>自动</b>收集聚类成「缺口簇」,人只处理不打捞。它是两个飞轮的共同入口。原始 trace 列表给不了「聚类+频次+状态」,这是本页存在的理由。</p>
+<div class="mock"><div class="mtitle">原型 · 屏5 问题池(核心行为已在前版 mock 展示,此处摘要)</div>
+<div class="mcard" style="padding:0;overflow:hidden">
+<div style="display:grid;grid-template-columns:2.4fr .6fr .9fr .8fr .7fr 1.4fr;gap:6px;padding:8px 12px;background:#fafafa;font-size:11px;color:rgba(0,0,0,.45)"><span>缺口(代表问题)</span><span>频次</span><span>根因分诊</span><span>平均质量</span><span>状态</span><span>操作</span></div>
+<div style="display:grid;grid-template-columns:2.4fr .6fr .9fr .8fr .7fr 1.4fr;gap:6px;padding:9px 12px;border-top:1px solid #f5f5f5;font-size:12px;align-items:center"><span style="font-weight:500">能开专用发票吗/对公转账</span><b style="color:#fa8c16">×23</b><span class="tag tag-red">缺内容</span><span style="color:#ff4d4f">41</span><span style="font-size:11px;color:#fa8c16">待处理</span><span><span class="btnp" style="font-size:11px">补知识库</span> <span class="btns" style="font-size:11px">进评测集</span></span></div>
+<div style="display:grid;grid-template-columns:2.4fr .6fr .9fr .8fr .7fr 1.4fr;gap:6px;padding:9px 12px;border-top:1px solid #f5f5f5;font-size:12px;align-items:center"><span style="font-weight:500">直播回放能下载吗</span><b>×15</b><span class="tag tag-amber">检索问题</span><span style="color:#faad14">58</span><span style="font-size:11px;color:#fa8c16">待处理</span><span><span class="btns" style="font-size:11px">修检索参数</span> <span class="btns" style="font-size:11px">忽略</span></span></div>
+<div style="display:grid;grid-template-columns:2.4fr .6fr .9fr .8fr .7fr 1.4fr;gap:6px;padding:9px 12px;border-top:1px solid #f5f5f5;font-size:12px;align-items:center;opacity:.7"><span style="font-weight:500">课程有效期是终身吗</span><b>×11</b><span class="tag tag-red">缺内容</span><span style="color:#52c41a">已改善→89</span><span style="font-size:11px;color:#52c41a">已回验 ✓</span><span class="muted" style="font-size:11px">兜底率↓ 质量↑</span></div>
+</div></div>
+<div class="card"><h4>缺口状态机与交互</h4>
+<div class="statusbar"><span class="tag tag-gray">待处理</span>→<span class="tag tag-blue">草拟中</span>→<span class="tag tag-amber">待人审</span>→<span class="tag tag-green">已入库</span>→<span class="tag tag-purple">已回验</span> &nbsp;&nbsp;(旁路:<span class="tag tag-gray">已进评测集</span> / <span class="tag tag-gray">已转检索工单</span> / <span class="tag tag-gray">已忽略</span>)</div>
+<table>
+<tr><th style="width:190px">交互</th><th>说明</th></tr>
+<tr><td>簇行展开</td><td>簇内全部真实问题(每条 → trace 详情);簇支持「拆分」(勾选若干条移出成新簇)与「合并到…」(纠正聚类错误)</td></tr>
+<tr><td>[补知识库]</td><td>三步:① LLM 草拟问答对(Q=代表问题归一化,A=基于簇内 trace 已召回内容 + 显式标注「来源未确认」)→ ② <b>人工审核编辑</b>(可改 Q/A、选目标 KB、选 Profile)→ ③ 确认入库,走现有上传→切片→embedding 管线。<b>红线:无人审不入库</b>——LLM 编错答案会污染知识库且忠实度还显示满分</td></tr>
+<tr><td>[进评测集]</td><td>复用 §5「从坏样本生成」弹窗,预选本簇问题</td></tr>
+<tr><td>[修检索参数]</td><td>跳应用配置检索参数区,携带上下文(缺口 id);缺口转「已转检索工单」</td></tr>
+<tr><td>回验(自动)</td><td>入库完成后,后台自动对簇内代表问题跑一次重放 + 质量评分;新分数 ≥80 → 状态「已回验✓」并显示改善(41→89);仍低 → 状态退回「待处理」+ 橙色提示「补库后仍低分,建议查检索」</td></tr>
+<tr><td>分诊(自动+可改)</td><td>worker 依据:检索 top 分数极低+精确率低 →「缺内容」;库内存在相似内容(以缺口问题检索能命中高分)→「检索问题」;精确率高+忠实度低 →「生成问题」。人工可下拉改判</td></tr>
+</table>
+<h4>边界</h4>
+<table>
+<tr><th style="width:220px">场景</th><th>表现</th></tr>
+<tr><td>同簇重复流入</td><td>已「已入库/已忽略」的簇再收到相似新问题:频次+1 但不重开;若「已回验」后 7 天内新增 ≥5 条 → 自动重开为「待处理」+ 标「复发」</td></tr>
+<tr><td>频次统计窗口</td><td>滚动 30 天(与 trace TTL 对齐);簇内 trace 过期不减频次(频次为累计快照)</td></tr>
+<tr><td>入池阈值</td><td>可配:可信度 <60 或 兜底 或 无引用 或 eval 任一分 <70;preview/replay/评测 trace 一律不入池</td></tr>
+<tr><td>聚类阈值</td><td>embedding 余弦 ≥0.85 归簇(常量起步);聚类只增量不全量重算</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s10">10. Trace 页联动增强 + 重放</h2>
+<p>Trace 详情从「这条怎么跑的」升级为「跑得怎样 + 答得好不好 + 进没进飞轮」——单条请求上运行与质量的汇合点。</p>
+<div class="mock"><div class="mtitle">原型 · Trace 详情增强(顶部操作组 + 质量面板 + span 质量标注)</div>
+<div class="mcard" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px">trace 4f2a9c… · 售后支持 v6 · 4.2s · 3,182 tokens</span>
+<span style="display:flex;gap:6px"><span class="btns">+ 加入评测集</span><span class="btns">+ 加入问题池</span><span class="btnp">↻ 重放</span><span class="btns">跳转 Prompt 版本</span><span class="btns">复制 OTLP</span></span></div>
+<div style="display:grid;grid-template-columns:1fr 2fr;gap:8px">
+<div class="mcard"><div style="font-size:12px;font-weight:600;margin-bottom:6px">质量评分 <span class="tag tag-gray">已抽样评测</span></div>
+<div style="font-size:12px;line-height:2"><span>忠实度 <b style="color:#ff4d4f">41</b> <span class="tag tag-red">低</span></span><br><span>回答相关性 <b>79</b></span><br><span>上下文精确率 <b style="color:#52c41a">86</b></span><br><span class="muted" style="font-size:11px">裁判 qwen-plus · 07-14 20:15 · <span style="color:#1677ff">判分依据 →</span></span></div></div>
+<div class="mcard"><div style="font-size:12px;font-weight:600;margin-bottom:6px">Span 树(质量标注)</div>
+<div style="font-size:12px;line-height:2;font-family:Consolas,monospace">rag.pipeline 4.2s<br>├ rewrite 0.3s<br>├ intent 0.2s<br>├ retrieval 0.5s <span class="tag tag-green">精确率 86</span><br>└ generation 3.1s <span class="tag tag-red">忠实度 41 ← 低质量自动定位</span></div></div>
+</div></div>
+
+<div class="mock"><div class="mtitle">原型 · 重放 Modal + 结果并排</div>
+<div class="mcard" style="max-width:560px;margin:0 auto 8px">
+<div style="font-size:13px;font-weight:600;margin-bottom:8px">重放这条问答</div>
+<div style="font-size:12px;line-height:2"><b>问题</b>(可编辑):课程有效期是终身吗?<br>
+<b>跑哪个配置</b>:<span class="tag tag-blue">原配置 v6(重现)</span> <span class="tag tag-gray">候选版本 v7 ▾</span><br>
+<span class="muted" style="font-size:11px">⚠ LLM 非确定性:同配置重放结果也可能不同;产出为 preview trace,不入线上统计与问题池</span></div>
+<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><span class="btns">取消</span><span class="btnp">运行</span></div></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+<div class="mcard"><div style="font-size:11px;color:rgba(0,0,0,.45)">原 trace · v6 · 忠实度 41</div><div style="font-size:12px;margin-top:4px">「课程有效期为终身,且支持…」<span class="tag tag-red">编造</span></div></div>
+<div class="mcard" style="border-color:#b7eb8f"><div style="font-size:11px;color:rgba(0,0,0,.45)">重放 · v7 · 忠实度 93 <span class="tag tag-green">+52</span></div><div style="font-size:12px;margin-top:4px">「课程有效期为 2 年,详见服务协议 §3[1]」</div></div>
+</div></div>
+
+<div class="card"><h4>联动清单与交互</h4>
+<table>
+<tr><th style="width:200px">位置</th><th>变化</th></tr>
+<tr><td>Trace 列表</td><td>新增「质量」列(三分最低值,低于阈值红字;未抽评显示「—」);快筛条新增「低质量」;支持深链参数 <code>evalMetric/evalMax/evalVerdict</code>(接屏1下钻,复用现有 URL 水合机制)</td></tr>
+<tr><td>详情·质量面板</td><td>该条被评过 → 显示三分 + 裁判/时间 + 「判分依据」抽屉;未评过 → 面板折叠为一行「未抽样评测 · [立即评测]」(手动触发单条评测,30s 内出分)</td></tr>
+<tr><td>详情·span 标注</td><td>retrieval span 挂精确率、generation span 挂忠实度;分数低的 span 自动高亮(复用「失败自动定位」机制,扩展为「低质量自动定位」)</td></tr>
+<tr><td>+ 加入评测集</td><td>弹窗:目标集(可新建)+ gold 答案编辑框(默认空,提示「留空则进集后为待补 gold」);成功后按钮变「已在评测集 · 查看」</td></tr>
+<tr><td>+ 加入问题池</td><td>手动入池(自动收集的补充);若已归属某簇 → toast「已在缺口 ×23 中 · 查看」</td></tr>
+<tr><td>↻ 重放</td><td>见上 Modal;运行走 SSE 流式(体验同 C 端);完成后并排视图:两侧答案 + 关键指标 Δ(忠实度/精确率/耗时/token)+ 两条 span 树切换;右上「把重放结果加入评测集」;重放次数限制:同 trace 1 分钟内限 1 次(防误连点)</td></tr>
+<tr><td>Session 详情</td><td>每个 bot 气泡尾部追加质量三分微标(被评过时);点击展开该轮质量面板</td></tr>
+<tr><td>应用停用/版本删除</td><td>重放时若原配置版本已不可用 → 下拉里置灰并默认切换到 production,提示原因</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s11">11. 数据流向与技术方案</h2>
+<div class="card">
+<h4>11.1 全景数据流</h4>
+<pre>
+┌──────────── 线上问答(关键路径,零改动) ────────────┐
+│ chat 编排 ── OTLP span(已含质量信号/可信度) ──► Collector ──► ClickHouse otel_traces │
+└──────────────────────────────────────────────────────┘
+                     │ (异步,pull,水位线)
+      ┌──────────────┴───────────────────────────────┐
+      │  Trace 后处理 worker(pg-boss 定时 15~30min)  │   ★ 新增,统一层
+      │  ① 按水位线捞新完成、非 preview 的 trace       │
+      │  ② 分层抽样 → LLM 裁判 3 指标                  │──发 rag.eval span──► Collector ──► otel_traces
+      │  ③ 低信号问题 embedding → 增量聚类 → 分诊      │──upsert──► Postgres gap_items/clusters
+      │  ④ 推进水位线                                  │
+      └────────────────────────────────────────────────┘
+otel_traces(rag.eval span) ──MV 增量卷积──► codecrush_eval_1m(AggregatingMergeTree)──► 屏1 / 看板质量行
+                                            单条分数:按 target_trace_id 查 → Trace 详情质量面板
+
+评测运行(屏2 发起):pg-boss job → 逐用例走真实编排(preview trace)→ 同一套裁判 + gold 指标
+     → 结果写 Postgres eval_runs/eval_results → 屏3 报告 / 屏4 对比 → 上线门禁(读最近对比 run)
+
+重放:POST /traces/:id/replay → 同编排(preview)→ SSE → 并排视图(即时,不落 eval_results)
+</pre>
+<h4>11.2 数据源取数(评一条要什么)</h4>
+<table>
+<tr><th>原料</th><th>来源</th><th>说明</th></tr>
+<tr><td>用户问题 / 最终回答</td><td>Postgres <code>messages</code></td><td>经 <code>trace_id</code> 定位该轮,取真实未脱敏文本(trace 里的 IO 已脱敏,不用于判分)</td></tr>
+<tr><td>召回片段 id + 分数</td><td>ClickHouse trace</td><td>检索 span 的 <code>rag.chunk.scores</code>(T3 已埋)</td></tr>
+<tr><td>片段正文</td><td>Postgres <code>chunks</code></td><td>按 chunk id 取 <code>text</code>(span 只存引用不存正文,001 既有设计)</td></tr>
+<tr><td>引用</td><td><code>messages.citations</code> / <code>rag.citation.ids</code></td><td>Citation Correctness 用</td></tr>
+</table>
+<h4>11.3 不变量(继承并新增)</h4>
+<table>
+<tr><th style="width:60px">#</th><th>不变量</th></tr>
+<tr><td>E1</td><td><b>评测绝不进入问答关键路径</b>:一切评分/聚类/回验均异步 pull;chat 零改动(延续 001 Invariant 1)</td></tr>
+<tr><td>E2</td><td><b>评测/重放流量不污染线上统计</b>:一律 <code>rag.preview='true'</code>,现有 MV/VIEW 天然排除;也不入问题池</td></tr>
+<tr><td>E3</td><td><b>LLM 草拟内容入知识库必须人工审核</b>:无人审通道,防错误知识污染(且污染后忠实度反而满分,不可自证)</td></tr>
+<tr><td>E4</td><td><b>评分是派生数据、可重算</b>:rag.eval span / eval_1m / gap 池均可重建;事实源仍是 otel_traces + Postgres 业务表</td></tr>
+<tr><td>E5</td><td><b>用例与报告不可变</b>:用例修改产生新版本;run 引用用例版本与配置版本,历史报告永远可复现解释</td></tr>
+<tr><td>E6</td><td><b>裁判可解释</b>:每个分数保留裁判中间产物(主张清单/要点比对),UI 可查「判分依据」</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s12">12. 数据模型与 API 草案</h2>
+<div class="card">
+<h4>12.1 ClickHouse(经既有 OTLP 通道,零新物理链路)</h4>
+<pre>
+rag.eval span(worker 发出,SpanName='rag.eval')属性:
+  rag.eval.target_trace_id     被评的原始 trace
+  rag.eval.faithfulness        0-100
+  rag.eval.answer_relevancy    0-100
+  rag.eval.context_precision   0-100
+  rag.eval.judge_model / rag.eval.version(裁判算法版本,便于口径升级后区分)
+  gen_ai.agent.id / gen_ai.request.model(复制自原 trace,便于分组)
+
+codecrush_eval_1m(AggregatingMergeTree,同 016 模式):
+  bucket × agent_id → avgState(三分) + count + low_count(任一分<70)
+  MV 只读 SpanName='rag.eval' 行;读侧直接 xxxMerge(D2′ 同款,不建 finalize VIEW)
+</pre>
+<h4>12.2 Postgres(控制面,Drizzle 迁移)</h4>
+<pre>
+eval_sets(id, name unique, description, kb_ids[], created_by, created_at, deleted_at)
+eval_cases(id, set_id, version, question, gold_points jsonb, gold_doc_refs jsonb,
+           tags[], source_trace_id?, status[draft/reviewed], created_by, created_at)
+eval_runs(id, set_id, case_version_snapshot jsonb, application_id, config_version_id,
+          judge_model_id, scope, status[queued/running/done/partial/budget_stop/failed],
+          progress, token_cost, started_by, started_at, finished_at)
+eval_results(id, run_id, case_id, case_version, trace_id, faithfulness, relevancy,
+             correctness, citation_correctness, ctx_precision, ctx_recall?, ndcg?,
+             verdict[pass/weak/low/unscored/timeout], judge_evidence jsonb)
+gap_clusters(id, representative_question, centroid vector, freq, root_cause[missing/retrieval/generation],
+             status[open/drafting/reviewing/filled/verified/in_evalset/ticketed/ignored/reopened],
+             avg_quality, draft_qa jsonb, reviewed_by, kb_id?, created_at, updated_at)
+gap_items(id, cluster_id, question, trace_id, confidence, eval_scores jsonb, created_at)
+eval_watermark(worker_name pk, last_ts)   -- 水位线
+</pre>
+<h4>12.3 API 草案(REST,均走既有 contracts Zod)</h4>
+<table>
+<tr><th>端点</th><th>用途</th></tr>
+<tr><td><code>GET /eval/quality/overview?from&to&agentId</code></td><td>屏1:三分窗口值+趋势+分应用(读 eval_1m state-merge)</td></tr>
+<tr><td><code>GET /eval/quality/traces/:traceId</code></td><td>单条 trace 的评分+判分依据(详情质量面板)</td></tr>
+<tr><td><code>POST /eval/quality/traces/:traceId/score</code></td><td>手动触发单条评测(「立即评测」)</td></tr>
+<tr><td><code>GET/POST /eval/sets · /eval/sets/:id/cases · POST /eval/sets/:id/import</code></td><td>屏2 CRUD/导入/从坏样本生成</td></tr>
+<tr><td><code>POST /eval/runs · GET /eval/runs/:id · POST /eval/runs/:id/stop</code></td><td>§6/§7 发起、进度、停止</td></tr>
+<tr><td><code>GET /eval/compare?a=&b=</code></td><td>屏4:校验可比性 + 逐指标/逐用例 Δ</td></tr>
+<tr><td><code>POST /traces/:id/replay</code>(SSE)</td><td>§10 重放(configVersionId 可选,默认原版本)</td></tr>
+<tr><td><code>GET /gaps · POST /gaps/:id/draft|approve|route|ignore|split|merge</code></td><td>屏5 池子全操作</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s13">13. 边界值与异常总表(跨屏汇总)</h2>
+<table>
+<tr><th style="width:230px">场景</th><th>处理</th></tr>
+<tr><td>trace 已过 TTL(30 天)</td><td>池子/评测集/报告引用处:问题文本已快照可用,「查看 trace」置灰「已过期」;回验/重放改用快照问题文本</td></tr>
+<tr><td>rag.eval span 迟到/缺失</td><td>详情质量面板轮询一次后显示「未抽样评测」;不阻塞任何页面</td></tr>
+<tr><td>裁判模型被停用/删除</td><td>在线评测暂停并在屏1 横幅提示「裁判模型不可用」;历史分数保留(带 judge_model 快照)</td></tr>
+<tr><td>裁判算法口径升级</td><td><code>rag.eval.version</code> 递增;趋势图在版本切换日打竖虚线标注「口径变更」,跨版本 Δ 不比较</td></tr>
+<tr><td>并发发起同一评测</td><td>幂等:1h 内同 set×version 完成 run 提示复用;运行中重复发起直接拦</td></tr>
+<tr><td>评测运行中改用例</td><td>run 引用用例版本快照,不受影响;下次 run 用新版本;对比页校验版本集合一致性</td></tr>
+<tr><td>run 部分失败(单题超时/裁判失败)</td><td>单题标 timeout/unscored,不计入均值分母的对应指标;报告顶部显示「n 条未完整评分」</td></tr>
+<tr><td>成本预算触顶</td><td>run 停止标「预算中断」;屏1 在线评测则自动降抽样率并横幅提示</td></tr>
+<tr><td>评测/重放 trace 混入线上</td><td>不可能路径:preview 标记在编排入口打,MV WHERE 排除;测试用例覆盖(既有机制)</td></tr>
+<tr><td>知识库蓝绿重建期间回验</td><td>回验等待 KB 状态 ready 再跑(pg-boss 重试),避免检索空窗期误判</td></tr>
+<tr><td>gold docs 引用的 chunk 因重建更换 id</td><td>gold_doc_refs 存「文档 id + 章节锚点」而非 chunk id,重建后按锚点重解析;解析不到 → 用例标「gold 可能过期」</td></tr>
+<tr><td>问题含 PII</td><td>判分用 Postgres 原文仅在后端内存中传给裁判模型(与线上生成同信任面);评测产物(判分依据)入库前走同一 Redacting 脱敏</td></tr>
+<tr><td>抽样率改动</td><td>即时生效于下个 worker 周期;屏1 状态行实时反映</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s14">14. 抽样与成本控制</h2>
+<div class="card">
+<table>
+<tr><th style="width:200px">项</th><th>默认策略(均可配)</th></tr>
+<tr><td>分层抽样</td><td>兜底/失败/无引用/低可信(<60):<b>100% 全评</b>(它们最可能是坏样本);正常流量:随机 10%;每日上限 500 条(超出优先保低信号层)</td></tr>
+<tr><td>单条成本</td><td>约 2~3 次小 LLM 调用(拆句核对 1-2 + 逐段判相关 1)+ 1 次 embedding;裁判模型独立可配(建议便宜档,如 qwen-plus/deepseek)</td></tr>
+<tr><td>量级估算</td><td>按现规模 ~180 问答/天 → 全天评 ~40 条 → 裁判调用 ~120 次/天,成本可忽略;worker 每 15-30 分钟一批,水位线幂等</td></tr>
+<tr><td>降级</td><td>裁判连续失败 5 次 → 本周期跳过、下周期重试;日预算触顶 → 抽样率减半并提示</td></tr>
+<tr><td>裁判稳定性</td><td>temperature=0;评测 run 可选「每题重复 N 次取均值」(默认 1,重要对比建议 3)</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s15">15. 分波实施建议</h2>
+<table>
+<tr><th style="width:70px">波次</th><th>范围</th><th>依赖</th><th>交付价值</th></tr>
+<tr><td><b>E-W1</b></td><td>在线评测最小闭环:后处理 worker(水位线+分层抽样)+ 三指标裁判 + rag.eval span + eval_1m + 屏1 + Trace 列表质量列/筛选 + 详情质量面板(只读)</td><td>无(全在现有架构上)</td><td>立即回答「答得好不好」,抓「表面绿实际差」</td></tr>
+<tr><td><b>E-W2</b></td><td>评测集 + 发起评测 + 屏3 报告(含 gold 指标/判分依据)+ 「加入评测集」按钮 + 重放(重现/换版本+并排)</td><td>E-W1(共用裁判)</td><td>严格评测能力 + 单条迭代闭环</td></tr>
+<tr><td><b>E-W3</b></td><td>屏4 版本对比 + 逐用例回退 + 上线门禁(先软提示)</td><td>E-W2</td><td>改动敢上线、防回退</td></tr>
+<tr><td><b>E-W4</b></td><td>屏5 问题池(自动聚类+分诊+补库人审流+回验)+ 「从坏样本生成」+ 首页质量摘要行</td><td>E-W1(信号)、E-W2(进评测集出口)</td><td>飞轮转起来</td></tr>
+</table>
+<p class="muted">每波按既有流程走 /ship:design → dev;E-W1 碰新 worker+存储 schema,建议完整对抗档;E-W3/W4 偏 CRUD+页面,轻量档。</p>
+
+<!-- ============================================================ -->
+<h2 id="s16">16. 开放问题(待拍板)</h2>
+<table>
+<tr><th style="width:60px">#</th><th>问题</th><th>建议默认</th></tr>
+<tr><td>Q1</td><td>上线门禁做软提示还是硬卡点?</td><td>先软(显示评测结论,不禁发布),跑顺一个迭代后再升级硬门禁</td></tr>
+<tr><td>Q2</td><td>裁判模型用哪家?是否允许与被评模型同源?</td><td>默认便宜档独立模型;允许同源但 UI 标注「同源裁判,可能偏乐观」</td></tr>
+<tr><td>Q3</td><td>屏1 三分卡阈值(红/橙线)定多少?</td><td>忠实度 85 / 相关性 80 / 精确率 80 起步,跑两周真实分布后校准</td></tr>
+<tr><td>Q4</td><td>第一批 gold 语料来源配比?</td><td>坏样本转(主力)+ FAQ 导入 + LLM 生成人审,各占 5:3:2 起步</td></tr>
+<tr><td>Q5</td><td>gold docs 是否第一版就标?</td><td>不强制:先 gold answer(测正确率),缺口簇对应用例优先补 gold docs</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s17">17. 逐屏组件清单与状态矩阵(开发对照表)</h2>
+<p class="muted">目标:写代码时逐行对照,不漏一个控件、一种状态。约定:所有列表默认 20 条/页;分数一律 0-100 整数展示;时间 UTC 存、本地显;接口失败一律 <code>message.error</code> + 保留上次数据(不清空不白屏);所有长任务(评测 run / 草拟 / 回验)后台执行,离开页面不中断、回来恢复进度。</p>
+
+<div class="card">
+<h4>17.1 屏1 · 答案质量总览 <code>/admin/quality</code></h4>
+<table>
+<tr><th style="width:150px">组件</th><th style="width:110px">antd/形态</th><th>数据源 · 默认</th><th>状态</th><th>事件 → 反馈</th></tr>
+<tr><td>时间范围</td><td>Segmented</td><td>URL <code>?range</code> · 默认「近 7 日」</td><td>—</td><td>切换 → 整页重拉;写回 URL(可分享)</td></tr>
+<tr><td>应用筛选</td><td>Select</td><td>getApplications · 默认「全部应用」</td><td>加载中 disabled;加载失败仅「全部」</td><td>选择 → 整页限定;分应用卡切为分知识库</td></tr>
+<tr><td>评测状态行</td><td>文本+圆点</td><td>GET overview 的 meta</td><td>🟢正常 / 🟠滞后(积压>30 或 >1h)/ 🟠预算降级 / ⚪未开启</td><td>点击 → 打开评测设置抽屉(抽样率/裁判模型/阈值)</td></tr>
+<tr><td>三分指标卡 ×3</td><td>手写卡</td><td>overview.window(state-merge)</td><td>正常 / 超阈值(红橙框+「偏低」tag)/ 样本不足(n&lt;20,灰 tag,不显 Δ)/ 未评(「—」)</td><td>点击 → <code>/admin/traces?evalMetric=…&evalMax=70&from=…</code>;hover → 口径一句话 + 样本量 n</td></tr>
+<tr><td>质量趋势图</td><td>手绘 SVG 三线</td><td>overview.series(按桶)</td><td>空 series 占位灰字;单点不连线;口径变更日画竖虚线+「口径 v2」</td><td>hover 数据点 → 日期+三分+当日 n(n&lt;10 半透明)</td></tr>
+<tr><td>分应用条</td><td>手写进度条</td><td>per-app overview(并发,Top 8)</td><td>应用为空隐藏整卡;某应用 0 被评显「—」</td><td>点击 → 应用 Select 联动选中</td></tr>
+<tr><td>低分样本列表</td><td>手写行 ×5</td><td>GET quality/traces?verdict=low&limit=5</td><td>空:「本窗口暂无低质量样本」</td><td>行点击 → Trace 详情(质量面板展开+低分 span 高亮);「全部 →」→ 列表深链</td></tr>
+</table>
+<p class="muted">页面加载序:①骨架 Spin → ②window 卡先出 → ③趋势/分应用/样本异步补齐(三个独立请求互不阻塞)。</p>
+</div>
+
+<div class="card">
+<h4>17.2 屏2 · 评测集 <code>/admin/eval/sets</code></h4>
+<table>
+<tr><th style="width:150px">组件</th><th style="width:110px">形态</th><th>数据源 · 默认</th><th>状态</th><th>事件 → 反馈</th></tr>
+<tr><td>评测集表格</td><td>Table</td><td>GET /eval/sets · 更新时间倒序</td><td>空:「还没有评测集」+ 新建/从坏样本生成两个按钮;行内「gold docs 38/50」低于 80% 橙色</td><td>行点击展开用例;「发起评测」见 §6(0 条已审用例时 disabled + tooltip)</td></tr>
+<tr><td>用例子表(展开)</td><td>Table 嵌套</td><td>GET sets/:id/cases</td><td>状态列:<span class="tag tag-gray">待审核</span>/<span class="tag tag-green">已审核</span>/<span class="tag tag-amber">gold 可能过期</span>;可按状态筛</td><td>行点击 → 编辑抽屉;勾选多条 → 批量「审核通过 / 删除」</td></tr>
+<tr><td>用例编辑抽屉</td><td>Drawer 480px</td><td>—</td><td>只读态(被运行中 run 引用时,横幅「运行中,保存将生成新版本」)</td><td>保存 → 新不可变版本 v+1(编辑者即审核人,直接 reviewed);gold docs 检索选择器:输入→现有检索测试台接口→勾选 chunk(显示文档名+章节)</td></tr>
+<tr><td>从坏样本生成</td><td>Modal 三步 Steps</td><td>①来源(问题池簇 Select / trace 筛选)②勾选问题(Table,LLM 预填 gold 的标「草稿」)③目标集(Select+新建)</td><td>②生成 gold 草稿时行内 Spin(逐条,可跳过);失败行标「草拟失败」仍可入集(gold 留空)</td><td>完成 → toast「已加入 N 条,状态待审核」+ 跳该集展开</td></tr>
+<tr><td>CSV 导入</td><td>Modal + Upload</td><td>模板下载链接常显</td><td>上传中 / 校验失败(错误行数+「下载回执」)/ 成功(N 条待审核)</td><td>逐行校验:缺 question/gold_answer 该行拒;>1000 行整体拒</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h4>17.3 屏3 · 评测报告 <code>/admin/eval/runs/:id</code></h4>
+<table>
+<tr><th style="width:150px">组件</th><th style="width:100px">形态</th><th>数据源 · 默认</th><th>状态</th><th>事件 → 反馈</th></tr>
+<tr><td>run 列表页</td><td>Table</td><td>GET /eval/runs · 时间倒序</td><td>状态 tag:排队/运行中(进度%)/完成/部分完成/预算中断/失败</td><td>勾选 2 行 → 顶部浮出「对比」按钮 → 屏4;勾选≠2 或评测集不同 → disabled + tooltip</td></tr>
+<tr><td>运行中横幅</td><td>Progress + 文本</td><td>3s 轮询 GET runs/:id(或 SSE)</td><td>23/50 · 预计剩余 2m;「停止」Popconfirm</td><td>停止 → 状态「部分完成」,已完成用例保留</td></tr>
+<tr><td>记分卡两块</td><td>手写卡</td><td>run 聚合</td><td>缺 gold docs:检索层各项显「—(未标 gold docs,38/50)」;部分完成:顶部橙横幅「9 条未跑」</td><td>点某指标 → 逐用例表按该指标升序</td></tr>
+<tr><td>逐用例表</td><td>Table</td><td>GET runs/:id/results · 默认「最差指标」升序</td><td>判定筛选:低分/偏低/通过/未评/超时;未评显「未评⚠」不计均值</td><td>「trace」→ preview trace 详情;「判分依据」→ 抽屉(见下);行尾「…」→ 重放/加入问题池/忽略</td></tr>
+<tr><td>判分依据抽屉</td><td>Drawer 560px</td><td>eval_results.judge_evidence</td><td>忠实度:主张清单表[主张|支持?|依据片段引用];正确率:gold 要点比对[要点|一致/缺失/矛盾];精确率:逐段[片段|相关?]</td><td>依据片段可点 → 定位到 trace 检索 span 的该 chunk</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h4>17.4 屏4 · 版本对比 <code>/admin/eval/compare?a=&b=</code></h4>
+<table>
+<tr><th style="width:150px">组件</th><th>规则/状态</th><th>事件 → 反馈</th></tr>
+<tr><td>run 选择器 ×2</td><td>仅列同评测集 run;用例版本集合不一致 → 红条「题库已变更,不可比」+ [用当前题库重跑基线]</td><td>切换任一侧 → 全页重算</td></tr>
+<tr><td>结论横幅</td><td>绿(Δ≥3 且变差=0)/ 橙(Δ≥3 但有变差)/ 灰(|Δ|&lt;3「无显著差异」)/ 红(Δ≤-3「不建议上线」)</td><td>—</td></tr>
+<tr><td>Δ 表格单元</td><td>Δ≥+3 绿▲ / Δ≤-3 红▼ / 其间灰「—」;延迟/token 行黄底常显</td><td>点行 → 该指标逐用例分布对比</td></tr>
+<tr><td>变好/变差/持平</td><td>变差=判定降档或任一指标降≥10</td><td>点「变差 N」→ 展开列表;每条 [并排查看] → 双 trace 并排(复用重放对比视图)</td></tr>
+<tr><td>「通过评测,去上线」</td><td>门禁关:始终可点(跳发布页携带结论);门禁开:不满足条件 disabled + 原因(「存在 5 条回退用例」)</td><td>跳应用发布页,发布卡片显示评测摘要</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h4>17.5 屏5 · 问题池 <code>/admin/gaps</code></h4>
+<table>
+<tr><th style="width:150px">组件</th><th style="width:100px">形态</th><th>数据源 · 默认</th><th>状态</th><th>事件 → 反馈</th></tr>
+<tr><td>概览卡 ×4</td><td>手写卡</td><td>GET /gaps/summary</td><td>—</td><td>点击 → 下方列表按对应状态筛</td></tr>
+<tr><td>筛选</td><td>Select ×2</td><td>状态 / 根因 · URL 参数</td><td>—</td><td>—</td></tr>
+<tr><td>缺口表格</td><td>Table 行展开</td><td>GET /gaps · 默认:待处理在前,频次倒序</td><td>状态 tag 全集见 §18.C;「复发」红点角标</td><td>行展开 → 簇内问题列表(每条→trace,过期置灰)+ 操作区</td></tr>
+<tr><td>簇内多选</td><td>Checkbox</td><td>—</td><td>选中 ≥1 浮出工具条</td><td>[拆分为新簇](Popconfirm)/ [移入其他簇](Select)</td></tr>
+<tr><td>[补知识库] 向导</td><td>Drawer 内 Steps</td><td>—</td><td>①草拟中(Spin ~10s,可取消;失败→[重试])②人审编辑(Q/A 表单+目标 KB+Profile,校验见 §19)③入库中(走管线,显示文档处理状态)→完成</td><td>入库完成 toast「已提交入库,处理完成后自动回验」;簇状态随 §18.C 流转</td></tr>
+<tr><td>[进评测集]</td><td>复用 §17.2 生成弹窗</td><td>预选本簇问题</td><td>—</td><td>成功后簇加 <span class="tag tag-purple">已进评测集</span> 标志(叠加标志,非排他状态)</td></tr>
+<tr><td>[修检索参数]</td><td>跳转</td><td>—</td><td>—</td><td>新开应用配置检索区,URL 带 <code>?fromGap=id</code>;簇转「已转检索工单」</td></tr>
+<tr><td>回验结果</td><td>行内文本</td><td>回验任务完成后更新</td><td>回验中(蓝点)/ ✓41→89(绿)/ 仍低分(橙,状态退回待处理)</td><td>点分数 → 回验产生的 preview trace</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h4>17.6 Trace 增强(列表 / 详情 / 重放)</h4>
+<table>
+<tr><th style="width:150px">组件</th><th>状态</th><th>事件 → 反馈</th></tr>
+<tr><td>列表「质量」列</td><td>已评:三分最低值(低于阈值红字);未评:「—」;评分中:蓝点</td><td>列头可按质量升序;快筛条新增「低质量」chip</td></tr>
+<tr><td>详情·质量面板</td><td>四态:未评(折叠一行+[立即评测])/ 评分中(Spin,轮询 5s×6 次)/ 已评(三分+裁判+时间+[判分依据])/ 评失败(橙「裁判调用失败」+[重试])</td><td>[立即评测] → 评分中;超时未出 → 转评失败态</td></tr>
+<tr><td>span 质量标注</td><td>retrieval 挂精确率 tag、generation 挂忠实度 tag;任一 &lt;70 该 span 高亮(同失败定位样式,颜色橙)</td><td>点 tag → 打开判分依据对应段</td></tr>
+<tr><td>[+ 加入评测集]</td><td>已在集:按钮变「已在评测集·查看」</td><td>弹窗:目标集 Select(+新建)+ gold 要点编辑(可留空→入集为待补 gold);成功 toast + 按钮态切换</td></tr>
+<tr><td>[+ 加入问题池]</td><td>已在池:toast「已在缺口「×23」中 · 查看」</td><td>成功 → toast「已加入问题池」</td></tr>
+<tr><td>[↻ 重放] Modal</td><td>版本下拉:原版本(已删则置灰,默认切 production 并注原因);问题文本可编辑</td><td>运行 → 右侧滑出结果面板,SSE 逐 token;完成 → 并排视图(两答案+Δ 指标条+span 树 Tab 切换);限频:同 trace 1 次/分钟,超出 toast「操作过于频繁,请稍后」</td></tr>
+<tr><td>重放结果面板</td><td>运行中(流式)/ 完成 / 失败(错误信息+[重试])/ 超时(30s 熔断,同线上)</td><td>[把重放结果加入评测集] / [再跑一次] / 关闭</td></tr>
+<tr><td>Session 气泡质量微标</td><td>已评气泡尾部三分最低值小徽标;未评不显示</td><td>点徽标 → 展开该轮质量面板</td></tr>
+</table>
+</div>
+
+<div class="mock"><div class="mtitle">原型 · 补充状态示例:质量面板四态 / 判分依据抽屉</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+<div>
+<div class="mcard" style="margin-bottom:6px;font-size:12px"><span class="muted">未评:</span> 质量评分 — 未抽样评测 <span class="btns" style="font-size:11px">立即评测</span></div>
+<div class="mcard" style="margin-bottom:6px;font-size:12px"><span class="muted">评分中:</span> 质量评分 — <span style="color:#1677ff">● 裁判评分中…(约 30s)</span></div>
+<div class="mcard" style="font-size:12px;border-color:#ffd591"><span class="muted">评失败:</span> 质量评分 — <span style="color:#d46b08">裁判调用失败</span> <span class="btns" style="font-size:11px">重试</span></div>
+</div>
+<div class="mcard"><div style="font-size:12px;font-weight:600;margin-bottom:6px">判分依据 · 忠实度 41</div>
+<div style="font-size:11.5px;line-height:1.9">
+<span class="tag tag-green">支持</span>课程支持 7 天无理由退款 <span class="muted">← 退款政策 §2</span><br>
+<span class="tag tag-green">支持</span>已开课按剩余比例退 <span class="muted">← 退款政策 §2</span><br>
+<span class="tag tag-red">不支持</span>课程有效期为终身 <span class="muted">← 片段中无依据(编造)</span></div></div>
+</div></div>
+
+<!-- ============================================================ -->
+<h2 id="s18">18. 状态机总册(流转表)</h2>
+<p class="muted">格式:当前态 + 事件(触发者)+ 守卫条件 → 次态;副作用;UI 反馈。开发按行实现,漏一行=漏一个分支。</p>
+
+<div class="card">
+<h4>A. 评测运行 eval_run</h4>
+<table>
+<tr><th>当前态</th><th>事件(触发者)</th><th>守卫</th><th>次态</th><th>副作用 / UI</th></tr>
+<tr><td>—</td><td>发起评测(用户)</td><td>≥1 已审用例;无同 set 运行中 run;配置版本存在</td><td>queued</td><td>入 pg-boss 队列;跳 run 详情页</td></tr>
+<tr><td>queued</td><td>worker 领取</td><td>全局无其他 running(串行)</td><td>running</td><td>逐用例走编排(preview trace);进度轮询可见</td></tr>
+<tr><td>queued/running</td><td>配置版本被停用</td><td>—</td><td>failed</td><td>横幅「配置版本不可用」;被 run 引用的版本本就禁删,此分支仅防御停用</td></tr>
+<tr><td>running</td><td>全部用例终态</td><td>—</td><td>done</td><td>写 eval_results 聚合;run 列表刷新</td></tr>
+<tr><td>running</td><td>停止(用户 Popconfirm)</td><td>≥1 用例完成</td><td>partial</td><td>未跑用例标 skipped;横幅「手动停止,已完成 23/50」</td></tr>
+<tr><td>running</td><td>token 消耗≥预算</td><td>—</td><td>budget_stop</td><td>横幅「预算中断(500k)」+ [提高预算重跑]</td></tr>
+<tr><td>running</td><td>job 异常(重试 3 次仍败)</td><td>—</td><td>failed</td><td>横幅错误信息 + [重跑]</td></tr>
+<tr><td>done/partial/…(终态)</td><td>重跑(用户)</td><td>1h 内同 set×version 完成 run → 先提示复用</td><td>新 run queued</td><td>旧 run 不变(报告不可变)</td></tr>
+</table>
+<h4>B. 用例 eval_case(版本化)</h4>
+<table>
+<tr><th>当前态</th><th>事件</th><th>守卫</th><th>次态</th><th>副作用 / UI</th></tr>
+<tr><td>—</td><td>新建/导入/坏样本生成</td><td>校验过(§19)</td><td>draft(待审核)</td><td>不参与 run</td></tr>
+<tr><td>draft</td><td>审核通过(用户,单/批量)</td><td>gold 要点 ≥1 条</td><td>reviewed</td><td>可参与 run</td></tr>
+<tr><td>reviewed</td><td>编辑保存(用户)</td><td>—</td><td>reviewed(新版本 v+1)</td><td>旧版本冻结供历史 run 引用;运行中 run 不受影响</td></tr>
+<tr><td>任意</td><td>gold docs 关联文档更新/删除(系统事件)</td><td>—</td><td>态不变 + <b>gold-stale 标志</b></td><td>列表橙 tag「gold 可能过期」;人工「确认仍有效」清标志,或编辑产生新版本自动清</td></tr>
+<tr><td>任意</td><td>删除(用户 Popconfirm)</td><td>—</td><td>软删</td><td>历史报告仍可显示(标「已删用例」)</td></tr>
+</table>
+<h4>C. 缺口簇 gap_cluster</h4>
+<table>
+<tr><th>当前态</th><th>事件</th><th>守卫</th><th>次态</th><th>副作用 / UI</th></tr>
+<tr><td>—</td><td>worker 聚类产生新簇</td><td>入池阈值命中(§9)</td><td>open(待处理)</td><td>概览「待处理」+1</td></tr>
+<tr><td>open</td><td>相似新问题流入(worker)</td><td>余弦≥0.85</td><td>open</td><td>频次+1,gap_items 追加</td></tr>
+<tr><td>open</td><td>点[补知识库](用户)</td><td>根因=缺内容(否则二次确认「当前分诊为检索问题,仍要补库?」)</td><td>drafting(草拟中)</td><td>LLM 草拟任务入队;行内 Spin</td></tr>
+<tr><td>drafting</td><td>草拟完成</td><td>—</td><td>reviewing(待人审)</td><td>人审抽屉步骤②可进入</td></tr>
+<tr><td>drafting</td><td>草拟失败/取消</td><td>—</td><td>open</td><td>toast「草拟失败,可重试」</td></tr>
+<tr><td>reviewing</td><td>核对无误·入库(用户)</td><td>Q/A 校验过;目标 KB ready</td><td>filled(已入库)</td><td>走上传→切片→embedding;<b>创建回验任务(等 KB ready)</b></td></tr>
+<tr><td>reviewing</td><td>驳回/取消(用户)</td><td>—</td><td>open</td><td>草稿保留可再编辑</td></tr>
+<tr><td>filled</td><td>回验完成(系统)</td><td>代表问题重放评分 ≥80</td><td>verified(已回验)</td><td>行内「✓ 41→89」;概览「已补库」计数</td></tr>
+<tr><td>filled</td><td>回验完成(系统)</td><td>评分 &lt;80</td><td>open + 复发标</td><td>橙提示「补库后仍低分,建议查检索」</td></tr>
+<tr><td>任意非终</td><td>忽略(用户)</td><td>—</td><td>ignored</td><td>默认列表隐藏(筛选可见)</td></tr>
+<tr><td>ignored/verified</td><td>7 天内新增相似 ≥5 条(worker)</td><td>—</td><td>open + <span class="tag tag-red">复发</span></td><td>回到待处理顶部</td></tr>
+<tr><td>open</td><td>[修检索参数](用户)</td><td>—</td><td>ticketed</td><td>跳应用配置携带 fromGap</td></tr>
+<tr><td colspan="5" class="muted">「已进评测集」为叠加标志位(可与任意状态共存),不是排他状态。</td></tr>
+</table>
+<h4>D. 单条 trace 评分(质量面板视角)</h4>
+<table>
+<tr><th>当前态</th><th>事件</th><th>次态</th><th>UI</th></tr>
+<tr><td>unscored</td><td>worker 抽中 / 用户[立即评测]</td><td>scoring</td><td>面板「评分中」;轮询 5s×6</td></tr>
+<tr><td>scoring</td><td>rag.eval span 落库</td><td>scored</td><td>三分显示;列表质量列更新</td></tr>
+<tr><td>scoring</td><td>裁判失败(重试 1 次仍败)/轮询超时</td><td>failed</td><td>「裁判调用失败」+[重试](重试→scoring)</td></tr>
+</table>
+<h4>E. 后处理 worker 周期(每 15-30 分钟)</h4>
+<pre>idle → pull(水位线→now-5min 缓冲,取非 preview 已完成 trace)
+     → sample(分层:低信号 100%,正常 10%,日上限 500)
+     → score(逐条 3 指标;单条失败重试 1 次,仍败跳过并记日志,不阻塞批)
+     → cluster(低信号问题 embed → 增量归簇/建簇 → 分诊)
+     → advance watermark(仅当本批全部处理完;中途崩溃则下批从旧水位重跑,rag.eval span 幂等:同 target+judge_version 已存在则跳过)
+     → idle</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s19">19. 表单校验 · 文案 · 深链参数清单</h2>
+<div class="card">
+<h4>19.1 表单校验(字段级)</h4>
+<table>
+<tr><th style="width:130px">表单</th><th style="width:120px">字段</th><th>规则</th><th>错误文案</th></tr>
+<tr><td rowspan="2">新建评测集</td><td>名称*</td><td>1-50 字,全局唯一</td><td>「名称已存在」/「请输入名称」</td></tr>
+<tr><td>关联知识库</td><td>选填多选</td><td>—</td></tr>
+<tr><td rowspan="4">用例编辑</td><td>问题*</td><td>1-500 字</td><td>「问题不能为空」/「不超过 500 字」</td></tr>
+<tr><td>gold 要点*</td><td>≥1 条,每条 ≤200 字(分号分隔)</td><td>「至少填写 1 个答案要点」</td></tr>
+<tr><td>gold 文档</td><td>选填 ≤10 个引用</td><td>「最多关联 10 个片段」</td></tr>
+<tr><td>标签</td><td>≤5 个,每个 ≤12 字</td><td>「最多 5 个标签」</td></tr>
+<tr><td>CSV 导入</td><td>文件</td><td>UTF-8 csv,≤1000 行,必列 question/gold_answer</td><td>「第 N 行缺少 gold_answer」(回执)/「超过 1000 行,请拆分」</td></tr>
+<tr><td rowspan="3">发起评测</td><td>配置版本*</td><td>存在且未停用</td><td>「该版本已不可用」</td></tr>
+<tr><td>范围</td><td>解析后 ≥1 条已审用例</td><td>「所选范围没有已审核用例」</td></tr>
+<tr><td>每题重复</td><td>1-5 整数</td><td>—</td></tr>
+<tr><td rowspan="2">重放</td><td>问题</td><td>1-500 字(默认原文)</td><td>「问题不能为空」</td></tr>
+<tr><td>配置版本</td><td>可用性同上;原版本删→默认 production+说明</td><td>—</td></tr>
+<tr><td rowspan="3">补库人审</td><td>Q*</td><td>1-200 字</td><td>「问题不能为空」</td></tr>
+<tr><td>A*</td><td>1-2000 字;<b>提交时强制勾选「我已核对答案与来源」</b></td><td>「请先勾选已核对」</td></tr>
+<tr><td>目标 KB*/Profile</td><td>KB 必选且 ready;Profile 默认该 KB 默认值</td><td>「知识库重建中,暂不可入库」</td></tr>
+</table>
+<h4>19.2 文案清单(toast / 空态 / 确认框,直接照抄)</h4>
+<table>
+<tr><th style="width:180px">场景</th><th>文案</th></tr>
+<tr><td>入池成功 / 已在池</td><td>「已加入问题池」/「该问题已在缺口『能开专票吗』(×23) 中 · 查看」</td></tr>
+<tr><td>入集成功</td><td>「已加入评测集『售后核心 50 题』,状态:待审核」</td></tr>
+<tr><td>评测发起 / 复用提示</td><td>「评测已开始,预计 3~6 分钟」/「1 小时内已有相同评测结果 · 查看 / 仍重新运行」</td></tr>
+<tr><td>停止评测 Popconfirm</td><td>「停止后已完成的 23 条保留,未运行的不再执行?」</td></tr>
+<tr><td>入库提交</td><td>「已提交入库,文档处理完成后将自动回验」</td></tr>
+<tr><td>回验结果</td><td>「回验通过:41 → 89」/「补库后仍低分(62),建议检查检索配置」</td></tr>
+<tr><td>重放限频 / 失败</td><td>「操作过于频繁,请 1 分钟后再试」/「重放失败:{错误} · 重试」</td></tr>
+<tr><td>删除评测集 Popconfirm</td><td>「删除后列表不再显示;历史报告仍可查看。确认删除?」</td></tr>
+<tr><td>屏1 空态(未开启)</td><td>「在线评测未开启 — 开启后将自动抽样评估真实问答质量,不影响线上性能 · [去设置]」</td></tr>
+<tr><td>屏5 空态</td><td>「问题池为空 — 低质量问答会自动聚类出现在这里」</td></tr>
+<tr><td>对比不可比</td><td>「两次评测的题库版本不一致,结论不可比 · [用当前题库重跑基线]」</td></tr>
+<tr><td>同源裁判提示</td><td>「裁判模型与被评模型同源,评分可能偏乐观」</td></tr>
+</table>
+<h4>19.3 深链/URL 参数总表</h4>
+<table>
+<tr><th>页面</th><th>参数</th><th>说明</th></tr>
+<tr><td><code>/admin/quality</code></td><td><code>range, agentId</code></td><td>屏1 状态可分享/回退</td></tr>
+<tr><td><code>/admin/traces</code></td><td>既有 <code>status,quick,agentId,from,to</code> + 新增 <code>evalMetric(faithfulness|relevancy|precision), evalMax(0-100), evalVerdict(low)</code></td><td>复用既有 URL 水合机制;非法值静默忽略回默认</td></tr>
+<tr><td><code>/admin/eval/runs</code></td><td><code>setId,status</code></td><td>run 列表筛选</td></tr>
+<tr><td><code>/admin/eval/compare</code></td><td><code>a,b</code>(runId)</td><td>缺任一/不可比 → 选择器态</td></tr>
+<tr><td><code>/admin/gaps</code></td><td><code>status,cause</code></td><td>概览卡点击即写此参数</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s20">20. 端到端旅程走查(验收剧本)</h2>
+<div class="card">
+<h4>J1 · 抓幻觉 → 修复 → 上线(核心闭环)</h4>
+<table>
+<tr><th style="width:36px">#</th><th style="width:210px">位置 · 操作</th><th>预期反馈</th></tr>
+<tr><td>1</td><td>屏1 · 发现忠实度卡 82 橙「偏低」</td><td>hover 显示口径+n=154</td></tr>
+<tr><td>2</td><td>点忠实度卡</td><td>落 Trace 列表,「低忠实度」筛选已预选,URL 带 evalMetric</td></tr>
+<tr><td>3</td><td>点一条 41 分 trace</td><td>详情打开,质量面板展开,generation span 橙高亮「忠实度 41」</td></tr>
+<tr><td>4</td><td>点「判分依据」</td><td>抽屉:第 3 条主张「不支持·编造」,定位片段无依据</td></tr>
+<tr><td>5</td><td>点「跳转 Prompt 版本」→ 改 reply Prompt(加"仅基于资料回答")出新版本 → 组新配置 v7</td><td>既有 Prompt/应用配置流程</td></tr>
+<tr><td>6</td><td>回 trace · [↻ 重放] 选 v7</td><td>SSE 出新答案;并排:忠实度 41→93(+52)</td></tr>
+<tr><td>7</td><td>[把重放结果加入评测集] + 屏2 对该集「发起评测」选 v7</td><td>run 进入 queued→running,3~6 分钟</td></tr>
+<tr><td>8</td><td>run 列表勾 v6 基线 + v7 → 对比</td><td>屏4:综合 +3.6 绿横幅,变差 0</td></tr>
+<tr><td>9</td><td>[通过评测,去上线] → 切 production</td><td>发布页携带评测摘要;走既有 ReleaseCheck</td></tr>
+<tr><td>10</td><td>次日屏1</td><td>忠实度回 92+;闭环完成</td></tr>
+</table>
+<h4>J2 · 知识缺口 → 补库 → 回验</h4>
+<table>
+<tr><th style="width:36px">#</th><th style="width:210px">位置 · 操作</th><th>预期反馈</th></tr>
+<tr><td>1</td><td>屏5 · 顶部缺口「能开专票吗 ×23 缺内容」</td><td>展开见 23 条真实问题</td></tr>
+<tr><td>2</td><td>[补知识库]</td><td>草拟中 ~10s → 待人审;A 标「来源未确认」</td></tr>
+<tr><td>3</td><td>人审:修正 A、勾「已核对」、选 KB → 入库</td><td>toast「已提交入库…自动回验」;状态 filled</td></tr>
+<tr><td>4</td><td>(后台)文档 ready → 自动回验</td><td>状态 verified「✓ 41→89」;若 KB 正在蓝绿重建则回验等待 ready</td></tr>
+<tr><td>5</td><td>顺手 [进评测集]</td><td>簇加「已进评测集」标志;防回退</td></tr>
+</table>
+<h4>J3 · 换模型评估(成本 vs 质量)</h4>
+<p style="font-size:13px">屏2 对同一评测集分别以「v-deepseek / v-qwen」发起两个 run → 屏4 对比:质量 Δ 灰「无显著差异」但 token -35%、P95 -0.8s → 结论:可换便宜模型 → 上线。<b>验收点:小 Δ 必须显示"无显著差异"而非绿箭头。</b></p>
+<h4>J4 · 日常 5 分钟巡检</h4>
+<p style="font-size:13px">首页看板质量行 → 屏1 三分卡+趋势(无红橙即结束)→ 有橙:点卡下钻 3 条低分样本 → 判分依据定位环节 → 入池/建工单。<b>验收点:从首页到定位单条根因 ≤4 次点击。</b></p>
+</div>
+
+<p class="muted" style="margin-top:40px;text-align:center">— 文档结束(v1.1)· 评审通过后按 §15 分波进入 /ship:design —</p>
+</div>
+</body>
+</html>
