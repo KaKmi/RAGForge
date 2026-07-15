@@ -215,6 +215,7 @@ M9 按 015 拆三波（见 015「建议分波」），逐波闭环：
 
 ## 变更记录
 
+- **2026-07-16**：**E-W1 在线答案质量评测闭环交付（PR #31）**——契约/OTel 语义 → PG 控制面+周期调度 → 原文输入+三指标 reference-free Judge → worker 分层抽样+`rag.eval` → ClickHouse 去重读模型+`/eval/quality/*` → Trace 质量列/筛选/只读面板 → `/admin/quality` 总览，全程 chat 零改动，基线见 017。落地 QA 修三缺陷：`getLowSamples` 列名限定叠 USING 致 `targetTraceId` 恒 undefined 崩总览（列显式别名）、`getByAgent` 空 `agent_id` 幽灵行违 min(1) 契约（过滤空值）、chat 根 span 写原始 agentId 致分应用聚合按 slug/UUID 碎片化（改写规范 `cfg.applicationId`，行为中性、历史不回填）。答案质量页重构为 antd + 共享 echarts `MetricChart`。后端 792 测试绿、lint 0、build 绿。**applicationId 全统一（API 字段/旧 `agents` 表/历史回填）留作独立决策；下一步 E-W2（评测集/报告/重放）。**
 - **2026-07-15**：冻结 E-W1 在线答案质量评测实施基线（017）。交付顺序为共享契约与语义 → PG 控制面/周期调度 → 原文输入与三指标 Judge → worker/抽样/`rag.eval` → ClickHouse/API → Trace 联动 → 质量总览与设置；每一阶段保持 chat 零改动、可独立验证与回滚。
 
 - **2026-07-14**：**016 W-b 前端看板已实现（PR #28 待合）**——DashboardPage 接 `/metrics/overview|apps`（6 指标卡/双线趋势/质量信号/应用分布/坏样本下钻/阈值染色，删 M2 mock），TracesPage URL 水合支持看板深链下钻预选筛选；后端单应用响应补六阶段 P50/P95/样本数（现算 `codecrush_trace_spans`）+ 检索降级信号埋点。lint 绿、后端/契约测试绿；**4 前端测试待收尾**（CSV/Session 文案、单应用 TTFT 范围、SessionDetail 引用气泡疑似回归），owner 本波判为次要、随 PR 带出。cost 真算仍延后。
