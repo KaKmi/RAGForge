@@ -24,6 +24,71 @@ function buildClient(opts: { tableExists: boolean; rows?: unknown[] }) {
   return { client: client as unknown as CodeCrushClickHouseClient, queries, commands, raw: client };
 }
 
+describe("ClickHouseTracesRepository E-W1 quality list", () => {
+  function setupQualityList() {
+    const built = buildRoutingClient({
+      tableExists: true,
+      summaryRow: { total: 0, failCount: 0, p95Ms: 0, timeoutCount: 0 },
+    });
+    return { repo: new ClickHouseTracesRepository(built.client), raw: built.raw };
+  }
+
+  function qualityListSql(raw: ReturnType<typeof buildRoutingClient>["raw"]): string {
+    return raw.query.mock.calls
+      .map(([call]: [QueryCall]) => call.query)
+      .find((sql: string) => sql.includes("LIMIT {limit:UInt32}"))!;
+  }
+
+  function qualityCountSql(raw: ReturnType<typeof buildRoutingClient>["raw"]): string {
+    return raw.query.mock.calls
+      .map(([call]: [QueryCall]) => call.query)
+      .find((sql: string) => sql.includes("count() AS total"))!;
+  }
+
+  it("filters by precision and keeps stable ascending metric ordering", async () => {
+    const { repo, raw } = setupQualityList();
+    await repo.listTraces({ page: 1, pageSize: 20, evalMetric: "precision", evalMax: 70 });
+    const sql = qualityListSql(raw);
+    expect(sql).toContain("context_precision <= {evalMax:Float64}");
+    expect(sql).toContain(
+      "argMax(tuple(faithfulness, answer_relevancy, context_precision, judge_version, evaluated_at), evaluated_at)",
+    );
+    expect(sql).toContain(
+      "ORDER BY context_precision ASC NULLS LAST, start_time DESC, trace_id DESC",
+    );
+  });
+
+  it("uses any metric below 70 for the low verdict", async () => {
+    const { repo, raw } = setupQualityList();
+    await repo.listTraces({ page: 1, pageSize: 20, evalVerdict: "low" });
+    expect(qualityListSql(raw)).toContain(
+      "least(faithfulness, answer_relevancy, context_precision) < 70",
+    );
+  });
+
+  it("joins one latest evaluation row in both list and count queries", async () => {
+    const { repo, raw } = setupQualityList();
+    await repo.listTraces({
+      page: 2,
+      pageSize: 20,
+      evalMetric: "faithfulness",
+      evalSort: "desc",
+    });
+    expect(qualityListSql(raw)).toContain(
+      "ORDER BY faithfulness DESC NULLS LAST, start_time DESC, trace_id DESC",
+    );
+    expect(qualityCountSql(raw)).toContain("LEFT JOIN eval_latest USING (trace_id)");
+    expect(qualityCountSql(raw)).toContain("GROUP BY target_trace_id");
+  });
+
+  it("ignores evalSort without a selected metric", async () => {
+    const { repo, raw } = setupQualityList();
+    await repo.listTraces({ page: 1, pageSize: 20, evalSort: "desc" });
+    expect(qualityListSql(raw)).toContain("ORDER BY start_time DESC, trace_id DESC");
+    expect(qualityListSql(raw)).not.toContain("NULLS LAST");
+  });
+});
+
 describe("ClickHouseTracesRepository", () => {
   it("returns empty spans without DDL when exporter table does not exist (cold DB)", async () => {
     const { client, raw } = buildClient({ tableExists: false });

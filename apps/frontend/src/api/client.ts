@@ -131,6 +131,8 @@ import {
   type SessionDetailResponse,
   TraceDetailResponseSchema,
   type TraceDetailResponse,
+  TraceQualityDetailSchema,
+  type TraceQualityDetail,
   MetricsOverviewResponseSchema,
   MetricsAppResponseSchema,
   type MetricsOverviewResponse,
@@ -295,6 +297,10 @@ export const getTraces = (q: TraceListQuery): Promise<TraceListResponse> => {
   if (q.stage) p.set("stage", q.stage);
   if (q.model) p.set("model", q.model);
   if (q.signal) p.set("signal", q.signal);
+  if (q.evalMetric) p.set("evalMetric", q.evalMetric);
+  if (q.evalMax !== undefined) p.set("evalMax", String(q.evalMax));
+  if (q.evalVerdict) p.set("evalVerdict", q.evalVerdict);
+  if (q.evalSort) p.set("evalSort", q.evalSort);
   if (q.from) p.set("from", q.from);
   if (q.to) p.set("to", q.to);
   p.set("page", String(q.page ?? 1));
@@ -333,6 +339,9 @@ export const getSession = (sessionId: string): Promise<SessionDetailResponse> =>
 // M9 W2：Trace 详情（meta + 规范化 spans）
 export const getTrace = (traceId: string): Promise<TraceDetailResponse> =>
   getJson(`/api/traces/${encodeURIComponent(traceId)}`, TraceDetailResponseSchema);
+
+export const getTraceQuality = (traceId: string): Promise<TraceQualityDetail> =>
+  getJson(`/api/eval/quality/traces/${encodeURIComponent(traceId)}`, TraceQualityDetailSchema);
 
 function metricsParams(q: MetricsQuery): string {
   const params = new URLSearchParams();

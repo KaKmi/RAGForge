@@ -23,6 +23,44 @@ export const TRACE_VIEW_NAME = "codecrush_trace_spans";
 export const TRACES_VIEW_NAME = "codecrush_traces";
 export const SESSIONS_VIEW_NAME = "codecrush_sessions";
 const TRACE_VIEW_SQL_RELPATH = "infra/clickhouse/views/001-trace-views.sql";
+const EVAL_VIEW_SQL_RELPATH = "infra/clickhouse/views/003-eval-views.sql";
+const EVAL_BACKFILL_SQL = `INSERT INTO codecrush_eval_targets
+  SELECT SpanAttributes['rag.eval.target_trace_id'], SpanAttributes['rag.eval.version'],
+    argMaxState(Timestamp, Timestamp),
+    argMaxState(SpanAttributes['gen_ai.agent.id'], Timestamp),
+    argMaxState(SpanAttributes['gen_ai.request.model'], Timestamp),
+    argMaxState(toFloat64OrZero(SpanAttributes['rag.eval.faithfulness']), Timestamp),
+    argMaxState(toFloat64OrZero(SpanAttributes['rag.eval.answer_relevancy']), Timestamp),
+    argMaxState(toFloat64OrZero(SpanAttributes['rag.eval.context_precision']), Timestamp)
+  FROM otel_traces
+  WHERE SpanName = 'rag.eval' AND SpanAttributes['rag.eval.status'] = 'success'
+    AND SpanAttributes['rag.eval.target_trace_id'] != '' AND SpanAttributes['rag.eval.version'] != ''
+  GROUP BY SpanAttributes['rag.eval.target_trace_id'], SpanAttributes['rag.eval.version']`;
+
+const EVAL_CTES = `
+  eval_by_version AS (
+    SELECT target_trace_id, judge_version,
+      argMaxMerge(evaluated_at_state) AS evaluated_at,
+      argMaxMerge(faithfulness_state) AS faithfulness,
+      argMaxMerge(answer_relevancy_state) AS answer_relevancy,
+      argMaxMerge(context_precision_state) AS context_precision
+    FROM codecrush_eval_targets
+    GROUP BY target_trace_id, judge_version
+  ),
+  eval_latest AS (
+    SELECT target_trace_id AS trace_id,
+      tupleElement(latest, 1) AS faithfulness,
+      tupleElement(latest, 2) AS answer_relevancy,
+      tupleElement(latest, 3) AS context_precision,
+      tupleElement(latest, 4) AS judge_version,
+      tupleElement(latest, 5) AS evaluated_at
+    FROM (
+      SELECT target_trace_id,
+        argMax(tuple(faithfulness, answer_relevancy, context_precision, judge_version, evaluated_at), evaluated_at) AS latest
+      FROM eval_by_version
+      GROUP BY target_trace_id
+    )
+  )`;
 
 /** quick=慢请求 的耗时阈值（ms）；对齐前端 mock（≥3s）与 P95 红线 5s 分离。 */
 const SLOW_MS = 3000;
@@ -159,6 +197,11 @@ type TracesViewRow = {
   timeout: unknown;
   prompt_version_id: string;
   preview: unknown;
+  faithfulness: number | string | null;
+  answer_relevancy: number | string | null;
+  context_precision: number | string | null;
+  judge_version: string | null;
+  evaluated_at: string | null;
 };
 type SummaryRow = {
   total: number | string;
@@ -184,6 +227,10 @@ function mapTraceRow(r: TracesViewRow): TraceListRow {
   if (chTruthy(r.no_citations)) signals.push("no_citations");
   if (chTruthy(r.refusal)) signals.push("refusal");
   if (chTruthy(r.timeout)) signals.push("timeout");
+  const evaluation =
+    r.evaluated_at && r.judge_version
+      ? evaluationSummary(r)
+      : ({ status: "unscored" } as const);
   return {
     traceId: r.trace_id,
     sessionId: r.session_id ?? "",
@@ -198,6 +245,30 @@ function mapTraceRow(r: TracesViewRow): TraceListRow {
     outputTokens: Number(r.total_output_tokens ?? 0),
     qualitySignals: signals,
     promptVersionId: r.prompt_version_id ? r.prompt_version_id : null,
+    evaluation,
+  };
+}
+
+function evaluationSummary(r: TracesViewRow): NonNullable<TraceListRow["evaluation"]> {
+  const scores = {
+    faithfulness: Math.round(Number(r.faithfulness)),
+    answerRelevancy: Math.round(Number(r.answer_relevancy)),
+    contextPrecision: Math.round(Number(r.context_precision)),
+  };
+  const entries = Object.entries(scores) as Array<[
+    "faithfulness" | "answerRelevancy" | "contextPrecision",
+    number,
+  ]>;
+  const [minMetric, minScore] = entries.reduce((lowest, current) =>
+    current[1] < lowest[1] ? current : lowest,
+  );
+  return {
+    status: "scored",
+    scores,
+    minMetric,
+    minScore,
+    judgeVersion: r.judge_version!,
+    evaluatedAt: toIsoUtc(r.evaluated_at!),
   };
 }
 
@@ -219,6 +290,7 @@ function mapSessionRow(r: SessionsViewRow): SessionListRow {
 export class ClickHouseTracesRepository {
   /** VIEW 已确认建好后置位，读路径不再重复 readFile + DDL（review P3-3） */
   private viewsReady = false;
+  private evalViewsReady = false;
 
   constructor(@Inject(CLICKHOUSE) private readonly clickhouse: CodeCrushClickHouseClient) {}
 
@@ -240,6 +312,23 @@ export class ClickHouseTracesRepository {
       await this.clickhouse.command({ query: stmt });
     }
     this.viewsReady = true;
+    return true;
+  }
+
+  private async ensureEvalViews(): Promise<boolean> {
+    if (this.evalViewsReady) return true;
+    if (!(await this.ensureTraceViews())) return false;
+    for (const statement of await loadSqlStatements(EVAL_VIEW_SQL_RELPATH)) {
+      await this.clickhouse.command({ query: statement });
+    }
+    const [count] = await this.runView<{ count: number | string }>(
+      "SELECT count() AS count FROM codecrush_eval_targets",
+      {},
+    );
+    if (Number(count?.count ?? 0) === 0) {
+      await this.clickhouse.command({ query: EVAL_BACKFILL_SQL });
+    }
+    this.evalViewsReady = true;
     return true;
   }
 
@@ -341,6 +430,16 @@ export class ClickHouseTracesRepository {
       conds.push("start_time <= parseDateTimeBestEffortOrNull({to:String})");
       params.to = q.to;
     }
+    const metricColumn = q.evalMetric
+      ? ({ faithfulness: "faithfulness", relevancy: "answer_relevancy", precision: "context_precision" } as const)[q.evalMetric]
+      : undefined;
+    if (metricColumn && q.evalMax !== undefined) {
+      conds.push(`${metricColumn} <= {evalMax:Float64}`);
+      params.evalMax = q.evalMax;
+    }
+    if (q.evalVerdict === "low") {
+      conds.push("least(faithfulness, answer_relevancy, context_precision) < 70");
+    }
     return { where: `WHERE ${conds.join(" AND ")}`, params };
   }
 
@@ -350,17 +449,26 @@ export class ClickHouseTracesRepository {
       total: 0,
       summary: { sampledTotal: 0, failRate: 0, failCount: 0, p95Ms: 0, timeoutCount: 0 },
     };
-    if (!(await this.ensureTraceViews())) return empty;
+    if (!(await this.ensureEvalViews())) return empty;
     const { where, params } = this.buildTraceWhere(q);
     const offset = (q.page - 1) * q.pageSize;
+    const metricColumn = q.evalMetric
+      ? ({ faithfulness: "faithfulness", relevancy: "answer_relevancy", precision: "context_precision" } as const)[q.evalMetric]
+      : undefined;
+    const order = metricColumn
+      ? `${metricColumn} ${q.evalSort === "desc" ? "DESC" : "ASC"} NULLS LAST, start_time DESC, trace_id DESC`
+      : "start_time DESC, trace_id DESC";
     const rows = await this.runView<TracesViewRow>(
-      `SELECT * FROM ${TRACES_VIEW_NAME} ${where} ORDER BY start_time DESC, trace_id DESC LIMIT {limit:UInt32} OFFSET {offset:UInt32}`,
+      `WITH ${EVAL_CTES}
+       SELECT * FROM ${TRACES_VIEW_NAME} LEFT JOIN eval_latest USING (trace_id)
+       ${where} ORDER BY ${order} LIMIT {limit:UInt32} OFFSET {offset:UInt32}`,
       { ...params, limit: q.pageSize, offset },
     );
     const [agg] = await this.runView<SummaryRow>(
-      `SELECT count() AS total, countIf(status = 'failed') AS failCount,
+      `WITH ${EVAL_CTES}
+       SELECT count() AS total, countIf(status = 'failed') AS failCount,
               quantile(0.95)(total_duration_ms) AS p95Ms, countIf(timeout) AS timeoutCount
-       FROM ${TRACES_VIEW_NAME} ${where}`,
+       FROM ${TRACES_VIEW_NAME} LEFT JOIN eval_latest USING (trace_id) ${where}`,
       params,
     );
     const total = Number(agg?.total ?? 0);

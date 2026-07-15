@@ -13,6 +13,8 @@ import {
   getApplicationMetrics,
   getProcessingProfiles,
   getProcessingRuns,
+  getTraceQuality,
+  getTraces,
   rebuildKnowledgeBase,
   startApplicationReleaseCheck,
   triggerParse,
@@ -20,6 +22,35 @@ import {
   updateKnowledgeBase,
   uploadDocuments,
 } from "./client";
+
+describe("trace quality client", () => {
+  it("serializes server-side quality filters and sort", async () => {
+    const fetchMock = mockFetch(jsonResponse({
+      items: [],
+      total: 0,
+      summary: { sampledTotal: 0, failRate: 0, failCount: 0, p95Ms: 0, timeoutCount: 0 },
+    }));
+    await getTraces({
+      page: 1,
+      pageSize: 20,
+      evalMetric: "precision",
+      evalMax: 70,
+      evalVerdict: "low",
+      evalSort: "desc",
+    });
+    const [url] = callArgs(fetchMock);
+    expect(url).toContain("evalMetric=precision");
+    expect(url).toContain("evalMax=70");
+    expect(url).toContain("evalVerdict=low");
+    expect(url).toContain("evalSort=desc");
+  });
+
+  it("loads read-only quality detail", async () => {
+    const fetchMock = mockFetch(jsonResponse({ status: "unscored" }));
+    await expect(getTraceQuality("a".repeat(32))).resolves.toEqual({ status: "unscored" });
+    expect(callArgs(fetchMock)[0]).toBe(`/api/eval/quality/traces/${"a".repeat(32)}`);
+  });
+});
 
 const TOKEN_KEY = "token";
 

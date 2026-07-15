@@ -4,7 +4,7 @@ import type { TraceDetailResponse } from "@codecrush/contracts";
 import TraceDetailPage from "./TraceDetailPage";
 import * as client from "../../api/client";
 
-vi.mock("../../api/client", () => ({ getTrace: vi.fn() }));
+vi.mock("../../api/client", () => ({ getTrace: vi.fn(), getTraceQuality: vi.fn() }));
 const mocked = vi.mocked(client);
 
 const detail: TraceDetailResponse = {
@@ -67,7 +67,10 @@ function renderAt(id: string) {
   );
 }
 
-beforeEach(() => mocked.getTrace.mockResolvedValue(detail));
+beforeEach(() => {
+  mocked.getTrace.mockResolvedValue(detail);
+  mocked.getTraceQuality.mockResolvedValue({ status: "unscored" });
+});
 
 describe("TraceDetailPage (M9 W2)", () => {
   it("uses a wider responsive call-chain column", async () => {
@@ -96,5 +99,18 @@ describe("TraceDetailPage (M9 W2)", () => {
     renderAt("a".repeat(32));
     await screen.findByText("退款助手");
     expect(screen.queryByText(/重放/)).not.toBeInTheDocument();
+  });
+
+  it("keeps trace content when quality loading fails", async () => {
+    mocked.getTraceQuality.mockRejectedValueOnce(new Error("quality unavailable"));
+    renderAt("a".repeat(32));
+    expect((await screen.findAllByText("怎么退款")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("质量数据暂不可用")).toBeInTheDocument();
+  });
+
+  it("renders unscored as read-only without score or retry actions", async () => {
+    renderAt("a".repeat(32));
+    expect(await screen.findByText("未抽样评测")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /立即评测|重试/ })).not.toBeInTheDocument();
   });
 });

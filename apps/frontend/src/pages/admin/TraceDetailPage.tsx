@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { message, Segmented, Spin } from "antd";
-import type { TraceDetailResponse, TraceStatus } from "@codecrush/contracts";
-import { getTrace } from "../../api/client";
+import { Collapse, message, Segmented, Spin } from "antd";
+import type { TraceDetailResponse, TraceQualityDetail, TraceStatus } from "@codecrush/contracts";
+import { getTrace, getTraceQuality } from "../../api/client";
 import {
   autoSelectSpan,
   buildOtlpJson,
@@ -30,6 +30,8 @@ export default function TraceDetailPage() {
   const nav = useNavigate();
   const [data, setData] = useState<TraceDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [quality, setQuality] = useState<TraceQualityDetail | null>(null);
+  const [qualityError, setQualityError] = useState(false);
   const [selSid, setSelSid] = useState<string | null>(null);
   const [view, setView] = useState<"timeline" | "tree">("timeline");
   const [jsonOpen, setJsonOpen] = useState(false);
@@ -37,6 +39,8 @@ export default function TraceDetailPage() {
   useEffect(() => {
     let live = true;
     setLoading(true);
+    setQuality(null);
+    setQualityError(false);
     getTrace(traceId)
       .then((r) => {
         if (live) setData(r);
@@ -46,6 +50,13 @@ export default function TraceDetailPage() {
       })
       .finally(() => {
         if (live) setLoading(false);
+      });
+    getTraceQuality(traceId)
+      .then((result) => {
+        if (live) setQuality(result);
+      })
+      .catch(() => {
+        if (live) setQualityError(true);
       });
     return () => {
       live = false;
@@ -138,6 +149,51 @@ export default function TraceDetailPage() {
           <MetaCell label="Tokens" value={(meta.inputTokens + meta.outputTokens).toLocaleString()} sub={`入 ${meta.inputTokens} / 出 ${meta.outputTokens}`} />
           <MetaCell label="Cost" value={meta.cost == null ? "—" : "¥" + meta.cost.toFixed(4)} bold color="#1677ff" />
         </div>
+      </div>
+
+      <div style={{ background: "#fff", border: "1px solid #f0f0f0", borderRadius: 8, padding: "16px 20px", marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>答案质量</div>
+        {qualityError && <div style={{ color: "#d48806" }}>质量数据暂不可用</div>}
+        {!qualityError && !quality && <Spin size="small" />}
+        {quality?.status === "unscored" && <div style={{ color: "rgba(0,0,0,.45)" }}>未抽样评测</div>}
+        {quality?.status === "failed" && <div style={{ color: "#cf1322" }}>评测失败 · {quality.reason}</div>}
+        {quality?.status === "scored" && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(120px, 1fr))", gap: 12, marginBottom: 12 }}>
+              {([
+                ["事实一致性", "faithfulness"],
+                ["答案相关性", "answerRelevancy"],
+                ["上下文精度", "contextPrecision"],
+              ] as const).map(([label, metric]) => {
+                const low = quality.scores[metric] < quality.thresholds[metric];
+                return (
+                  <div key={metric} style={{ padding: 12, borderRadius: 6, background: low ? "#fff2f0" : "#f6ffed" }}>
+                    <div style={{ color: "rgba(0,0,0,.45)", fontSize: 12 }}>{label}</div>
+                    <div style={{ color: low ? "#cf1322" : "#389e0d", fontSize: 22, fontWeight: 700 }}>{quality.scores[metric]}</div>
+                    <div style={{ color: "rgba(0,0,0,.35)", fontSize: 11 }}>阈值 {quality.thresholds[metric]}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <Collapse
+              size="small"
+              items={[{
+                key: "evidence",
+                label: `评测依据 · ${quality.judgeVersion}`,
+                children: (
+                  <div>
+                    {Object.entries(quality.evidence).map(([metric, items]) => (
+                      <div key={metric} style={{ marginBottom: 8 }}>
+                        <strong>{metric}</strong>
+                        <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
+                      </div>
+                    ))}
+                  </div>
+                ),
+              }]}
+            />
+          </>
+        )}
       </div>
 
       {/* #4 降级/异常置顶：任一节点报错/降级，顶部汇总一条，点击直达对应节点，不用逐个点 */}
@@ -304,15 +360,6 @@ export default function TraceDetailPage() {
                   </div>
                 ))}
               </div>
-            )}
-
-            {detail.isRoot && (
-              <>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(0,0,0,.45)", marginBottom: 6 }}>Scores · 评估</div>
-                <div style={{ border: "1px solid #f0f0f0", borderRadius: 6, padding: "12px 14px", marginBottom: 16, fontSize: 12, color: "rgba(0,0,0,.35)" }}>
-                  评测打分未接入（评测集 M11）
-                </div>
-              </>
             )}
 
             {detail.scores.length > 0 && (

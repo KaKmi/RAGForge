@@ -42,6 +42,13 @@ const STAGE_LABELS: Record<MetricsStageKey, string> = {
 type StatusFilter = (typeof STATUSES)[number];
 type QuickFilter = (typeof QUICKS)[number];
 type RangeFilter = (typeof RANGES)[number];
+type EvalMetricFilter = NonNullable<TraceListQuery["evalMetric"]>;
+const EVAL_METRICS: EvalMetricFilter[] = ["faithfulness", "relevancy", "precision"];
+const EVAL_LABEL: Record<EvalMetricFilter, string> = {
+  faithfulness: "事实一致性",
+  relevancy: "答案相关性",
+  precision: "上下文精度",
+};
 
 // 响应英文 token → 中文 tag（列表状态列）
 const TRACE_TAG: Record<TraceStatus, { label: string; bg: string; c: string; bd: string }> = {
@@ -103,6 +110,14 @@ export default function TracesPage() {
     SIGNALS.includes(initialSignal as SignalFilter) ? (initialSignal as SignalFilter) : undefined,
   );
   const [model, setModel] = useState(searchParams.get("model") ?? "");
+  const rawEvalMetric = searchParams.get("evalMetric");
+  const evalMetric = EVAL_METRICS.includes(rawEvalMetric as EvalMetricFilter)
+    ? (rawEvalMetric as EvalMetricFilter)
+    : undefined;
+  const rawEvalMax = searchParams.get("evalMax");
+  const evalMax = rawEvalMax !== null && /^\d+$/.test(rawEvalMax) ? Number(rawEvalMax) : undefined;
+  const evalSort = searchParams.get("evalSort") === "desc" ? "desc" : evalMetric ? "asc" : undefined;
+  const evalVerdict = searchParams.get("evalVerdict") === "low" ? "low" : undefined;
   const [range, setRange] = useState<RangeFilter>("今日");
   const [urlRange, setUrlRange] = useState({
     from: searchParams.get("from") ?? undefined,
@@ -162,6 +177,10 @@ export default function TracesPage() {
       stage,
       signal,
       model: model || undefined,
+      evalMetric,
+      evalMax,
+      evalSort,
+      evalVerdict,
       from: urlRange.from ?? rangeFrom(range),
       to: urlRange.to,
       page: tracePage,
@@ -179,7 +198,7 @@ export default function TracesPage() {
     return () => {
       live = false;
     };
-  }, [tab, query, agentId, status, quick, stage, signal, model, range, urlRange, tracePage]);
+  }, [tab, query, agentId, status, quick, stage, signal, model, evalMetric, evalMax, evalSort, evalVerdict, range, urlRange, tracePage]);
 
   // Session 列表
   useEffect(() => {
@@ -207,7 +226,7 @@ export default function TracesPage() {
   const p95Label = summary ? (p95s >= 10 ? p95s.toFixed(1) : p95s.toFixed(2)) + "s" : "—";
   const p95Color = summary && summary.p95Ms >= 5000 ? "#ff4d4f" : "#52c41a";
 
-  const hasFilter = query !== "" || agentId !== "" || status !== "全部" || quick !== "全部" || stage !== undefined || signal !== undefined || model !== "" || urlRange.from !== undefined || urlRange.to !== undefined;
+  const hasFilter = query !== "" || agentId !== "" || status !== "全部" || quick !== "全部" || stage !== undefined || signal !== undefined || model !== "" || evalMetric !== undefined || evalVerdict !== undefined || urlRange.from !== undefined || urlRange.to !== undefined;
   const reset = () => {
     setTracePage(1);
     setQuery("");
@@ -219,6 +238,18 @@ export default function TracesPage() {
     setModel("");
     setUrlRange({ from: undefined, to: undefined });
     setSearchParams({});
+  };
+
+  const updateQualityParam = (key: string, value?: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    if (key === "evalMetric" && !value) {
+      next.delete("evalMax");
+      next.delete("evalSort");
+    }
+    setTracePage(1);
+    setSearchParams(next);
   };
 
   const effectiveFrom = urlRange.from ?? rangeFrom(range);
@@ -395,10 +426,49 @@ export default function TracesPage() {
           </div>
 
           <div style={{ background: "#fff", border: "1px solid #f0f0f0", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 16px", borderBottom: "1px solid #f0f0f0" }}>
+              <select
+                aria-label="评测指标"
+                value={evalMetric ?? ""}
+                onChange={(event) => updateQualityParam("evalMetric", event.target.value || undefined)}
+                style={{ height: 30, border: "1px solid #d9d9d9", borderRadius: 6, padding: "0 8px" }}
+              >
+                <option value="">全部评测指标</option>
+                {EVAL_METRICS.map((metric) => <option key={metric} value={metric}>{EVAL_LABEL[metric]}</option>)}
+              </select>
+              <input
+                aria-label="最高分"
+                type="number"
+                min={0}
+                max={100}
+                value={evalMax ?? ""}
+                disabled={!evalMetric}
+                placeholder="最高分"
+                onChange={(event) => updateQualityParam("evalMax", event.target.value || undefined)}
+                style={{ width: 90, height: 28, border: "1px solid #d9d9d9", borderRadius: 6, padding: "0 8px" }}
+              />
+              <button
+                type="button"
+                onClick={() => updateQualityParam("evalVerdict", evalVerdict ? undefined : "low")}
+                style={chip(evalVerdict === "low")}
+              >
+                仅看低分
+              </button>
+              {evalMetric && (
+                <button
+                  type="button"
+                  aria-label={`${EVAL_LABEL[evalMetric]}：${evalSort === "desc" ? "降序" : "升序"}`}
+                  onClick={() => updateQualityParam("evalSort", evalSort === "desc" ? "asc" : "desc")}
+                  style={chip(true)}
+                >
+                  {evalSort === "desc" ? "高分优先" : "低分优先"}
+                </button>
+              )}
+            </div>
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "160px 90px 1fr 110px 80px 90px 80px",
+                gridTemplateColumns: "150px 80px 1fr 100px 75px 85px 70px 110px",
                 padding: "12px 16px",
                 background: "#fafafa",
                 borderBottom: "1px solid #f0f0f0",
@@ -414,6 +484,7 @@ export default function TracesPage() {
               <div>状态</div>
               <div>总耗时</div>
               <div>Tokens</div>
+              <div>答案质量</div>
             </div>
             {loading ? (
               <div style={{ padding: 48, textAlign: "center" }}>
@@ -429,7 +500,7 @@ export default function TracesPage() {
                       onClick={() => nav(`/admin/traces/${r.traceId}`)}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "160px 90px 1fr 110px 80px 90px 80px",
+                        gridTemplateColumns: "150px 80px 1fr 100px 75px 85px 70px 110px",
                         padding: "12px 16px",
                         borderBottom: "1px solid #f0f0f0",
                         fontSize: 13,
@@ -473,6 +544,15 @@ export default function TracesPage() {
                       </div>
                       <div>{(r.durationMs / 1000).toFixed(2)}s</div>
                       <div style={{ color: "rgba(0,0,0,.45)" }}>{(r.inputTokens + r.outputTokens).toLocaleString()}</div>
+                      <div>
+                        {r.evaluation?.status === "scored" ? (
+                          <span style={{ color: r.evaluation.minScore < 70 ? "#cf1322" : "#1677ff", fontWeight: 600 }}>
+                            {r.evaluation.minScore} · {r.evaluation.judgeVersion}
+                          </span>
+                        ) : (
+                          <span style={{ color: "rgba(0,0,0,.3)" }}>—</span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}

@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter, useNavigate } from "react-router-dom";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import type { SessionListRow, TraceListResponse, TraceListRow } from "@codecrush/contracts";
 import TracesPage from "./TracesPage";
 import * as client from "../../api/client";
@@ -67,6 +67,30 @@ function NavigateTo({ to }: { to: string }) {
   return <button onClick={() => navigate(to)}>navigate-test</button>;
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname + location.search}</output>;
+}
+
+function HistoryControls() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button onClick={() => navigate(-1)}>history-back</button>
+      <button onClick={() => navigate(1)}>history-forward</button>
+    </>
+  );
+}
+
+function renderPageWithLocation(initialEntry: string) {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <TracesPage />
+      <LocationProbe />
+    </MemoryRouter>,
+  );
+}
+
 describe("TracesPage (M9 W1)", () => {
   it("renders real trace rows with quality-signal tags and agent name", async () => {
     renderPage();
@@ -76,10 +100,64 @@ describe("TracesPage (M9 W1)", () => {
     expect(mocked.getTraces).toHaveBeenCalled();
   });
 
+  it("hydrates quality filters and sort from the initial URL", async () => {
+    renderPageWithLocation(
+      "/admin/traces?evalMetric=faithfulness&evalMax=70&evalSort=asc",
+    );
+    await screen.findByText("怎么退款");
+    expect(mocked.getTraces).toHaveBeenCalledWith(
+      expect.objectContaining({ evalMetric: "faithfulness", evalMax: 70, evalSort: "asc" }),
+    );
+    expect(screen.getByRole("combobox", { name: "评测指标" })).toHaveValue("faithfulness");
+  });
+
+  it("updates URL and request when the quality sort changes", async () => {
+    renderPageWithLocation(
+      "/admin/traces?evalMetric=faithfulness&evalMax=70&evalSort=asc",
+    );
+    await screen.findByText("怎么退款");
+    fireEvent.click(screen.getByRole("button", { name: "事实一致性：升序" }));
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("evalSort=desc"));
+    expect(mocked.getTraces).toHaveBeenLastCalledWith(
+      expect.objectContaining({ evalMetric: "faithfulness", evalMax: 70, evalSort: "desc" }),
+    );
+  });
+
+  it("restores quality requests after history back and forward", async () => {
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/admin/traces?evalMetric=faithfulness&evalMax=70&evalSort=asc",
+          "/admin/traces?evalMetric=precision&evalMax=60&evalSort=desc",
+        ]}
+        initialIndex={1}
+      >
+        <HistoryControls />
+        <TracesPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText("怎么退款");
+    expect(mocked.getTraces).toHaveBeenLastCalledWith(
+      expect.objectContaining({ evalMetric: "precision", evalMax: 60, evalSort: "desc" }),
+    );
+    fireEvent.click(screen.getByText("history-back"));
+    await waitFor(() =>
+      expect(mocked.getTraces).toHaveBeenLastCalledWith(
+        expect.objectContaining({ evalMetric: "faithfulness", evalMax: 70, evalSort: "asc" }),
+      ),
+    );
+    fireEvent.click(screen.getByText("history-forward"));
+    await waitFor(() =>
+      expect(mocked.getTraces).toHaveBeenLastCalledWith(
+        expect.objectContaining({ evalMetric: "precision", evalMax: 60, evalSort: "desc" }),
+      ),
+    );
+  });
+
   it("switching to Session segment renders the session list", async () => {
     renderPage();
     await screen.findByText("怎么退款");
-    fireEvent.click(screen.getByText("Session · 会话"));
+    fireEvent.click(screen.getByRole("radio", { name: "Session 会话" }));
     expect(await screen.findByText("3 轮")).toBeInTheDocument();
     expect(screen.getByText("含兜底")).toBeInTheDocument(); // has_fallback → 含兜底
     expect(mocked.getTraceSessions).toHaveBeenCalled();
@@ -125,7 +203,7 @@ describe("TracesPage (M9 W1)", () => {
     expect(mocked.getTraces).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "app1", signal: "repair", model: "deepseek-chat" }),
     );
-    expect(screen.getByRole("button", { name: /导出当前候选样本 CSV/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /导出当前结果 CSV/ })).toBeInTheDocument();
   });
 
   it("reset clears URL-derived filters and their fixed time range", async () => {
