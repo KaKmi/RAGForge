@@ -2,7 +2,13 @@ import { Injectable } from "@nestjs/common";
 import { z } from "zod";
 import { ModelsService } from "../models/models.service";
 import type { EvaluationInput, EvaluationModelIds, MetricResult } from "./evaluation.types";
-import { parseJudgeOutput, structuredOutput, withJudgeRetry } from "./evaluation-judge.utils";
+import {
+  callJudgeProvider,
+  invalidJudgeOutput,
+  parseJudgeOutput,
+  structuredOutput,
+  withJudgeRetry,
+} from "./evaluation-judge.utils";
 
 const AnswerRelevancyOutputSchema = z.strictObject({
   questions: z.array(z.string().min(1).max(300)).min(1).max(3),
@@ -19,21 +25,25 @@ export class AnswerRelevancyEvaluator {
 
   async score(input: EvaluationInput, modelIds: EvaluationModelIds): Promise<MetricResult> {
     return withJudgeRetry("answer relevancy", async () => {
-      const response = await this.models.chat(
-        modelIds.judgeModelId,
-        [
-          {
-            role: "system",
-            content:
-              "Generate one to three concise questions that the supplied answer directly answers. Return strict JSON only.",
-          },
-          { role: "user", content: JSON.stringify({ answer: input.answer }) },
-        ],
-        { temperature: 0, structuredOutput: ANSWER_RELEVANCY_OUTPUT },
+      const response = await callJudgeProvider(() =>
+        this.models.chat(
+          modelIds.judgeModelId,
+          [
+            {
+              role: "system",
+              content:
+                "Generate one to three concise questions that the supplied answer directly answers. Return strict JSON only.",
+            },
+            { role: "user", content: JSON.stringify({ answer: input.answer }) },
+          ],
+          { temperature: 0, structuredOutput: ANSWER_RELEVANCY_OUTPUT },
+        ),
       );
       const output = parseJudgeOutput(response.content, AnswerRelevancyOutputSchema);
       const texts = [input.question, ...output.questions];
-      const vectors = await this.models.embedTexts(modelIds.embeddingModelId, texts);
+      const vectors = await callJudgeProvider(() =>
+        this.models.embedTexts(modelIds.embeddingModelId, texts),
+      );
       validateEmbeddingBatch(vectors, texts.length);
       const similarities = vectors.slice(1).map((vector) => cosine(vectors[0], vector));
       const mean =
@@ -48,7 +58,7 @@ export class AnswerRelevancyEvaluator {
 
 function validateEmbeddingBatch(vectors: number[][], expectedCount: number): void {
   if (vectors.length !== expectedCount || vectors.length === 0) {
-    throw new Error("embedding provider returned an unexpected vector count");
+    invalidJudgeOutput("embedding provider returned an unexpected vector count");
   }
   const dimensions = vectors[0].length;
   if (
@@ -57,7 +67,7 @@ function validateEmbeddingBatch(vectors: number[][], expectedCount: number): voi
       (vector) => vector.length !== dimensions || vector.some((value) => !Number.isFinite(value)),
     )
   ) {
-    throw new Error("embedding provider returned malformed vectors");
+    invalidJudgeOutput("embedding provider returned malformed vectors");
   }
 }
 

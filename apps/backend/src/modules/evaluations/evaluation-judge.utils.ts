@@ -3,6 +3,13 @@ import type { StructuredOutputSpec } from "../models/ports/model-provider.port";
 
 const MAX_ATTEMPTS = 2;
 
+export class RetriableJudgeError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "RetriableJudgeError";
+  }
+}
+
 export function structuredOutput(name: string, schema: z.ZodType): StructuredOutputSpec {
   return {
     name,
@@ -12,7 +19,23 @@ export function structuredOutput(name: string, schema: z.ZodType): StructuredOut
 }
 
 export function parseJudgeOutput<T>(content: string, schema: z.ZodType<T>): T {
-  return schema.parse(JSON.parse(content));
+  try {
+    return schema.parse(JSON.parse(content));
+  } catch (error) {
+    throw new RetriableJudgeError("judge output failed JSON or schema validation", error);
+  }
+}
+
+export async function callJudgeProvider<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    throw new RetriableJudgeError("judge provider call failed", error);
+  }
+}
+
+export function invalidJudgeOutput(message: string): never {
+  throw new RetriableJudgeError(message);
 }
 
 export async function withJudgeRetry<T>(
@@ -24,6 +47,7 @@ export async function withJudgeRetry<T>(
     try {
       return await attempt();
     } catch (error) {
+      if (!(error instanceof RetriableJudgeError)) throw error;
       lastError = error;
     }
   }

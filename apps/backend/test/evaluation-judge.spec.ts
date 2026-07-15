@@ -1,6 +1,7 @@
 import { AnswerRelevancyEvaluator } from "../src/modules/evaluations/answer-relevancy.evaluator";
 import { ContextPrecisionEvaluator } from "../src/modules/evaluations/context-precision.evaluator";
 import { EvaluationJudgeService } from "../src/modules/evaluations/evaluation-judge.service";
+import { withJudgeRetry } from "../src/modules/evaluations/evaluation-judge.utils";
 import { FaithfulnessEvaluator } from "../src/modules/evaluations/faithfulness.evaluator";
 import type { ModelsService } from "../src/modules/models/models.service";
 
@@ -73,6 +74,50 @@ describe("EvaluationJudgeService", () => {
     expect(models.chat.mock.calls.every((call) => call[2]?.structuredOutput?.strict === true)).toBe(
       true,
     );
+
+    const faithfulnessSchema = models.chat.mock.calls[0][2].structuredOutput.schema;
+    expect(faithfulnessSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["claims"],
+      properties: {
+        claims: {
+          type: "array",
+          maxItems: 20,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { reason: { type: "string", minLength: 1, maxLength: 300 } },
+          },
+        },
+      },
+    });
+    const relevancySchema = models.chat.mock.calls[1][2].structuredOutput.schema;
+    expect(relevancySchema).toMatchObject({
+      properties: {
+        questions: {
+          type: "array",
+          minItems: 1,
+          maxItems: 3,
+          items: { type: "string", minLength: 1, maxLength: 300 },
+        },
+      },
+    });
+    const precisionSchema = models.chat.mock.calls[2][2].structuredOutput.schema;
+    expect(precisionSchema).toMatchObject({
+      properties: {
+        judgments: {
+          type: "array",
+          minItems: 3,
+          maxItems: 3,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: { reason: { type: "string", minLength: 1, maxLength: 300 } },
+          },
+        },
+      },
+    });
   });
 
   it("returns 100 faithfulness for no factual claims and zero precision for no contexts", async () => {
@@ -128,6 +173,17 @@ describe("EvaluationJudgeService", () => {
       score: 100,
     });
     expect(models.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry an unknown internal programming error", async () => {
+    const attempt = jest.fn(async () => {
+      throw new TypeError("internal invariant broken");
+    });
+
+    await expect(withJudgeRetry("faithfulness", attempt)).rejects.toThrow(
+      "internal invariant broken",
+    );
+    expect(attempt).toHaveBeenCalledTimes(1);
   });
 
   it("rejects overlong evidence after one retry", async () => {

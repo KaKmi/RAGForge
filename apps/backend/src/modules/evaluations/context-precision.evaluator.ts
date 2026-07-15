@@ -3,6 +3,8 @@ import { z } from "zod";
 import { ModelsService } from "../models/models.service";
 import type { EvaluationInput, MetricResult } from "./evaluation.types";
 import {
+  callJudgeProvider,
+  invalidJudgeOutput,
   limitedEvidence,
   parseJudgeOutput,
   structuredOutput,
@@ -29,20 +31,22 @@ export class ContextPrecisionEvaluator {
     });
     const outputSpec = structuredOutput("evaluation_context_precision_v1", OutputSchema);
     const output = await withJudgeRetry("context precision", async () => {
-      const response = await this.models.chat(
-        judgeModelId,
-        [
-          {
-            role: "system",
-            content:
-              "Judge whether each context is relevant to answering the question. Return exactly one judgment per context in the supplied ranking order and strict JSON only.",
-          },
-          {
-            role: "user",
-            content: JSON.stringify({ question: input.question, contexts: input.contexts }),
-          },
-        ],
-        { temperature: 0, structuredOutput: outputSpec },
+      const response = await callJudgeProvider(() =>
+        this.models.chat(
+          judgeModelId,
+          [
+            {
+              role: "system",
+              content:
+                "Judge whether each context is relevant to answering the question. Return exactly one judgment per context in the supplied ranking order and strict JSON only.",
+            },
+            {
+              role: "user",
+              content: JSON.stringify({ question: input.question, contexts: input.contexts }),
+            },
+          ],
+          { temperature: 0, structuredOutput: outputSpec },
+        ),
       );
       const parsed = parseJudgeOutput(response.content, OutputSchema);
       if (
@@ -50,7 +54,7 @@ export class ContextPrecisionEvaluator {
           (judgment, index) => judgment.chunkId !== input.contexts[index].chunkId,
         )
       ) {
-        throw new Error("context judgments do not match the ranked input contexts");
+        invalidJudgeOutput("context judgments do not match the ranked input contexts");
       }
       return parsed;
     });

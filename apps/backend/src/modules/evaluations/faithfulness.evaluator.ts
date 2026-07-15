@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ModelsService } from "../models/models.service";
 import type { EvaluationInput, MetricResult } from "./evaluation.types";
 import {
+  callJudgeProvider,
   limitedEvidence,
   parseJudgeOutput,
   structuredOutput,
@@ -32,20 +33,22 @@ export class FaithfulnessEvaluator {
 
   async score(input: EvaluationInput, judgeModelId: string): Promise<MetricResult> {
     const output = await withJudgeRetry("faithfulness", async () => {
-      const response = await this.models.chat(
-        judgeModelId,
-        [
-          {
-            role: "system",
-            content:
-              "Extract every factual claim in the answer and decide whether the supplied contexts support it. Return strict JSON only. If there are no factual claims, return an empty claims array.",
-          },
-          {
-            role: "user",
-            content: JSON.stringify({ answer: input.answer, contexts: input.contexts }),
-          },
-        ],
-        { temperature: 0, structuredOutput: FAITHFULNESS_OUTPUT },
+      const response = await callJudgeProvider(() =>
+        this.models.chat(
+          judgeModelId,
+          [
+            {
+              role: "system",
+              content:
+                "Extract every factual claim in the answer and decide whether the supplied contexts support it. Return strict JSON only. If there are no factual claims, return an empty claims array.",
+            },
+            {
+              role: "user",
+              content: JSON.stringify({ answer: input.answer, contexts: input.contexts }),
+            },
+          ],
+          { temperature: 0, structuredOutput: FAITHFULNESS_OUTPUT },
+        ),
       );
       return parseJudgeOutput(response.content, FaithfulnessOutputSchema);
     });
