@@ -579,7 +579,9 @@ describe("OrchestrationService · chain span 质量信号 + IO (M8 T3)", () => {
   // M9 W1：根 span 身份富化 —— session/agent/user + 兜底状态标记
   it("M9 W1：正常问答 → agent.id/agent.name/enduser.id/session.id(首轮 persist convId)/fallback.used=false", async () => {
     const d = makeDeps();
-    await collect(makeSvc(d).run("app1", "怎么退货", undefined, "u1"));
+    // 用 slug 调用而 cfg.applicationId 为 "app1"：埋点必须记规范应用 id，而非原始 slug 入参，
+    // 否则同一应用会按 slug/UUID 拆成多份污染分应用聚合（Finding 3 回归）。
+    await collect(makeSvc(d).run("aftersale", "怎么退货", undefined, "u1"));
     const a = chainAttrs();
     expect(a["gen_ai.agent.id"]).toBe("app1");
     expect(a["gen_ai.agent.name"]).toBe("售后助手"); // cfg().name

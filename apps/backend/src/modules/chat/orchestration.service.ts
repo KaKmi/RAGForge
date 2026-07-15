@@ -176,7 +176,9 @@ export class OrchestrationService {
     // M8 T3：输入即得，起始即记（通用 IO 属性；导出前经 RedactingSpanExporter 脱敏）
     chain.setAttribute(CODECRUSH_IO.INPUT, query);
     // M9 W1：身份富化——agentId/userId 入口即得，cfg.name 已解析；session.id 须待 persist 出真 convId（见 finally）。
-    chain.setAttribute(GEN_AI.AGENT_ID, agentId);
+    // 埋点写规范应用 id（cfg.applicationId）而非调用方原始入参：入参可为 slug 或 UUID，
+    // 若原样落到 gen_ai.agent.id 会让同一应用按 slug/UUID 拆成多份，污染分应用质量/指标聚合。
+    chain.setAttribute(GEN_AI.AGENT_ID, cfg.applicationId);
     chain.setAttribute(GEN_AI.AGENT_NAME, cfg.name);
     if (userId) chain.setAttribute(ENDUSER_ID, userId);
     // 首轮新会话的真实 convId 在 persist() 内 createConversation 才产生 → 捕获返回、finally end 前写 session.id。
