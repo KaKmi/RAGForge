@@ -58,10 +58,19 @@ describeDb("EvaluationsRepository", () => {
   });
 
   it("starts the daily count from the current cycle when a lease crosses UTC midnight", async () => {
+    const seedAt = new Date("2026-07-15T23:40:00.000Z");
     const beforeMidnight = new Date("2026-07-15T23:55:00.000Z");
     const afterMidnight = new Date("2026-07-16T00:05:00.000Z");
     const workerName = "midnight-worker";
-    await repo.getOrCreateWatermark(workerName, beforeMidnight);
+    await repo.getOrCreateWatermark(workerName, seedAt);
+    await repo.tryAcquireLease(workerName, "seed-owner", seedAt, 10 * 60_000);
+    await repo.finishCycle(workerName, "seed-owner", {
+      lastTs: seedAt,
+      lastTraceId: "d".repeat(32),
+      evaluatedIncrement: 480,
+      now: seedAt,
+    });
+    expect((await repo.getOrCreateWatermark(workerName, seedAt)).dailyCount).toBe(480);
     expect(await repo.tryAcquireLease(workerName, "worker-a", beforeMidnight, 20 * 60_000)).toBe(
       true,
     );
