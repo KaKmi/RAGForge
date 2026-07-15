@@ -22,6 +22,7 @@ import { PromptsModule } from "./modules/prompts/prompts.module";
 import { ChatModule } from "./modules/chat/chat.module";
 import { ConversationsModule } from "./modules/conversations/conversations.module";
 import { ApplicationsModule } from "./modules/applications/applications.module";
+import { EvaluationsModule } from "./modules/evaluations/evaluations.module";
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { ApplicationsModule } from "./modules/applications/applications.module";
     ApplicationsModule,
     ChatModule,
     ConversationsModule,
+    EvaluationsModule,
   ],
   providers: [
     // 全局 Zod 管道：@Body/@Query/@Param 用 createZodDto 时自动校验，失败抛 ZodValidationException(400)

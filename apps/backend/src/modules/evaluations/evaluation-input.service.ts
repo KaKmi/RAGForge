@@ -1,19 +1,13 @@
 import { Injectable } from "@nestjs/common";
 import { ChunksService } from "../chunks/chunks.service";
 import { ConversationsService } from "../conversations/conversations.service";
+import type { EvaluationInput } from "./evaluation.types";
 
 export interface EvaluationCandidateInput {
   traceId: string;
   agentId: string;
   generationModel: string;
   retrievalChunks: Array<{ chunkId: string; finalScore: number }>;
-}
-
-export interface EvaluationInput {
-  targetTraceId: string;
-  question: string;
-  answer: string;
-  contexts: Array<{ chunkId: string; text: string; finalScore: number }>;
 }
 
 export type EvaluationInputAssembly =
