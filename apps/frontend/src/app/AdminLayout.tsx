@@ -1,12 +1,22 @@
 import { Avatar, Button, Layout } from "antd";
-import { AppstoreOutlined, BarChartOutlined, DatabaseOutlined, ExperimentOutlined, FileSearchOutlined, FundOutlined, RobotOutlined, SettingOutlined } from "@ant-design/icons";
+import {
+  AppstoreOutlined,
+  BarChartOutlined,
+  DatabaseOutlined,
+  ExperimentOutlined,
+  FileSearchOutlined,
+  FundOutlined,
+  RobotOutlined,
+  SettingOutlined,
+} from "@ant-design/icons";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const { Header, Sider, Content } = Layout;
 
 /** 分组侧栏导航（对齐新原型 NAV：配置 / 验证 & 观测 / 数据飞轮） */
-type NavEntry = { kind: "group"; label: string } | { kind: "item"; key: string; label: string; icon?: ReactNode };
+type NavEntry =
+  { kind: "group"; label: string } | { kind: "item"; key: string; label: string; icon?: ReactNode };
 const NAV_ENTRIES: NavEntry[] = [
   { kind: "item", key: "/admin", label: "运行看板", icon: <BarChartOutlined /> },
   { kind: "group", label: "配置" },
@@ -18,6 +28,7 @@ const NAV_ENTRIES: NavEntry[] = [
   { kind: "item", key: "/admin/retrieval-test", label: "检索测试", icon: <ExperimentOutlined /> },
   { kind: "item", key: "/admin/traces", label: "Trace 追踪", icon: <FileSearchOutlined /> },
   { kind: "group", label: "数据飞轮" },
+  { kind: "item", key: "/admin/quality", label: "答案质量", icon: <FundOutlined /> },
   { kind: "item", key: "/admin/gaps", label: "知识缺口" },
   { kind: "item", key: "/admin/evalsets", label: "评测集" },
   { kind: "item", key: "/admin/evaluations", label: "效果评测", icon: <FundOutlined /> },
@@ -32,6 +43,7 @@ const PREFIX_KEYS = [
   "/admin/applications",
   "/admin/retrieval-test",
   "/admin/traces",
+  "/admin/quality",
   "/admin/gaps",
   "/admin/evalsets",
   "/admin/evaluations",
@@ -48,6 +60,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/admin/applications": "应用管理",
   "/admin/retrieval-test": "检索测试",
   "/admin/traces": "Trace 追踪",
+  "/admin/quality": "答案质量",
   "/admin/gaps": "知识缺口",
   "/admin/evalsets": "评测集",
   "/admin/evaluations": "效果评测",
@@ -101,7 +114,16 @@ export function AdminLayout() {
             </div>
             <div style={{ color: "#fff", fontSize: 15, fontWeight: 600 }}>控制台</div>
           </div>
-          <div style={{ flex: 1, overflowY: "auto", padding: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: 8,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
             {NAV_ENTRIES.map((entry, i) => {
               if (entry.kind === "group") {
                 return (
@@ -134,7 +156,8 @@ export function AdminLayout() {
                       gap: 10,
                     }}
                   >
-                    <span style={{ width: 16 }}>{entry.icon}</span>{entry.label}
+                    <span style={{ width: 16 }}>{entry.icon}</span>
+                    {entry.label}
                   </div>
                 </Link>
               );
@@ -177,7 +200,12 @@ export function AdminLayout() {
           <Avatar size={28} style={{ background: "#87d068", fontSize: 12 }}>
             刘
           </Avatar>
-          <Button type="text" size="small" onClick={handleLogout} style={{ color: "rgba(0,0,0,.45)" }}>
+          <Button
+            type="text"
+            size="small"
+            onClick={handleLogout}
+            style={{ color: "rgba(0,0,0,.45)" }}
+          >
             退出
           </Button>
         </Header>

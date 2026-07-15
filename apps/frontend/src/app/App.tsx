@@ -23,6 +23,7 @@ const EvalSetsPage = lazy(() => import("../pages/admin/EvalSetsPage"));
 const EvalsPage = lazy(() => import("../pages/admin/EvalsPage"));
 const TracesPage = lazy(() => import("../pages/admin/TracesPage"));
 const TraceDetailPage = lazy(() => import("../pages/admin/TraceDetailPage"));
+const QualityPage = lazy(() => import("../pages/admin/QualityPage"));
 const SessionDetailPage = lazy(() => import("../pages/admin/SessionDetailPage"));
 const ModelsPage = lazy(() => import("../pages/admin/ModelsPage"));
 
@@ -84,6 +85,7 @@ export function App() {
           <Route path="traces" element={<TracesPage />} />
           <Route path="traces/sessions/:sessionId" element={<SessionDetailPage />} />
           <Route path="traces/:traceId" element={<TraceDetailPage />} />
+          <Route path="quality" element={<QualityPage />} />
           <Route path="models" element={<ModelsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/admin" replace />} />

@@ -16,6 +16,7 @@ const NAV_LABELS = [
   "应用管理",
   "检索测试",
   "Trace 追踪",
+  "答案质量",
   "知识缺口",
   "评测集",
   "效果评测",
@@ -163,8 +164,8 @@ it("loads AgentsPage from real /api/agents on /admin/agents (M7)", async () => {
   expect(await screen.findByText(/暂无 Agent/)).toBeInTheDocument();
   // 关键断言：挂载时确实调用了 /api/agents（非本地 mock）
   await waitFor(() => {
-    const calls = fetchMock.mock.calls.map(c => String(c[0]));
-    expect(calls.some(u => u.includes("/api/agents"))).toBe(true);
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("/api/agents"))).toBe(true);
   });
 });
 
@@ -189,8 +190,8 @@ it("loads PromptsPage from real /api/prompts on /admin/prompts (M6)", async () =
   expect(await screen.findByText(/暂无 Prompt/)).toBeInTheDocument();
   // 关键断言：挂载时确实调用了 /api/prompts（非本地 mock）
   await waitFor(() => {
-    const calls = fetchMock.mock.calls.map(c => String(c[0]));
-    expect(calls.some(u => u.includes("/api/prompts"))).toBe(true);
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("/api/prompts"))).toBe(true);
   });
 });
 
@@ -214,8 +215,8 @@ it("loads ModelsPage from real /api/models on /admin/models (M3)", async () => {
   // 空态出现 = 页面消费了 API 响应（不再渲染本地 LLM_ROWS）
   expect(await screen.findByText(/暂无模型/)).toBeInTheDocument();
   await waitFor(() => {
-    const calls = fetchMock.mock.calls.map(c => String(c[0]));
-    expect(calls.some(u => u.includes("/api/models"))).toBe(true);
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("/api/models"))).toBe(true);
   });
 });
 
@@ -240,8 +241,8 @@ it("loads KnowledgeBasesPage from real /api/knowledge-bases on /admin/knowledge-
   expect(await screen.findByText(/暂无知识库/)).toBeInTheDocument();
   // 关键断言：挂载时确实调用了 /api/knowledge-bases（非本地 mock）
   await waitFor(() => {
-    const calls = fetchMock.mock.calls.map(c => String(c[0]));
-    expect(calls.some(u => u.includes("/api/knowledge-bases"))).toBe(true);
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("/api/knowledge-bases"))).toBe(true);
   });
 });
 
@@ -271,8 +272,8 @@ it("loads DocumentsPage from real /api/documents on /admin/knowledge-bases/:kbId
   expect(await screen.findByText(/该知识库暂无文档/, {}, { timeout: 10_000 })).toBeInTheDocument();
   // 关键断言：挂载时确实调用了 /api/documents?kbId=kb1（非本地 mock）
   await waitFor(() => {
-    const calls = fetchMock.mock.calls.map(c => String(c[0]));
-    expect(calls.some(u => u.includes("/api/documents") && u.includes("kbId=kb1"))).toBe(true);
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("/api/documents") && u.includes("kbId=kb1"))).toBe(true);
   });
 });
 
@@ -308,8 +309,8 @@ it("loads ChunksPage from real /api/documents/:id/chunks on the chunks route (M4
   expect(await screen.findByText("没有匹配的切片")).toBeInTheDocument();
   // 关键断言：挂载时确实调用了 /api/documents/d1/chunks（非本地 mock）
   await waitFor(() => {
-    const calls = fetchMock.mock.calls.map(c => String(c[0]));
-    expect(calls.some(u => u.includes("/api/documents/d1/chunks"))).toBe(true);
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("/api/documents/d1/chunks"))).toBe(true);
   });
 });
 
@@ -355,24 +356,22 @@ it("protects /chat/:agentId behind AuthGuard", async () => {
 });
 
 it("stores token and navigates to /admin on successful login", async () => {
-  global.fetch = vi
-    .fn()
-    .mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        accessToken: "tok-123",
-        tokenType: "Bearer",
-        expiresIn: 3600,
-        user: {
-          id: "00000000-0000-4000-8000-000000000001",
-          email: "demo@codecrush.bot",
-          displayName: "Demo",
-          status: "active",
-          createdAt: "2026-01-01T00:00:00Z",
-          updatedAt: "2026-01-01T00:00:00Z",
-        },
-      }),
-    }) as unknown as typeof fetch;
+  global.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      accessToken: "tok-123",
+      tokenType: "Bearer",
+      expiresIn: 3600,
+      user: {
+        id: "00000000-0000-4000-8000-000000000001",
+        email: "demo@codecrush.bot",
+        displayName: "Demo",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    }),
+  }) as unknown as typeof fetch;
 
   render(
     <MemoryRouter initialEntries={["/login"]}>

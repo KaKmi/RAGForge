@@ -135,6 +135,11 @@ import {
   type TraceQualityDetail,
   OnlineEvalSettingsResponseSchema,
   type OnlineEvalSettingsResponse,
+  QualityOverviewResponseSchema,
+  type QualityOverviewQuery,
+  type QualityOverviewResponse,
+  UpdateOnlineEvalSettingsRequestSchema,
+  type UpdateOnlineEvalSettingsRequest,
   MetricsOverviewResponseSchema,
   MetricsAppResponseSchema,
   type MetricsOverviewResponse,
@@ -347,6 +352,27 @@ export const getTraceQuality = (traceId: string): Promise<TraceQualityDetail> =>
 
 export const getOnlineEvalSettings = (): Promise<OnlineEvalSettingsResponse> =>
   getJson("/api/eval/quality/settings", OnlineEvalSettingsResponseSchema);
+
+export const getQualityOverview = (
+  query: QualityOverviewQuery,
+): Promise<QualityOverviewResponse> => {
+  const params = new URLSearchParams();
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
+  if (query.agentId) params.set("agentId", query.agentId);
+  return getJson(`/api/eval/quality/overview?${params.toString()}`, QualityOverviewResponseSchema);
+};
+
+export async function updateOnlineEvalSettings(
+  update: UpdateOnlineEvalSettingsRequest,
+): Promise<OnlineEvalSettingsResponse> {
+  const response = await apiFetch("/api/eval/quality/settings", {
+    method: "PUT",
+    body: JSON.stringify(UpdateOnlineEvalSettingsRequestSchema.parse(update)),
+  });
+  if (!response.ok) throw new Error(`update online evaluation settings failed: ${response.status}`);
+  return OnlineEvalSettingsResponseSchema.parse(await response.json());
+}
 
 function metricsParams(q: MetricsQuery): string {
   const params = new URLSearchParams();
