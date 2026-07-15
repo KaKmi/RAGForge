@@ -192,6 +192,9 @@ it("opens shareable Trace filters and low-sample quality detail", async () => {
 
   renderQuality();
   expect(await screen.findByTestId("trend-point-insufficient")).toHaveStyle({ opacity: "0.35" });
+  expect(screen.getAllByTestId("trend-series-faithfulness").length).toBeGreaterThan(0);
+  expect(screen.getAllByTestId("trend-series-answerRelevancy").length).toBeGreaterThan(0);
+  expect(screen.getAllByTestId("trend-series-contextPrecision").length).toBeGreaterThan(0);
   fireEvent.click(screen.getAllByText("退款多久")[0]);
   expect(
     screen
@@ -204,7 +207,10 @@ it("shows unavailable models, validates thresholds, saves, and refreshes", async
   vi.mocked(api.getOnlineEvalSettings).mockResolvedValue({
     settings: { ...enabledSettings, judgeModelId: "judge-old" },
     models: {
-      judges: [{ id: "judge-old", name: "旧 Judge", enabled: false, available: false }],
+      judges: [
+        { id: "judge-old", name: "旧 Judge", enabled: false, available: false },
+        { id: "judge-new", name: "新 Judge", enabled: true, available: true },
+      ],
       embeddings: settingsFixture.models.embeddings,
     },
   });
@@ -216,7 +222,32 @@ it("shows unavailable models, validates thresholds, saves, and refreshes", async
   expect(await screen.findByText("请输入 0–100 的整数")).toBeInTheDocument();
   expect(api.updateOnlineEvalSettings).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText("事实一致性阈值"), { target: { value: "85" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Judge 模型" }), {
+    target: { value: "judge-new" },
+  });
   fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
   await waitFor(() => expect(api.updateOnlineEvalSettings).toHaveBeenCalled());
   await waitFor(() => expect(api.getQualityOverview).toHaveBeenCalledTimes(2));
+});
+
+it("requires explicit available models before enabling online evaluation", async () => {
+  vi.mocked(api.getOnlineEvalSettings).mockResolvedValue({
+    settings: {
+      ...enabledSettings,
+      enabled: false,
+      judgeModelId: null,
+      embeddingModelId: null,
+    },
+    models: settingsFixture.models,
+  });
+  renderQuality();
+  fireEvent.click(await screen.findByRole("button", { name: "设置" }));
+  expect(await screen.findByRole("combobox", { name: "Judge 模型" })).toHaveValue("");
+  expect(screen.getByRole("combobox", { name: "Embedding 模型" })).toHaveValue("");
+  fireEvent.click(screen.getByRole("switch"));
+  fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+  expect(
+    await screen.findByText("开启在线评测前，请选择可用的 Judge 与 Embedding 模型"),
+  ).toBeInTheDocument();
+  expect(api.updateOnlineEvalSettings).not.toHaveBeenCalled();
 });

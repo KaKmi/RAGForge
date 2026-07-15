@@ -31,6 +31,66 @@ const STATUS_LABEL: Record<QualityOverviewResponse["meta"]["status"], string> = 
   budget_reduced: "预算降采样",
   model_unavailable: "评测模型不可用",
 };
+const TREND_SERIES = [
+  { key: "faithfulness", label: "事实一致性", color: "#1677ff" },
+  { key: "answerRelevancy", label: "答案相关性", color: "#722ed1" },
+  { key: "contextPrecision", label: "上下文精度", color: "#13a8a8" },
+] as const;
+
+function TrendChart({ points }: { points: QualityOverviewResponse["trend"] }) {
+  if (points.length === 0) {
+    return <span style={{ color: "rgba(0,0,0,.35)" }}>暂无趋势数据</span>;
+  }
+  const x = (index: number) =>
+    points.length === 1 ? 300 : 20 + (index * 560) / (points.length - 1);
+  const y = (value: number | null) => 120 - (value ?? 0);
+  return (
+    <>
+      <div style={{ display: "flex", gap: 16, marginBottom: 8 }}>
+        {TREND_SERIES.map((series) => (
+          <span key={series.key} style={{ color: series.color, fontSize: 12 }}>
+            ● {series.label}
+          </span>
+        ))}
+      </div>
+      <svg
+        aria-label="三项质量指标趋势"
+        viewBox="0 0 600 140"
+        role="img"
+        style={{ display: "block", width: "100%", height: 140 }}
+      >
+        {TREND_SERIES.map((series) => (
+          <polyline
+            key={series.key}
+            data-testid={`trend-series-${series.key}`}
+            points={points.map((point, index) => `${x(index)},${y(point[series.key])}`).join(" ")}
+            fill="none"
+            stroke={series.color}
+            strokeWidth="3"
+          />
+        ))}
+        {points.map((point, index) => (
+          <g
+            key={point.bucket}
+            data-testid={point.insufficientSample ? "trend-point-insufficient" : "trend-point"}
+            style={{ opacity: point.insufficientSample ? 0.35 : 1 }}
+          >
+            <title>{`${point.bucket} · n=${point.sampleCount}`}</title>
+            {TREND_SERIES.map((series) => (
+              <circle
+                key={series.key}
+                cx={x(index)}
+                cy={y(point[series.key])}
+                r="4"
+                fill={series.color}
+              />
+            ))}
+          </g>
+        ))}
+      </svg>
+    </>
+  );
+}
 
 export default function QualityPage() {
   const navigate = useNavigate();
@@ -47,6 +107,7 @@ export default function QualityPage() {
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [draft, setDraft] = useState<UpdateOnlineEvalSettingsRequest>({});
   const [thresholdError, setThresholdError] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -113,6 +174,26 @@ export default function QualityPage() {
       return;
     }
     setThresholdError(false);
+    const enabled = draft.enabled ?? settingsData?.settings.enabled ?? false;
+    const judgeModelId =
+      draft.judgeModelId !== undefined
+        ? draft.judgeModelId
+        : (settingsData?.settings.judgeModelId ?? null);
+    const embeddingModelId =
+      draft.embeddingModelId !== undefined
+        ? draft.embeddingModelId
+        : (settingsData?.settings.embeddingModelId ?? null);
+    const judgeAvailable = settingsData?.models.judges.some(
+      (model) => model.id === judgeModelId && model.available,
+    );
+    const embeddingAvailable = settingsData?.models.embeddings.some(
+      (model) => model.id === embeddingModelId && model.available,
+    );
+    if (enabled && (!judgeModelId || !embeddingModelId || !judgeAvailable || !embeddingAvailable)) {
+      setModelError("开启在线评测前，请选择可用的 Judge 与 Embedding 模型");
+      return;
+    }
+    setModelError(null);
     try {
       const saved = await updateOnlineEvalSettings(draft);
       setSettingsData(saved);
@@ -266,27 +347,7 @@ export default function QualityPage() {
                 }}
               >
                 <div style={{ fontWeight: 600, marginBottom: 12 }}>质量趋势</div>
-                <div style={{ display: "flex", alignItems: "flex-end", gap: 6, minHeight: 120 }}>
-                  {overview.trend.map((point) => (
-                    <div
-                      key={point.bucket}
-                      data-testid={
-                        point.insufficientSample ? "trend-point-insufficient" : "trend-point"
-                      }
-                      title={`${point.bucket} · n=${point.sampleCount}`}
-                      style={{
-                        flex: 1,
-                        minWidth: 8,
-                        height: `${Math.max(8, point.faithfulness ?? 0)}%`,
-                        background: "#1677ff",
-                        opacity: point.insufficientSample ? 0.35 : 1,
-                      }}
-                    />
-                  ))}
-                  {overview.trend.length === 0 && (
-                    <span style={{ color: "rgba(0,0,0,.35)" }}>暂无趋势数据</span>
-                  )}
-                </div>
+                <TrendChart points={overview.trend} />
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -388,13 +449,17 @@ export default function QualityPage() {
             <label>
               Judge 模型{" "}
               <select
+                aria-label="Judge 模型"
                 value={draft.judgeModelId ?? ""}
                 onChange={(event) =>
                   setDraft((value) => ({ ...value, judgeModelId: event.target.value || null }))
                 }
               >
+                <option value="" disabled>
+                  请选择 Judge 模型
+                </option>
                 {settingsData.models.judges.map((model) => (
-                  <option key={model.id} value={model.id}>
+                  <option key={model.id} value={model.id} disabled={!model.available}>
                     {model.name}
                     {model.available ? "" : "（不可用）"}
                   </option>
@@ -404,19 +469,24 @@ export default function QualityPage() {
             <label>
               Embedding 模型{" "}
               <select
+                aria-label="Embedding 模型"
                 value={draft.embeddingModelId ?? ""}
                 onChange={(event) =>
                   setDraft((value) => ({ ...value, embeddingModelId: event.target.value || null }))
                 }
               >
+                <option value="" disabled>
+                  请选择 Embedding 模型
+                </option>
                 {settingsData.models.embeddings.map((model) => (
-                  <option key={model.id} value={model.id}>
+                  <option key={model.id} value={model.id} disabled={!model.available}>
                     {model.name}
                     {model.available ? "" : "（不可用）"}
                   </option>
                 ))}
               </select>
             </label>
+            {modelError && <div style={{ color: "#cf1322" }}>{modelError}</div>}
             <ThresholdInput
               label="事实一致性阈值"
               value={draft.faithfulnessThreshold ?? settingsData.settings.faithfulnessThreshold}

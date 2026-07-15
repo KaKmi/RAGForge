@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { BadRequestException, type INestApplication } from "@nestjs/common";
 import { APP_PIPE } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
@@ -184,8 +185,9 @@ describeInfra("E-W1 infrastructure flow", () => {
   let traces: TracesService;
 
   const fixedNow = new Date("2026-07-15T02:00:00.000Z");
-  const targetTraceId = "a".repeat(32);
-  const previewTraceId = "b".repeat(32);
+  const targetTraceId = randomUUID().replaceAll("-", "");
+  const previewTraceId = randomUUID().replaceAll("-", "");
+  const evaluationTraceId = randomUUID().replaceAll("-", "");
   const from = "2026-07-15T01:00:00.000Z";
   const to = "2026-07-15T03:00:00.000Z";
   const fakeModels = {
@@ -283,8 +285,8 @@ describeInfra("E-W1 infrastructure flow", () => {
           };
         }) => {
           await harness.insertSpan({
-            traceId: "e".repeat(32),
-            spanId: "e".repeat(16),
+            traceId: evaluationTraceId,
+            spanId: evaluationTraceId.slice(0, 16),
             at: "2026-07-15T01:45:00.000Z",
             name: "rag.eval",
             attributes: {
@@ -392,13 +394,32 @@ describeInfra("E-W1 infrastructure flow", () => {
       if (detail.status === "scored") break;
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    expect(detail).toMatchObject({ status: "scored", judgeVersion: "online-v1" });
+    expect(detail).toMatchObject({
+      status: "scored",
+      judgeVersion: "online-v1",
+      currentVersion: true,
+      scores: { faithfulness: 100, answerRelevancy: 100, contextPrecision: 0 },
+      thresholds: { faithfulness: 85, answerRelevancy: 80, contextPrecision: 80 },
+    });
     const overview = await service.getOverview({ from, to });
     const list = await traces.listTraces({ page: 1, pageSize: 20, evalVerdict: "low" });
     expect(overview.meta.evaluatedCount).toBe(1);
-    expect(list.items.find((item) => item.traceId === targetTraceId)?.evaluation.status).toBe(
-      "scored",
-    );
+    expect(overview.metrics).toMatchObject({
+      faithfulness: { value: 100, threshold: 85, low: false },
+      answerRelevancy: { value: 100, threshold: 80, low: false },
+      contextPrecision: { value: 0, threshold: 80, low: true },
+    });
+    expect(list.items).toHaveLength(1);
+    expect(list.items[0]).toMatchObject({
+      traceId: targetTraceId,
+      evaluation: {
+        status: "scored",
+        scores: { faithfulness: 100, answerRelevancy: 100, contextPrecision: 0 },
+        minMetric: "contextPrecision",
+        minScore: 0,
+        judgeVersion: "online-v1",
+      },
+    });
 
     await request(app.getHttpServer())
       .get("/api/eval/quality/overview")
@@ -409,7 +430,13 @@ describeInfra("E-W1 infrastructure flow", () => {
       .get(`/api/eval/quality/traces/${targetTraceId}`)
       .expect(200)
       .expect((response) =>
-        expect(response.body).toMatchObject({ status: "scored", currentVersion: true }),
+        expect(response.body).toMatchObject({
+          status: "scored",
+          currentVersion: true,
+          judgeVersion: "online-v1",
+          scores: { faithfulness: 100, answerRelevancy: 100, contextPrecision: 0 },
+          thresholds: { faithfulness: 85, answerRelevancy: 80, contextPrecision: 80 },
+        }),
       );
     await request(app.getHttpServer())
       .get("/api/eval/quality/settings")
@@ -432,9 +459,17 @@ describeInfra("E-W1 infrastructure flow", () => {
       .query({ evalVerdict: "low", page: 1, pageSize: 20 })
       .expect(200)
       .expect((response) =>
-        expect(
-          response.body.items.some((row: { traceId: string }) => row.traceId === targetTraceId),
-        ).toBe(true),
+        expect(response.body.items).toEqual([
+          expect.objectContaining({
+            traceId: targetTraceId,
+            evaluation: expect.objectContaining({
+              status: "scored",
+              scores: { faithfulness: 100, answerRelevancy: 100, contextPrecision: 0 },
+              minMetric: "contextPrecision",
+              minScore: 0,
+            }),
+          }),
+        ]),
       );
     await expect(
       clickhouseEvaluations.findExisting(previewTraceId, "online-v1"),
@@ -445,14 +480,14 @@ describeInfra("E-W1 infrastructure flow", () => {
     await harness.seedPgInput(targetTraceId);
     await evaluationsRepo.updateSettings(settingsUpdate);
     await harness.insertSpan({
-      traceId: "c".repeat(32),
+      traceId: evaluationTraceId,
       spanId: "4".repeat(16),
       at: "2026-07-15T01:59:59.000Z",
       name: "rag.eval",
       attributes: evalAttributes(targetTraceId, "online-v1", 40),
     });
     await harness.insertSpan({
-      traceId: "d".repeat(32),
+      traceId: evaluationTraceId,
       spanId: "5".repeat(16),
       at: "2026-07-15T02:00:01.000Z",
       name: "rag.eval",
@@ -493,7 +528,7 @@ describeInfra("E-W1 infrastructure flow", () => {
     await harness.seedPgInput(targetTraceId);
     await evaluationsRepo.updateSettings(settingsUpdate);
     await harness.insertSpan({
-      traceId: "f".repeat(32),
+      traceId: evaluationTraceId,
       spanId: "7".repeat(16),
       at: "2026-07-15T01:30:00.000Z",
       name: "rag.eval",
