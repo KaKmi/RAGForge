@@ -116,13 +116,18 @@ export class EvaluationsRepository {
     owner: string,
     result: FinishEvaluationCycle,
   ): Promise<void> {
+    const today = utcDate(result.now);
     await this.db
       .update(evalWatermarks)
       .set({
         lastTs: result.lastTs,
         lastTraceId: result.lastTraceId,
-        dailyDate: utcDate(result.now),
-        dailyCount: sql`${evalWatermarks.dailyCount} + ${result.evaluatedIncrement}`,
+        dailyDate: today,
+        dailyCount: sql`CASE
+          WHEN ${evalWatermarks.dailyDate} = ${today}
+            THEN ${evalWatermarks.dailyCount} + ${result.evaluatedIncrement}
+          ELSE ${result.evaluatedIncrement}
+        END`,
         leaseOwner: null,
         leaseUntil: null,
         lastRunAt: result.now,
