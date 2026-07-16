@@ -63,19 +63,30 @@ describeDb("eval run lease + reaper（真库三值逻辑）", () => {
     await pool.query(`INSERT INTO eval_sets (id, name, created_by) VALUES ($1, 'set', 't')`, [ID]);
   });
 
-  async function insertRun(status: string, leaseOwner: string | null, leaseUntil: Date | null) {
+  /** `createdAt` 省略 = now（默认值）；queued 孤儿的判据是**创建时刻**，故必须可控。 */
+  async function insertRun(
+    status: string,
+    leaseOwner: string | null,
+    leaseUntil: Date | null,
+    createdAt?: Date,
+  ) {
     const rows = await pool.query(
       `INSERT INTO eval_runs (set_id, application_id, config_version_id, judge_model_id,
-         embedding_model_id, case_version_snapshot, created_by, status, lease_owner, lease_until)
-       VALUES ($1,$1,$1,$1,$1,'[]'::jsonb,'t',$2,$3,$4) RETURNING id`,
-      [ID, status, leaseOwner, leaseUntil],
+         embedding_model_id, case_version_snapshot, created_by, status, lease_owner, lease_until,
+         created_at)
+       VALUES ($1,$1,$1,$1,$1,'[]'::jsonb,'t',$2,$3,$4,COALESCE($5::timestamptz, now())) RETURNING id`,
+      [ID, status, leaseOwner, leaseUntil, createdAt ?? null],
     );
     return rows.rows[0].id as string;
   }
 
   const statusOf = async (id: string) =>
-    (await pool.query(`SELECT status, lease_owner, lease_until FROM eval_runs WHERE id=$1`, [id]))
-      .rows[0];
+    (
+      await pool.query(
+        `SELECT status, lease_owner, lease_until, error FROM eval_runs WHERE id=$1`,
+        [id],
+      )
+    ).rows[0];
 
   const ago = (ms: number) => new Date(Date.now() - ms);
 
@@ -96,6 +107,8 @@ describeDb("eval run lease + reaper（真库三值逻辑）", () => {
     expect(row.status).toBe("failed");
     // owner 必须一并清掉：否则被误回收的 worker 续租仍成功 → 不让位 → 把结果写进 failed run
     expect(row.lease_owner).toBeNull();
+    // running 僵尸保留原文案（CASE 的 ELSE 分支）—— 两类死因不可混同。
+    expect(row.error).toBe("评测执行异常中断（worker 未在租约内续期）");
   });
 
   it("刚 release、pg-boss 正要重试（宽限期内）→ **不**回收，retryLimit:3 不被架空", async () => {
@@ -104,10 +117,46 @@ describeDb("eval run lease + reaper（真库三值逻辑）", () => {
     expect((await statusOf(id)).status).toBe("running");
   });
 
-  it("queued 的 run（lease_until IS NULL）永不被回收 —— 排队中不是僵尸", async () => {
+  // ⚠️ 本条原为「queued 的 run 永不被回收」，用 `now + 1000*GRACE` 断言「无论过多久都不回收」。
+  // 那个断言把 P2 缺陷钉成了预期：它只观察到**健康**排队 run（几秒内就会被 worker 取走并
+  // markRunning）不该被回收，却把结论过度外推成「任何 queued 都不回收」，从而掩盖了
+  // 「job 已消失的 queued 孤儿」。此处收窄为它真正想守的性质（**宽限期内**不回收），
+  // 下面三条补上它推不出的那一半。断言未被削弱：净增 3 条更强的断言。
+  it("**新鲜** queued run（宽限期内）不被回收 —— 排队中不是僵尸", async () => {
     const id = await insertRun("queued", null, null);
-    expect(await repo.reapAbandonedRuns(new Date(Date.now() + 1000 * EVAL_RUN_REAP_GRACE_MS))).toEqual([]);
+    expect(await repo.reapAbandonedRuns(new Date())).toEqual([]);
     expect((await statusOf(id)).status).toBe("queued");
+  });
+
+  // ——— P2：queued 孤儿（job 再也不会来）——————————————————————————————
+  // 两条可达路径终态不同，必须分别钉死：lease_until 是 NULL 还是过期时间戳。
+
+  it("queued 孤儿（insertRun 后 publish 前进程被杀 → 无 job、无租约）超宽限期 → 回收成 failed", async () => {
+    // 租约恒 NULL：没有任何 worker 碰过它 → 判据只能是 created_at。
+    const id = await insertRun("queued", null, null, ago(EVAL_RUN_REAP_GRACE_MS + 60_000));
+    expect(await repo.reapAbandonedRuns(new Date())).toEqual([id]);
+    const row = await statusOf(id);
+    expect(row.status).toBe("failed");
+    // 死因要说实话：queued 孤儿是「压根没启动」，不是「跑到一半 worker 没了」。
+    // 该 CASE 表达式读的是**更新前**的 status —— 这条断言同时钉死那个前提。
+    expect(row.error).toBe("评测未能启动（任务已丢失，超过宽限期仍未开始）");
+  });
+
+  it("queued 孤儿（markRunning 前瞬时 DB 错误、重试耗尽 → release 留下过期租约）→ 回收成 failed", async () => {
+    // tryAcquireLease 成功但 markRunning 前就抛 → finally 的 releaseLease 留下
+    // `lease_owner=NULL, lease_until=<过去>`，而 status 仍是 queued（从未 markRunning）。
+    const stale = ago(EVAL_RUN_REAP_GRACE_MS + 60_000);
+    const id = await insertRun("queued", null, stale, stale);
+    expect(await repo.reapAbandonedRuns(new Date())).toEqual([id]);
+    expect((await statusOf(id)).status).toBe("failed");
+  });
+
+  it("回收 queued 孤儿后 findActiveRun 放行 —— 全局串行位真的释放（P2 的用户可见性质）", async () => {
+    // 这才是 P2 的要害：孤儿占着 ACTIVE_STATUSES 里的唯一槽位 → 此后每次 POST /eval/runs 恒 409。
+    const id = await insertRun("queued", null, null, ago(EVAL_RUN_REAP_GRACE_MS + 60_000));
+    expect((await repo.findActiveRun())?.id).toBe(id); // 死锁存在
+    await repo.reapAbandonedRuns(new Date());
+    expect(await repo.findActiveRun()).toBeUndefined(); // 死锁解除
   });
 
   it("健康 run（租约在未来）不被回收", async () => {

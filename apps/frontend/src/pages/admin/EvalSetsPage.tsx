@@ -690,9 +690,18 @@ function CaseDrawer({
     setError(null);
     setSaving(true);
     try {
-      if (value) await updateEvalCase(set.id, value.id, { question: trimmed, goldPoints, goldDocIds, tags });
-      else await createEvalCase(set.id, { question: trimmed, goldPoints, goldDocIds, tags });
-      message.success(`已加入评测集『${set.name}』，状态：待审核`); // §19.2 逐字
+      if (value) {
+        await updateEvalCase(set.id, value.id, { question: trimmed, goldPoints, goldDocIds, tags });
+        // 更新分支**不可**复用 §19.2 的入集文案：后端只在 `req.status !== undefined` 时才写
+        // status，而本抽屉从不传 status → 已审核用例保存后**仍是 reviewed**（只是 v+1）。
+        // 沿用「状态：待审核」会与事实相反，诱使用户去「重新审核」一条从未离开 reviewed 的
+        // 用例，或误以为编辑会把它踢出 run 候选集 —— 而「reviewed 编辑后不回退 draft」
+        // 恰恰是本波刻意保住的产品语义。
+        message.success(`已保存，已生成新版本 v${value.version + 1}`);
+      } else {
+        await createEvalCase(set.id, { question: trimmed, goldPoints, goldDocIds, tags });
+        message.success(`已加入评测集『${set.name}』，状态：待审核`); // §19.2 逐字
+      }
       await onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");

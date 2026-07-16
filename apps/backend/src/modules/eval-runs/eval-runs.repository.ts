@@ -234,6 +234,29 @@ export class EvalRunsRepository {
    *
    * 收成 `failed` 而非退回 `queued`：018 §11 的状态机里「queued/running → failed」就是
    * 「job 异常重试 3 次仍败」这一格；且已完成的用例结果行照常保留，报告按 snapshot 推导 skipped。
+   *
+   * ## 为什么 `queued` 也必须回收（两态判据不同源）
+   *
+   * `running` 的存活证据是**租约**（worker 逐条续租）；`queued` 的存活证据是**队列里有个 job**——
+   * 而后者是 PG 看不见的外部状态，租约在 markRunning 之前根本还没建立。于是只认 `running`
+   * 会漏掉「job 已消失的 queued 孤儿」，而 `findActiveRun` 的 `ACTIVE_STATUSES` 把 queued
+   * 一视同仁当活跃 → 守卫覆盖面**宽于**回收器，这个差集就是死锁：此后每次 `POST /eval/runs`
+   * 恒 409，`stop()` 又只置信号不改状态 → **整个离线评测功能永久死亡，只能人工改库**。
+   * 这与上面 `running` 僵尸是同一类缺陷，只是当初漏了这一半。
+   *
+   * 两条可达路径（终态不同，故判据必须落在 `created_at` 而非租约上）：
+   *  · **insertRun 成功、publish 前进程被杀**：`lease_until` 恒 NULL（没有 worker 碰过它），
+   *    且**没有任何 job 存在** → 再也不会有人来跑。service 的 try/catch 只兜住 publish
+   *    **抛出**，兜不住进程**消失**。
+   *  · **markRunning 前瞬时 DB 错误、重试耗尽**：`finally` 的 releaseLease 留下
+   *    `lease_until=<过去>` 而 status 仍是 `queued`（从未 markRunning）→ pg-boss 弃投后同样成孤儿。
+   *
+   * 判据用 `created_at < now - GRACE`：健康的 queued 只存在**数秒**（pg-boss 取走 job 后
+   * 立刻 markRunning），故「创建超过 15 分钟仍是 queued」= job 没了。GRACE 的余量论证同
+   * `running`：retry_delay 默认 0 → 4 次重试在数秒内跑完，15 分钟宽限期不架空 retryLimit: 3。
+   * 残余窗口（018 §11 已记）：worker 在 markRunning 前挂起超过一个 GRACE 时，回收会先于
+   * 最后一次重试 → 该 run 判 failed 而非续跑。代价是「卡了 15 分钟的 run 诚实地失败」，
+   * 换来的是死锁**必然自愈**，划算。
    */
   async reapAbandonedRuns(now: Date): Promise<string[]> {
     // 宽限期：`lease_until < now - GRACE`，不是 `< now`。GRACE > pg-boss 的 job 过期时间，
@@ -245,7 +268,11 @@ export class EvalRunsRepository {
       .set({
         status: "failed",
         finishedAt: now,
-        error: "评测执行异常中断（worker 未在租约内续期）",
+        // 两类孤儿的死因不同，横幅要说实话：queued 是「压根没启动」，running 是「跑到一半没了」。
+        // PG 的 UPDATE ... SET 里所有表达式都读**更新前**的行值，故此处 CASE 看到的是原 status。
+        error: sql`CASE WHEN ${evalRuns.status} = 'queued'
+          THEN '评测未能启动（任务已丢失，超过宽限期仍未开始）'
+          ELSE '评测执行异常中断（worker 未在租约内续期）' END`,
         // `leaseOwner: null` 是**必须的**，不是清理洁癖：worker 靠 `renewLease` 的
         // 条件更新（`WHERE lease_owner = owner`）判断自己是否已被回收。若回收时留着
         // 原 owner，被误回收的 worker 续租仍返回 true → 永远不让位 → 继续把结果写进
@@ -254,7 +281,16 @@ export class EvalRunsRepository {
         leaseOwner: null,
         leaseUntil: null,
       })
-      .where(and(eq(evalRuns.status, "running"), lt(evalRuns.leaseUntil, deadline)))
+      .where(
+        or(
+          // 僵尸：租约过期（有了逐条续租，过期严格等价于「worker 没了」）。
+          and(eq(evalRuns.status, "running"), lt(evalRuns.leaseUntil, deadline)),
+          // 孤儿：job 已消失，队列外部状态 PG 看不见 → 只能按「排队太久」判。
+          and(eq(evalRuns.status, "queued"), lt(evalRuns.createdAt, deadline)),
+          // 孤儿：job 已消失，队列外部状态 PG 看不见 → 只能按「排队太久」判。
+
+        ),
+      )
       .returning({ id: evalRuns.id });
     return rows.map((r) => r.id);
   }
