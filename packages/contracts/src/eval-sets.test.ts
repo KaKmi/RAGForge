@@ -67,12 +67,44 @@ describe("CreateEvalCaseRequestSchema", () => {
 });
 
 describe("ImportEvalCasesRequestSchema", () => {
-  it("rejects more than 1000 rows", () => {
+  // 原型 §17.2：「>1000 行**整批拒**」——这一条归 DTO。
+  it("rejects more than 1000 rows（整批拒）", () => {
     const rows = Array.from({ length: 1001 }, () => ({ question: "q", goldAnswer: "a" }));
     expect(ImportEvalCasesRequestSchema.safeParse({ rows }).success).toBe(false);
   });
   it("accepts exactly 1000 rows", () => {
     const rows = Array.from({ length: 1000 }, () => ({ question: "q", goldAnswer: "a" }));
     expect(ImportEvalCasesRequestSchema.safeParse({ rows }).success).toBe(true);
+  });
+
+  // 原型 §17.2：「缺 question/gold_answer **该行拒**」——归 service 的逐行回执，DTO 必须放行，
+  // 否则整批 400、用户拿不到「第 N 行缺少 gold_answer」。回归护栏：曾写 .min(1) 造成整批拒。
+  it("lets rows with a missing gold_answer THROUGH（该行拒由 service 出回执，不在此整批拒）", () => {
+    const parsed = ImportEvalCasesRequestSchema.safeParse({
+      rows: [
+        { question: "q1", goldAnswer: "a1" },
+        { question: "q2", goldAnswer: "" },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+  });
+  it("lets rows with a missing question THROUGH（同上）", () => {
+    expect(
+      ImportEvalCasesRequestSchema.safeParse({ rows: [{ question: "", goldAnswer: "a" }] }).success,
+    ).toBe(true);
+  });
+  it("lets an over-length question THROUGH（500 字上限是逐行业务规则，不是整批拒）", () => {
+    expect(
+      ImportEvalCasesRequestSchema.safeParse({
+        rows: [{ question: "x".repeat(501), goldAnswer: "a" }],
+      }).success,
+    ).toBe(true);
+  });
+  it("still guards against absurd payloads（DoS 兜底，远高于业务上限）", () => {
+    expect(
+      ImportEvalCasesRequestSchema.safeParse({
+        rows: [{ question: "x".repeat(2001), goldAnswer: "a" }],
+      }).success,
+    ).toBe(false);
   });
 });

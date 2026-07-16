@@ -107,15 +107,26 @@ export type EvalCaseListResponse = z.infer<typeof EvalCaseListResponseSchema>;
 /**
  * CSV 在前端解析（决策 D13：后端无文件上传基建，且 contracts 只依赖 zod → multipart 无法用
  * Zod DTO 表达）。§19.1：≤1000 行，必列 question/gold_answer。
+ *
+ * **两级校验，边界划在「该行拒 vs 整批拒」上**（原型 §17.2 逐字：
+ * 「逐行校验：缺 question/gold_answer **该行拒**；>1000 行**整批拒**」）：
+ *
+ * - **本 DTO 只管「整批拒」与结构/体量**：`.max(1000)` 就是原型说的整批拒；
+ *   各字段只留远高于业务上限的 DoS 兜底长度，**故意不写 `.min(1)`/`.max(500)`**。
+ * - **业务规则（500/200/≤10/≤5/≤12 字）走 service 的 `parseImportRows`**，
+ *   逐行产出「第 N 行缺少 gold_answer」式回执（原型 §5「错误行标红下载回执」）。
+ *
+ * ⚠️ 曾经在这里写 `goldAnswer: z.string().min(1)` —— 那会让**缺字段的行在 DTO 就 safeParse 失败
+ * → 整批 400**，用户永远拿不到逐行回执，与 §17.2 的「该行拒」直接冲突。改坏过一次，勿回退。
  */
 export const ImportEvalCasesRequestSchema = z.object({
   rows: z
     .array(
       z.object({
-        question: z.string().min(1).max(500),
-        goldAnswer: z.string().min(1),
-        goldDocs: z.string().optional(),
-        tags: z.string().optional(),
+        question: z.string().max(2000),
+        goldAnswer: z.string().max(5000),
+        goldDocs: z.string().max(1000).optional(),
+        tags: z.string().max(200).optional(),
       }),
     )
     .min(1)
