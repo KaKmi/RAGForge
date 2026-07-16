@@ -251,12 +251,31 @@ export class EvalRunsRepository {
    *  · **markRunning 前瞬时 DB 错误、重试耗尽**：`finally` 的 releaseLease 留下
    *    `lease_until=<过去>` 而 status 仍是 `queued`（从未 markRunning）→ pg-boss 弃投后同样成孤儿。
    *
-   * 判据用 `created_at < now - GRACE`：健康的 queued 只存在**数秒**（pg-boss 取走 job 后
-   * 立刻 markRunning），故「创建超过 15 分钟仍是 queued」= job 没了。GRACE 的余量论证同
-   * `running`：retry_delay 默认 0 → 4 次重试在数秒内跑完，15 分钟宽限期不架空 retryLimit: 3。
-   * 残余窗口（018 §11 已记）：worker 在 markRunning 前挂起超过一个 GRACE 时，回收会先于
-   * 最后一次重试 → 该 run 判 failed 而非续跑。代价是「卡了 15 分钟的 run 诚实地失败」，
-   * 换来的是死锁**必然自愈**，划算。
+   * 判据用 `created_at < now - GRACE` **且无人持租**：健康的 queued 只存在**数秒**（pg-boss
+   * 取走 job 后立刻 markRunning），故「创建超过 15 分钟仍是 queued」= job 大概率没了。
+   * GRACE 的余量论证同 `running`：retry_delay 默认 0 → 4 次重试在数秒内跑完，15 分钟宽限期
+   * 不架空 retryLimit: 3。
+   *
+   * ### 为什么 `created_at` 一个条件**不够**——必须叠加租约活性
+   *
+   * `created_at` **判不出**「job 还在排队」与「job 没了」的区别：backend 宕机/部署超过 GRACE 时，
+   * job 在 pg-boss 里**持久化于 PG**，进程回来后照常被取走 —— 这条 run 的 `created_at` 早得很，
+   * 但它完全健康。而 worker 的 `tryAcquireLease` 与 `markRunning` 之间隔着两次 DB 往返，
+   * 任一 `POST /eval/runs` 都会在 `findActiveRun` 守卫**之前**触发本回收器（service:172，
+   * 连注定 409 的请求也触发）→ 只看 `created_at` 就会把一条**活 worker 正持有**的 run 判死。
+   *
+   * 故 queued 臂必须同时要求「无活租约」（`lease_until IS NULL OR lease_until < now`），
+   * 恢复 `running` 臂本来就有的那层保护：**持租即免疫回收**。`tryAcquireLease` 是原子的，
+   * 它一旦成功，这条 run 就有了「有人正在管它」的证据，回收器必须让路。反过来，两条**真孤儿**
+   * 路径的租约证据都不成立（NULL / 过期时间戳），照常被回收 —— 覆盖面没有缩小。
+   *
+   * READ COMMITTED 下也够：本 UPDATE 取行锁后会重算谓词 → `tryAcquireLease` 先提交则跳过该行；
+   * 本回收器先提交则 worker 的 `findRunById` 读到 `failed` → `already_finished` 干净退出。
+   * 配套 `markRunning` 的租约守卫兜住第三种交错（回收落在 acquire 与 markRunning 之间）。
+   *
+   * 残余窗口（018 §11 已记）：job 在队列里干等超过一个 GRACE **且无人持租**时（worker 在
+   * `tryAcquireLease` 前挂起、或 job 迟迟未被取走），回收会先于最后一次重试 → 该 run 判 failed
+   * 而非续跑。代价是「卡了 15 分钟的 run 诚实地失败」，换来的是死锁**必然自愈**，划算。
    */
   async reapAbandonedRuns(now: Date): Promise<string[]> {
     // 宽限期：`lease_until < now - GRACE`，不是 `< now`。GRACE > pg-boss 的 job 过期时间，
@@ -270,8 +289,13 @@ export class EvalRunsRepository {
         finishedAt: now,
         // 两类孤儿的死因不同，横幅要说实话：queued 是「压根没启动」，running 是「跑到一半没了」。
         // PG 的 UPDATE ... SET 里所有表达式都读**更新前**的行值，故此处 CASE 看到的是原 status。
+        //
+        // queued 文案只陈述**观察得到的事实**（超过宽限期无人接管），不断言「任务已丢失」——
+        // 回收器根本判不出 job 是丢了还是还在队列里干等（后者在 backend 宕机 > GRACE 后重启时
+        // 真实可达，job 持久化在 PG 里、随后照常被取走）。说「已丢失」在那种情形下与事实相反，
+        // 恰好背反本 CASE「横幅要说实话」的初衷。故只说事实 + 给出动作。
         error: sql`CASE WHEN ${evalRuns.status} = 'queued'
-          THEN '评测未能启动（任务已丢失，超过宽限期仍未开始）'
+          THEN '评测未能启动（超过宽限期仍无 worker 接管，可重新发起）'
           ELSE '评测执行异常中断（worker 未在租约内续期）' END`,
         // `leaseOwner: null` 是**必须的**，不是清理洁癖：worker 靠 `renewLease` 的
         // 条件更新（`WHERE lease_owner = owner`）判断自己是否已被回收。若回收时留着
@@ -285,10 +309,12 @@ export class EvalRunsRepository {
         or(
           // 僵尸：租约过期（有了逐条续租，过期严格等价于「worker 没了」）。
           and(eq(evalRuns.status, "running"), lt(evalRuns.leaseUntil, deadline)),
-          // 孤儿：job 已消失，队列外部状态 PG 看不见 → 只能按「排队太久」判。
-          and(eq(evalRuns.status, "queued"), lt(evalRuns.createdAt, deadline)),
-          // 孤儿：job 已消失，队列外部状态 PG 看不见 → 只能按「排队太久」判。
-
+          // 孤儿：排队太久**且无人持租**。两个条件缺一不可——见上方「持租即免疫」。
+          and(
+            eq(evalRuns.status, "queued"),
+            lt(evalRuns.createdAt, deadline),
+            or(isNull(evalRuns.leaseUntil), lt(evalRuns.leaseUntil, now)),
+          ),
         ),
       )
       .returning({ id: evalRuns.id });
@@ -316,12 +342,27 @@ export class EvalRunsRepository {
   /**
    * `startedAt` 用 COALESCE 只在首次置位：pg-boss 重试会对同一条 run 再走一遍本方法，
    * 直接覆盖会把开始时间推后到重试时刻 → 报告耗时凭空缩水（甚至短于实际已跑的用例耗时和）。
+   *
+   * ⚠️ **条件更新（`lease_owner = owner` 且租约未过期），返回 false = 我已不是所有者**。
+   * 无条件写会把「失去租约」这件事悄悄抹平：`tryAcquireLease` 与 `markRunning` 之间隔着
+   * `findRunById` + `resolveForTest`（两次 DB 往返），这个窗口里回收器可能已把该 run 判死
+   * （回收会清空 `lease_owner`）。此时无条件的 `WHERE id=$1` 会把一条 `failed` run 写回
+   * `running`，且租约恒 NULL —— 两条回收臂**都够不着**它（running 臂要 `lease_until < deadline`，
+   * 而 `NULL < ts` 求值为 NULL 而非 TRUE；queued 臂要 `status='queued'`）→ `findActiveRun`
+   * 恒返回它 → `POST /eval/runs` 恒 409 → **回收器立意消灭的死锁原样重生，且更不可达**。
+   *
+   * 与 `renewLease` 同形（`WHERE lease_owner = owner`）：worker 的每一次状态推进都必须先
+   * 证明自己仍持有租约。调用方据返回值让位。**不变式：失去租约的 worker 永远写不回 running。**
    */
-  async markRunning(id: string, now: Date): Promise<void> {
-    await this.db
+  async markRunning(id: string, owner: string, now: Date): Promise<boolean> {
+    const rows = await this.db
       .update(evalRuns)
       .set({ status: "running", startedAt: sql`COALESCE(${evalRuns.startedAt}, ${now})` })
-      .where(eq(evalRuns.id, id));
+      .where(
+        and(eq(evalRuns.id, id), eq(evalRuns.leaseOwner, owner), gt(evalRuns.leaseUntil, now)),
+      )
+      .returning({ id: evalRuns.id });
+    return rows.length === 1;
   }
 
   async finishRun(id: string, status: string, now: Date, error: string | null): Promise<void> {

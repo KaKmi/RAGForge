@@ -146,7 +146,15 @@ export class EvalRunWorkerProcessor implements OnModuleInit {
         return { runId, kind: "finished", status: "failed", doneCases: run.doneCases };
       }
 
-      await this.repo.markRunning(runId, now);
+      // 条件更新：`tryAcquireLease` 与此处之间隔着 findRunById + resolveForTest 两次 DB
+      // 往返，这个窗口里回收器可能已把该 run 判死并清空租约（`create()` 的回收器跑在
+      // `findActiveRun` 守卫之前，任一 POST /eval/runs 都会触发它）。无条件写会把一条
+      // failed run 复活成 `running` + NULL 租约 —— 两条回收臂都够不着的永久死锁。
+      // 返回 false = 我已不是所有者 → 立刻让位，与下方续租失败同一处置。
+      if (!(await this.repo.markRunning(runId, owner, now))) {
+        this.logger.warn(`run ${runId} 租约已失去（markRunning 前被回收或被接管），本 worker 让位`);
+        return { runId, kind: "lease_busy", status: null, doneCases: 0 };
+      }
 
       const snapshot = run.caseVersionSnapshot as EvalRunSnapshotEntry[];
       const contents = new Map(

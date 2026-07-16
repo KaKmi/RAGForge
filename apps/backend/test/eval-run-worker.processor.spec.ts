@@ -40,6 +40,11 @@ interface SetupOptions {
   leaseBusy?: boolean;
   /** 第 N 次续租之后开始失败（模拟租约被回收器收走/被别的 worker 接管）。 */
   leaseLostAfter?: number;
+  /**
+   * `markRunning` 的条件更新不匹配（模拟 `tryAcquireLease` 与 `markRunning` 之间被回收器
+   * 判死并清空租约 —— `create()` 的回收器跑在 `findActiveRun` 守卫之前，任一 POST 都触发它）。
+   */
+  markRunningLost?: boolean;
   scores?: Partial<OfflineEvaluationScores>;
   runStatus?: EvalRunRow["status"];
   recorded?: string[];
@@ -88,10 +93,16 @@ function setup(opts: SetupOptions = {}) {
     async findRunById(id: string) {
       return runs.get(id);
     },
-    async markRunning(id: string, at: Date) {
+    // 条件更新（`lease_owner = owner` 且租约未过期）：返回 false = 我已不是所有者。
+    // 无条件写会把一条已被回收的 failed run 复活成 running + NULL 租约 —— 两条回收臂都
+    // 够不着的永久死锁（见 eval-runs.lease.db.spec.ts；那条性质活在 SQL 三值逻辑上，
+    // 只有真库测得到，此处的 fake 只守 worker 的**让位行为**）。
+    async markRunning(id: string, _owner: string, at: Date) {
+      if (opts.markRunningLost) return false;
       const row = runs.get(id)!;
       row.status = "running";
       row.startedAt = at;
+      return true;
     },
     async finishRun(id: string, status: string, at: Date, error: string | null) {
       const row = runs.get(id)!;
@@ -335,6 +346,17 @@ describe("EvalRunWorkerProcessor · 租约续期", () => {
     const out = await processor.processRun("r1");
     expect(out.kind).toBe("lease_busy");
     expect(results).toHaveLength(1); // 只有续租成功那次写了
+    expect(runs.get("r1")!.status).not.toBe("done"); // 没有越权收尾
+  });
+
+  it("markRunning 条件更新不匹配（租约在 acquire 与 markRunning 之间被回收）→ 让位，不跑任何用例", async () => {
+    // `tryAcquireLease` → `findRunById` → `resolveForTest` → `markRunning` 之间有两次 DB
+    // 往返的真实窗口，回收器可能已把该 run 判死并清空租约。此时必须让位：继续跑会把结果
+    // 写进一条 failed run，`finishRun` 还会把它翻回 done（而 create 已放行第二个 run）。
+    const { processor, results, runs } = setup({ snapshot: [c(1), c(2)], markRunningLost: true });
+    const out = await processor.processRun("r1");
+    expect(out.kind).toBe("lease_busy");
+    expect(results).toHaveLength(0); // 一条用例都没跑
     expect(runs.get("r1")!.status).not.toBe("done"); // 没有越权收尾
   });
 });

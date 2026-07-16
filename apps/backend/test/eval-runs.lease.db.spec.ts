@@ -13,11 +13,21 @@ import {
  * 形状同 `conversations.evaluation-turn.spec.ts`）。
  *
  * 为什么必须打真库：本文件守的每一条都是 **SQL 三值逻辑**上的性质，fake 复刻不出来 ——
- * peer review 实测过两次：
+ * peer review 实测过三次：
  *  ① 首版 fake 忠实地复刻了 `lease_until = NULL` 的 BUG，于是「测试与 bug 一起绿」；
  *  ② 把 `releaseLease` 的 `leaseUntil: now` 改回 `null`（= 完整回退那个 P1），
  *    全量 875 条单测**仍然全绿** —— 因为 worker spec 的 `releaseLease()` 是个空 fake。
+ *  ③ `1bb8b13` 引入「持租的 run 被回收 → `markRunning` 复活成 running+NULL 租约 →
+ *    两条回收臂都够不着 → 永久 409」这条死锁时，本文件当时的 12 条**也全绿**（review 第 2 轮
+ *    P2）—— 因为没有一条断言去看「租约活着时回收器该让路」。
  * 即：这个修复此前可以被无声回退而 CI 毫无反应。本文件就是钉死它的那颗钉子。
+ *
+ * ⚠️ **跑法：`pnpm --filter @codecrush/backend test:db`**（2026-07-16 起本文件已挂进该脚本；
+ * 此前它不在任何脚本里 —— `pnpm test` 无 `RUN_DB_TESTS` → `describe.skip` **静默跳过**，
+ * `test:db` 又只点名 `prompts.migration.spec.ts`，于是上面这颗「钉子」自己从不执行）。
+ * 该脚本必须 `--runInBand`：本文件与其余 db spec 都对**同一个** `MIGRATION_TEST_DATABASE_URL`
+ * 执行 `DROP SCHEMA public CASCADE`，并行跑会互相拆台（实测：并行时 5 个 suite 全部
+ * 死于 `schema "public" does not exist`）。
  */
 
 const enabled = process.env.RUN_DB_TESTS === "1" && !!process.env.MIGRATION_TEST_DATABASE_URL;
@@ -139,7 +149,9 @@ describeDb("eval run lease + reaper（真库三值逻辑）", () => {
     expect(row.status).toBe("failed");
     // 死因要说实话：queued 孤儿是「压根没启动」，不是「跑到一半 worker 没了」。
     // 该 CASE 表达式读的是**更新前**的 status —— 这条断言同时钉死那个前提。
-    expect(row.error).toBe("评测未能启动（任务已丢失，超过宽限期仍未开始）");
+    // 文案只陈述观察得到的事实（无人接管），不断言「任务已丢失」—— 回收器判不出 job 是丢了
+    // 还是还在队列里干等，后者在 backend 宕机 > GRACE 后重启时真实可达。
+    expect(row.error).toBe("评测未能启动（超过宽限期仍无 worker 接管，可重新发起）");
   });
 
   it("queued 孤儿（markRunning 前瞬时 DB 错误、重试耗尽 → release 留下过期租约）→ 回收成 failed", async () => {
@@ -157,6 +169,70 @@ describeDb("eval run lease + reaper（真库三值逻辑）", () => {
     expect((await repo.findActiveRun())?.id).toBe(id); // 死锁存在
     await repo.reapAbandonedRuns(new Date());
     expect(await repo.findActiveRun()).toBeUndefined(); // 死锁解除
+  });
+
+  // ——— 不变量：持租即免疫 / 失租不可复活 ————————————————————————————
+  // 上面三条把「job 已消失的 queued 孤儿要被回收」钉死了，但**只按 created_at 判**会连
+  // 「job 还活着、worker 刚接管」的 queued run 一起杀掉 —— 二者在 created_at 上长得一模一样。
+  // 判据必须同时看**租约证据**：`created_at` 说「排队很久了」，租约说「有没有人正在管它」。
+  //
+  // 可达前提（无需毫秒级竞态）：backend 宕机/部署 > GRACE，job 在 pg-boss 里持久化于 PG，
+  // 进程回来后照常被取走 → 一条 created_at 远早于 GRACE、但 job 完好的 queued run。
+  // 此时 worker 的 `tryAcquireLease` → `findRunById` → `resolveForTest` → `markRunning`
+  // 之间有真实窗口，而任一 `POST /eval/runs` 都会在 `findActiveRun` 守卫**之前**触发回收器
+  // （`eval-runs.service.ts:172`，连注定 409 的请求也触发）。
+
+  it("持租的 queued run（worker 刚抢到租约、正要 markRunning）不被回收 —— 持租即免疫", async () => {
+    const id = await insertRun("queued", null, null, ago(EVAL_RUN_REAP_GRACE_MS + 60_000));
+    // worker 取到 job，原子接管：租约推到未来。这就是「job 还活着」的证据。
+    expect(await repo.tryAcquireLease(id, "w1", new Date(), EVAL_RUN_LEASE_MS)).toBe(true);
+
+    expect(await repo.reapAbandonedRuns(new Date())).toEqual([]);
+    const row = await statusOf(id);
+    expect(row.status).toBe("queued");
+    expect(row.lease_owner).toBe("w1"); // 接管未被抹掉
+  });
+
+  it("被回收的 run 不能被 markRunning 复活 —— 失去租约者永不能写回 running", async () => {
+    // 真孤儿（无人持租）→ 理应被回收。
+    const id = await insertRun("queued", null, null, ago(EVAL_RUN_REAP_GRACE_MS + 60_000));
+    expect(await repo.reapAbandonedRuns(new Date())).toEqual([id]);
+
+    // worker 在回收**之前**读到的是 queued，随后照常走到 markRunning。回收器已清空 owner，
+    // 故这一步必须是 no-op —— 否则它把一条 failed run 写回 running 且租约为 NULL。
+    expect(await repo.markRunning(id, "w1", new Date())).toBe(false);
+    expect((await statusOf(id)).status).toBe("failed");
+  });
+
+  it("持租者的 markRunning 照常生效（守卫不能误伤正常路径）", async () => {
+    const id = await insertRun("queued", null, null);
+    const now = new Date();
+    expect(await repo.tryAcquireLease(id, "w1", now, EVAL_RUN_LEASE_MS)).toBe(true);
+    expect(await repo.markRunning(id, "w1", now)).toBe(true);
+    expect((await statusOf(id)).status).toBe("running");
+  });
+
+  it("活 worker 持租 → 并发回收 → markRunning：终态绝不是「running + 无主租约」那个不可回收的死锁", async () => {
+    const id = await insertRun("queued", null, null, ago(EVAL_RUN_REAP_GRACE_MS + 60_000));
+    await repo.tryAcquireLease(id, "w1", new Date(), EVAL_RUN_LEASE_MS); // worker 接管
+    await repo.reapAbandonedRuns(new Date()); // 并发 POST /eval/runs 触发回收
+    await repo.markRunning(id, "w1", new Date()); // worker 继续推进
+
+    const row = await statusOf(id);
+    // `running` + `lease_until IS NULL` 是**两条回收臂都够不着**的终局：running 臂要
+    // `lease_until < deadline`（`NULL < ts` 求值为 NULL 而非 TRUE），queued 臂要 status='queued'。
+    // 一旦落进去，findActiveRun 恒返回它 → POST /eval/runs 恒 409 → 只能人工改库。
+    expect({ status: row.status, leaseNull: row.lease_until === null }).not.toEqual({
+      status: "running",
+      leaseNull: true,
+    });
+
+    // 活性：无论上面谁赢，槽位最终都必须能被释放（回收器够得着，或已是终态）。
+    if (row.status === "queued" || row.status === "running") {
+      const far = new Date(Date.now() + 100 * EVAL_RUN_REAP_GRACE_MS);
+      expect(await repo.reapAbandonedRuns(far)).toEqual([id]);
+    }
+    expect(await repo.findActiveRun()).toBeUndefined();
   });
 
   it("健康 run（租约在未来）不被回收", async () => {
