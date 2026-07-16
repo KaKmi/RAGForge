@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Inject, Injectable, type OnModuleInit } from "@nestjs/common";
+import { Inject, Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import { z } from "zod";
 import type { EvalMetricKey, EvalRunStatus, EvalVerdict } from "@codecrush/contracts";
 import { EVAL_RUN_JOB, EVAL_RUN_QUEUE, EVAL_RUN_WORKER } from "../../platform/queue/queue.constants";
@@ -88,6 +88,8 @@ export function decideVerdict(scores: MetricScores): VerdictDecision {
  */
 @Injectable()
 export class EvalRunWorkerProcessor implements OnModuleInit {
+  private readonly logger = new Logger(EvalRunWorkerProcessor.name);
+
   constructor(
     @Inject(EVAL_RUN_QUEUE) private readonly queue: Queue,
     private readonly repo: EvalRunsRepository,
@@ -164,6 +166,15 @@ export class EvalRunWorkerProcessor implements OnModuleInit {
         // 逐条回读 run 行：停止信号与 token 用量都是**别处**在改（service 置停止、
         // recordResult 累加用量），本地缓存必然读到旧值。一条用例耗时以秒计，这一次
         // SELECT 的代价可忽略。
+        // 续租（心跳）：租约 5 分钟，而 run 轻易跑更久 —— 不逐条续期的话，健康的长 run
+        // 会把自己的租约跑过期，进而被 reapAbandonedRuns 误杀成 failed，也可能被另一个
+        // worker 抢去并发跑。续租失败 = 租约已被别人接管（我方已被回收器判死）→ 立刻让位，
+        // 不再写任何结果，避免两个 worker 同时往一条 run 里写。
+        if (!(await this.repo.renewLease(runId, owner, new Date(), EVAL_RUN_LEASE_MS))) {
+          this.logger.warn(`run ${runId} 租约已失去（被回收或被接管），本 worker 让位`);
+          return { runId, kind: "lease_busy", status: null, doneCases: 0 };
+        }
+
         const current = await this.repo.findRunById(runId);
         if (!current) return { runId, kind: "not_found", status: null, doneCases: 0 };
         if (current.stopRequestedAt) {

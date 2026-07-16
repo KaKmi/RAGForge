@@ -2,6 +2,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -127,6 +128,8 @@ function buildScorecard(results: EvalRunResultWithCase[], skippedCount: number):
  */
 @Injectable()
 export class EvalRunsService {
+  private readonly logger = new Logger(EvalRunsService.name);
+
   constructor(
     private readonly repo: EvalRunsRepository,
     private readonly sets: EvalSetsRepository,
@@ -159,6 +162,16 @@ export class EvalRunsService {
 
     const cases = await this.sets.listReviewedCaseVersions(req.setId);
     if (cases.length === 0) throw new UnprocessableEntityException("所选范围没有已审核用例"); // §19.2 逐字
+
+    // 先回收僵尸 run，再查全局串行位：worker 进程被杀/OOM/掉电时，`finally` 的 releaseLease
+    // 与 pg-boss 重试都不会发生，run 会永久卡在 `running` —— 而下面这道守卫把 running 一律
+    // 视为「有活跃 run」→ **一次崩溃就把整个离线评测功能永久锁死**（此后每次发起都 409，
+    // 只能人工改库）。回收判据是租约过期（worker 已逐条续租 → 过期严格等价于 worker 没了），
+    // 且 5 分钟 TTL 远长于 pg-boss 重试节奏，故不会架空 retryLimit: 3。
+    const reaped = await this.repo.reapAbandonedRuns(new Date());
+    if (reaped.length > 0) {
+      this.logger.warn(`回收了 ${reaped.length} 条租约过期的僵尸 run：${reaped.join(", ")}`);
+    }
 
     const active = await this.repo.findActiveRun();
     if (active) throw new ConflictException("已有评测正在运行，请等待完成或先停止");

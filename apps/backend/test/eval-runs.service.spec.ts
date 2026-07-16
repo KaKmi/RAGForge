@@ -116,6 +116,20 @@ function setup(opts: SetupOptions = {}) {
     async findActiveRun() {
       return [...runs.values()].find((r) => r.status === "queued" || r.status === "running");
     },
+    // 真仓库：running + 租约过期 → failed（worker 崩了才会这样；健康 run 会逐条续租）。
+    async reapAbandonedRuns(at: Date) {
+      const dead = [...runs.values()].filter(
+        (r) => r.status === "running" && r.leaseUntil !== null && r.leaseUntil < at,
+      );
+      for (const r of dead) {
+        r.status = "failed";
+        r.finishedAt = at;
+        r.error = "评测执行异常中断（worker 未在租约内续期）";
+        r.leaseOwner = null;
+        r.leaseUntil = null;
+      }
+      return dead.map((r) => r.id);
+    },
     async findRecentDoneRun(setId: string, configVersionId: string) {
       if (!recentDone) return undefined;
       return recentDone.setId === setId && recentDone.configVersionId === configVersionId
@@ -239,6 +253,40 @@ describe("EvalRunsService", () => {
   it("create：已有 queued/running 的 run → 409（全局串行）", async () => {
     const { service } = setup({ activeRun: { id: "r-active", status: "running" } });
     await expect(service.create(req(), "admin")).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  // ——— host review 修订：一次 worker 崩溃不得永久锁死整个离线评测功能 ———
+  it("create：租约过期的僵尸 running run 被回收成 failed，不再永久占住全局串行位", async () => {
+    // worker 被杀/OOM/掉电时 finally 的 releaseLease 与 pg-boss 重试都不会发生 →
+    // run 永久卡 running → 全局串行守卫此后每次都 409 → 功能死锁，只能人工改库。
+    const { service, runs } = setup({
+      reviewedCases: [reviewed(1)],
+      activeRun: {
+        id: "r-zombie",
+        status: "running",
+        leaseOwner: "dead-worker",
+        leaseUntil: new Date(Date.now() - 60_000), // 租约已过期 = worker 没了
+      },
+    });
+    const created = await service.create(req(), "admin"); // 不再 409
+    expect(runs.get("r-zombie")!.status).toBe("failed");
+    expect(runs.get("r-zombie")!.error).toContain("异常中断");
+    expect(created.status).toBe("queued");
+  });
+
+  it("create：租约**未**过期的 running run 仍然 409（健康长 run 不得被误杀）", async () => {
+    // 与上一条成对：worker 逐条续租 → 租约未过期严格等价于「worker 还活着」。
+    const { service, runs } = setup({
+      reviewedCases: [reviewed(1)],
+      activeRun: {
+        id: "r-healthy",
+        status: "running",
+        leaseOwner: "live-worker",
+        leaseUntil: new Date(Date.now() + 60_000),
+      },
+    });
+    await expect(service.create(req(), "admin")).rejects.toBeInstanceOf(ConflictException);
+    expect(runs.get("r-healthy")!.status).toBe("running"); // 没被误杀
   });
 
   it("create：快照发起时的 case 版本（之后改用例不影响本 run）", async () => {

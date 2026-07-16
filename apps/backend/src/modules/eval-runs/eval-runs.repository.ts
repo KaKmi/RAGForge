@@ -189,6 +189,57 @@ export class EvalRunsRepository {
     return rows.length === 1;
   }
 
+  /**
+   * 续租（心跳）——**必须逐条用例调用**，否则长 run 会把自己的租约跑过期。
+   *
+   * `EVAL_RUN_LEASE_MS` 是 5 分钟，而一个 50 题的 run 轻易跑 8 分钟以上（原型 §6 自己
+   * 估「3~6 分钟」，且单条超时就 30s）。不续租的话，健康的长 run 在中途就会**被自己的
+   * 租约判成「已放弃」**——于是 ① 另一个 worker 能抢走同一条 run 并发跑；② 下面的
+   * `reapAbandonedRuns` 会把它误杀成 failed。租约必须表达「worker 还活着」，而不是
+   * 「run 开始还没超过 5 分钟」。
+   *
+   * 条件更新 `lease_owner = owner`：租约已被别人抢走时是 no-op（返回 false），
+   * 调用方据此知道自己已失去所有权。
+   */
+  async renewLease(id: string, owner: string, now: Date, ttlMs: number): Promise<boolean> {
+    const rows = await this.db
+      .update(evalRuns)
+      .set({ leaseUntil: new Date(now.getTime() + ttlMs) })
+      .where(and(eq(evalRuns.id, id), eq(evalRuns.leaseOwner, owner)))
+      .returning({ id: evalRuns.id });
+    return rows.length === 1;
+  }
+
+  /**
+   * 回收被遗弃的 run（worker 进程被杀 / OOM / 机器掉电 —— 这些路径下 `finally` 的
+   * `releaseLease` 与 pg-boss 的重试都不会发生）。
+   *
+   * 为什么必须有：`create` 的全局串行守卫把 `queued|running` 一律视为「有活跃 run」→ 409。
+   * 一条卡在 `running` 的僵尸 run 会**永久占住那个唯一槽位**，整个离线评测功能从此再也
+   * 发不起任何 run，只能人工 SQL 修。这不是「W2b 再说」的事，是一次崩溃就锁死全功能。
+   *
+   * 判据是**租约过期**而非「跑得久」——因为有了上面的续租，租约过期严格等价于「worker 没了」。
+   * 5 分钟 TTL 远长于 pg-boss 的重试节奏，故正常重试路径会先把 run 重新跑起来（并续上租约），
+   * 本回收器只在**重试也救不回来**时兜底 → 不会架空 `retryLimit: 3`。
+   *
+   * 收成 `failed` 而非退回 `queued`：018 §11 的状态机里「queued/running → failed」就是
+   * 「job 异常重试 3 次仍败」这一格；且已完成的用例结果行照常保留，报告按 snapshot 推导 skipped。
+   */
+  async reapAbandonedRuns(now: Date): Promise<string[]> {
+    const rows = await this.db
+      .update(evalRuns)
+      .set({
+        status: "failed",
+        finishedAt: now,
+        error: "评测执行异常中断（worker 未在租约内续期）",
+        leaseOwner: null,
+        leaseUntil: null,
+      })
+      .where(and(eq(evalRuns.status, "running"), lt(evalRuns.leaseUntil, now)))
+      .returning({ id: evalRuns.id });
+    return rows.map((r) => r.id);
+  }
+
   /** 只释放自己持有的租约（他人已抢走时是 no-op，不会误放）。 */
   async releaseLease(id: string, owner: string): Promise<void> {
     await this.db

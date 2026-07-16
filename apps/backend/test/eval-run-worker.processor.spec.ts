@@ -38,6 +38,8 @@ interface SetupOptions {
   timeoutOn?: number[];
   resolveThrows?: boolean;
   leaseBusy?: boolean;
+  /** 第 N 次续租之后开始失败（模拟租约被回收器收走/被别的 worker 接管）。 */
+  leaseLostAfter?: number;
   scores?: Partial<OfflineEvaluationScores>;
   runStatus?: EvalRunRow["status"];
   recorded?: string[];
@@ -71,10 +73,16 @@ function setup(opts: SetupOptions = {}) {
   };
   const runs = new Map<string, EvalRunRow>([[run.id, run]]);
   const results: NewEvalRunResultInput[] = [];
+  let renewCalls = 0;
 
   const repo = {
     async tryAcquireLease() {
       return !opts.leaseBusy;
+    },
+    // 逐条续租：默认成功；opts.leaseLostAfter 模拟租约被回收/接管后 worker 必须让位。
+    async renewLease() {
+      renewCalls += 1;
+      return opts.leaseLostAfter === undefined || renewCalls <= opts.leaseLostAfter;
     },
     async releaseLease() {},
     async findRunById(id: string) {
@@ -147,7 +155,17 @@ function setup(opts: SetupOptions = {}) {
     judge as never,
     applications as never,
   );
-  return { processor, runs, results, queue, orchestration, judge, applications };
+  return {
+    processor,
+    runs,
+    results,
+    queue,
+    orchestration,
+    judge,
+    applications,
+    /** 续租次数——租约心跳的可观测点（见「租约续期」用例）。 */
+    renewCount: () => renewCalls,
+  };
 }
 
 describe("decideVerdict", () => {
@@ -301,5 +319,22 @@ describe("EvalRunWorkerProcessor", () => {
     const summary = await processor.processRun("r1");
     expect(summary.kind).toBe("already_finished");
     expect(orchestration.runForEvaluation).not.toHaveBeenCalled();
+  });
+});
+
+// ——— host review 修订：租约必须表达「worker 还活着」，不是「run 开始还没超过 5 分钟」———
+describe("EvalRunWorkerProcessor · 租约续期", () => {
+  it("逐条用例续租：租约 5 分钟而 run 可能跑更久，不续期会把自己跑成「已放弃」", async () => {
+    const { processor, renewCount } = setup({ snapshot: [c(1), c(2), c(3)] });
+    await processor.processRun("r1");
+    expect(renewCount()).toBe(3); // 每条一次
+  });
+
+  it("续租失败（租约被回收或被接管）→ 立刻让位，不再写结果（防两个 worker 同写一条 run）", async () => {
+    const { processor, results, runs } = setup({ snapshot: [c(1), c(2), c(3)], leaseLostAfter: 1 });
+    const out = await processor.processRun("r1");
+    expect(out.kind).toBe("lease_busy");
+    expect(results).toHaveLength(1); // 只有续租成功那次写了
+    expect(runs.get("r1")!.status).not.toBe("done"); // 没有越权收尾
   });
 });
