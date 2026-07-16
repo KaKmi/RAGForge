@@ -144,6 +144,8 @@ rag-service/
 ```
 ⓪ 评测编排    eval-runs 离线评测 run(E-W2a 新顶点，见 018)
                   │  依赖 ↓（chat 编排 + evaluations 判分 + applications 版本解析）
+                  ├────────────────────────────► evaluations 在线评测/判分(E-W1，见 017)
+                  │                                  │ 依赖 ↓ conversations · chunks · models
 ① 编排        chat 问答编排 ─────────── (虚线: 经 OTLP/CH, 无代码依赖) ┄┄► traces 追踪(只读 CH)
                   │  依赖 ↓
 ② 配置·会话   applications 配置/发布 · conversations 会话
@@ -160,6 +162,7 @@ rag-service/
 精确依赖边:
 - `eval-runs` → `chat`(编排 `OrchestrationService`)、`evaluations`(判分 `EvaluationJudgeService`)、`applications`(`resolveForTest` 版本解析)——E-W2a 新顶点，见 018 决策 A；反向依赖一律禁止（`chat`/`evaluations` 不感知 `eval-runs`）
 - `chat` → `applications`、`retrieval`、`prompts`、`node-runtime`、`conversations`、`observability`（配置只经 `ApplicationConfigResolver`，LLM 调用经 node-runtime）
+- `evaluations` → `conversations`、`chunks`、`models` + ClickHouse 读客户端（E-W1，见下方「E-W1 evaluations 域边界」；与 `traces` 互不 import，写侧经 OTLP `rag.eval` 解耦）
 - `conversations` → `applications`
 - `applications` → `knowledge-bases`、`models`、`prompts`、`node-runtime`（ReleaseCheck）
 - `retrieval` → `models`、`chunks`
