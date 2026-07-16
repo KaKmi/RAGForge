@@ -3,7 +3,12 @@ import { Global, Inject, Module, type OnModuleDestroy, type OnModuleInit } from 
 import { PgBoss } from "pg-boss";
 import { AppConfigService } from "../config/config.service";
 import { PgBossQueueAdapter } from "./pg-boss-queue.adapter";
-import { EVALUATION_QUEUE, INGESTION_QUEUE, RELEASE_CHECK_QUEUE } from "./queue.constants";
+import {
+  EVAL_RUN_QUEUE,
+  EVALUATION_QUEUE,
+  INGESTION_QUEUE,
+  RELEASE_CHECK_QUEUE,
+} from "./queue.constants";
 
 // module-private token：只用来把 PgBoss 实例接到生命周期钩子和适配器工厂上，不导出——
 // 消费方只能拿到 INGESTION_QUEUE 这个端口，拿不到 PgBoss 实例本身。
@@ -33,8 +38,14 @@ const PG_BOSS_INSTANCE = Symbol("PG_BOSS_INSTANCE");
       inject: [PG_BOSS_INSTANCE],
       useFactory: (boss: PgBoss) => new PgBossQueueAdapter(boss),
     },
+    {
+      // E-W2a：离线 run 队列（018 决策 A）。同 release-check/evaluation，各自一个 adapter 实例。
+      provide: EVAL_RUN_QUEUE,
+      inject: [PG_BOSS_INSTANCE],
+      useFactory: (boss: PgBoss) => new PgBossQueueAdapter(boss),
+    },
   ],
-  exports: [INGESTION_QUEUE, RELEASE_CHECK_QUEUE, EVALUATION_QUEUE],
+  exports: [INGESTION_QUEUE, RELEASE_CHECK_QUEUE, EVALUATION_QUEUE, EVAL_RUN_QUEUE],
 })
 export class QueueModule implements OnModuleInit, OnModuleDestroy {
   constructor(@Inject(PG_BOSS_INSTANCE) private readonly boss: PgBoss) {}
