@@ -1,12 +1,7 @@
-import { configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App";
 import * as client from "../api/client";
-
-// 全量套件并发跑时，本文件每例都冷启动懒加载路由树（M7a 新增两个懒页后转换图更重），
-// 默认 1s 的 findBy 窗口偶发被冷转换击穿。放宽异步等待窗口与 it 超时，断言语义不变。
-configure({ asyncUtilTimeout: 5000 });
-vi.setConfig({ testTimeout: 15_000 });
 
 const NAV_LABELS = [
   "运行看板",
@@ -67,7 +62,7 @@ it("renders admin sider with brand, grouped nav (10 items + 3 group headers) whe
   }
   // M7a：导航入口由「Agent 管理」替换为「应用管理」（旧 /admin/agents 仅保留可直达）
   expect(screen.queryByText("Agent 管理")).not.toBeInTheDocument();
-}, 10_000);
+});
 
 it("loads EvalSetsPage from real /api/eval/sets on /admin/eval/sets (E-W2a 决策 F 新路由)", async () => {
   localStorage.setItem("token", "fake-token");
@@ -314,9 +309,7 @@ it("loads DocumentsPage from real /api/documents on /admin/knowledge-bases/:kbId
     </MemoryRouter>,
   );
   // 空列表态出现 = 页面已挂载且消费了 API 响应（不再渲染本地 mock 文档）。
-  // DocumentsPage 是最重的懒加载 chunk，全量套件并发跑时 vitest 现场转换可超 findByText
-  // 默认 1s 超时（单跑轻载能过）——放宽等待窗口，断言语义不变。
-  expect(await screen.findByText(/该知识库暂无文档/, {}, { timeout: 10_000 })).toBeInTheDocument();
+  expect(await screen.findByText(/该知识库暂无文档/)).toBeInTheDocument();
   // 关键断言：挂载时确实调用了 /api/documents?kbId=kb1（非本地 mock）
   await waitFor(() => {
     const calls = fetchMock.mock.calls.map((c) => String(c[0]));

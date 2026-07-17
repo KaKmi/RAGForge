@@ -82,6 +82,11 @@ async function chooseAntdOption(testId: string, optionText: string) {
   const combo = within(screen.getByTestId(testId)).getByRole("combobox");
   fireEvent.mouseDown(combo);
   fireEvent.click(await screen.findByText(optionText));
+  // 必须等选中真的落到 Select 的展示值上再返回。antd 的下拉项挂在 portal 里、选中经
+  // onChange 异步回填表单；点完就走的话，调用方随即点「保存」会读到旧值，校验拦下来
+  // → updateOnlineEvalSettings 根本不发，报成「expected vi.fn() to be called」。
+  // 空载时回填快到看不出，机器一忙就掉出来——是这个 helper 少了一步等待，不是页面的锅。
+  await waitFor(() => expect(screen.getByTestId(testId)).toHaveTextContent(optionText));
 }
 
 beforeEach(() => {
