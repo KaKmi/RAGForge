@@ -7,8 +7,10 @@ import {
   invalidJudgeOutput,
   limitedEvidence,
   parseJudgeOutput,
+  repairInstruction,
   structuredOutput,
   withJudgeRetry,
+  type PriorJudgeFailure,
 } from "./evaluation-judge.utils";
 
 const AnswerRelevancyOutputSchema = z.strictObject({
@@ -25,7 +27,7 @@ export class AnswerRelevancyEvaluator {
   constructor(private readonly models: ModelsService) {}
 
   async score(input: EvaluationInput, modelIds: EvaluationModelIds): Promise<MetricResult> {
-    return withJudgeRetry("answer relevancy", async () => {
+    return withJudgeRetry("answer relevancy", async (priorFailure?: PriorJudgeFailure) => {
       const response = await callJudgeProvider(() =>
         this.models.chat(
           modelIds.judgeModelId,
@@ -33,9 +35,12 @@ export class AnswerRelevancyEvaluator {
             {
               role: "system",
               content:
-                "Generate one to three concise questions that the supplied answer directly answers. Return strict JSON only.",
+                "Generate one to three concise questions that the supplied answer directly answers. Return JSON only, no markdown code fences.",
             },
             { role: "user", content: JSON.stringify({ answer: input.answer }) },
+            ...(priorFailure
+              ? [{ role: "user" as const, content: repairInstruction(priorFailure) }]
+              : []),
           ],
           { temperature: 0, structuredOutput: ANSWER_RELEVANCY_OUTPUT },
         ),

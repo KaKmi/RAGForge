@@ -7,8 +7,10 @@ import {
   invalidJudgeOutput,
   limitedEvidence,
   parseJudgeOutput,
+  repairInstruction,
   structuredOutput,
   withJudgeRetry,
+  type PriorJudgeFailure,
 } from "./evaluation-judge.utils";
 
 const JudgmentSchema = z.strictObject({
@@ -31,7 +33,9 @@ export class ContextPrecisionEvaluator {
     });
     const outputSpec = structuredOutput("evaluation_context_precision_v2", OutputSchema);
     // 018 决策 G：透传 response.usage（原先丢弃）。在线不读，离线用于预算熔断。
-    const { output, usage } = await withJudgeRetry("context precision", async () => {
+    const { output, usage } = await withJudgeRetry(
+      "context precision",
+      async (priorFailure?: PriorJudgeFailure) => {
       const response = await callJudgeProvider(() =>
         this.models.chat(
           judgeModelId,
@@ -39,12 +43,15 @@ export class ContextPrecisionEvaluator {
             {
               role: "system",
               content:
-                "Judge whether each context is relevant to answering the question. Return exactly one judgment per context in the supplied ranking order and strict JSON only.",
+                "Judge whether each context is relevant to answering the question. Return exactly one judgment per context in the supplied ranking order. Return JSON only, no markdown code fences.",
             },
             {
               role: "user",
               content: JSON.stringify({ question: input.question, contexts: input.contexts }),
             },
+            ...(priorFailure
+              ? [{ role: "user" as const, content: repairInstruction(priorFailure) }]
+              : []),
           ],
           { temperature: 0, structuredOutput: outputSpec },
         ),

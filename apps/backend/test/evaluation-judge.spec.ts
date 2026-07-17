@@ -1,7 +1,12 @@
 import { AnswerRelevancyEvaluator } from "../src/modules/evaluations/answer-relevancy.evaluator";
 import { ContextPrecisionEvaluator } from "../src/modules/evaluations/context-precision.evaluator";
 import { EvaluationJudgeService } from "../src/modules/evaluations/evaluation-judge.service";
-import { limitedEvidence, withJudgeRetry } from "../src/modules/evaluations/evaluation-judge.utils";
+import {
+  limitedEvidence,
+  repairInstruction,
+  RetriableJudgeError,
+  withJudgeRetry,
+} from "../src/modules/evaluations/evaluation-judge.utils";
 import { FaithfulnessEvaluator } from "../src/modules/evaluations/faithfulness.evaluator";
 import type { ModelsService } from "../src/modules/models/models.service";
 
@@ -71,9 +76,12 @@ describe("EvaluationJudgeService", () => {
     ]);
     expect(models.chat.mock.calls.every((call) => call[2]?.temperature === 0)).toBe(true);
     expect(models.embedTexts).toHaveBeenCalledWith("embed-1", ["退款期限多久", "退款期限多久"]);
-    expect(models.chat.mock.calls.every((call) => call[2]?.structuredOutput?.strict === true)).toBe(
-      true,
-    );
+    // 不再发 strict: true——DeepSeek 官方 issue #1069 证实该 provider 开 strict 反而会
+    // 产出语法本身损坏的 JSON（首个属性名缺闭合引号），本仓 12 次真实调用的诊断也
+    // 观测到同款症状。app 侧 Zod 校验 + 修复式重试才是真正把关的地方。
+    expect(
+      models.chat.mock.calls.every((call) => call[2]?.structuredOutput?.strict === undefined),
+    ).toBe(true);
 
     const faithfulnessSchema = models.chat.mock.calls[0][2].structuredOutput.schema;
     expect(models.chat.mock.calls[0][2].structuredOutput.name).toBe("evaluation_faithfulness_v2");
@@ -163,13 +171,13 @@ describe("EvaluationJudgeService", () => {
     expect(result.score).toBe(0);
   });
 
-  it("retries one invalid metric response once then fails the whole evaluation", async () => {
+  it("retries an invalid metric response until attempts are exhausted, then fails the whole evaluation", async () => {
     models.chat.mockResolvedValue({ content: "not-json" });
 
     await expect(judge.score(inputWithThreeContexts, modelIds)).rejects.toThrow(
       "faithfulness judge output invalid after retry",
     );
-    expect(models.chat).toHaveBeenCalledTimes(2);
+    expect(models.chat).toHaveBeenCalledTimes(3);
     expect(models.embedTexts).not.toHaveBeenCalled();
   });
 
@@ -198,7 +206,7 @@ describe("EvaluationJudgeService", () => {
     expect(attempt).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects generated strings above the v2 bound after one retry", async () => {
+  it("rejects generated strings above the v2 bound after exhausting retries", async () => {
     models.chat.mockResolvedValue({
       content: JSON.stringify({
         claims: [{ claim: "x", supported: true, reason: "x".repeat(501) }],
@@ -208,7 +216,7 @@ describe("EvaluationJudgeService", () => {
     await expect(judge.score(inputWithThreeContexts, modelIds)).rejects.toThrow(
       "faithfulness judge output invalid after retry",
     );
-    expect(models.chat).toHaveBeenCalledTimes(2);
+    expect(models.chat).toHaveBeenCalledTimes(3);
   });
 
   it("accepts 100 claims and 500-character generated strings", async () => {
@@ -233,14 +241,136 @@ describe("EvaluationJudgeService", () => {
     ],
     ["501-character claim", [{ claim: "x".repeat(501), supported: true, reason: "x" }]],
     ["501-character reason", [{ claim: "x", supported: true, reason: "x".repeat(501) }]],
-  ])("rejects %s after one retry", async (_label, claims) => {
+  ])("rejects %s after exhausting retries", async (_label, claims) => {
     models.chat.mockResolvedValue({ content: JSON.stringify({ claims }) });
     const evaluator = new FaithfulnessEvaluator(models as unknown as ModelsService);
 
     await expect(evaluator.score(inputWithThreeContexts, "judge-1")).rejects.toThrow(
       "faithfulness judge output invalid after retry",
     );
+    expect(models.chat).toHaveBeenCalledTimes(3);
+  });
+
+  // ── 修复式重试：诊断 12 次真实调用发现的三类失败，全是"结构对不上"，不是长度超限 ──
+
+  it("normalizes a bare claims array without the {claims:...} wrapper", async () => {
+    models.chat.mockResolvedValueOnce({
+      content: JSON.stringify([{ claim: "七天内可退款", supported: true, reason: "context 1" }]),
+    });
+    const evaluator = new FaithfulnessEvaluator(models as unknown as ModelsService);
+    await expect(evaluator.score(inputWithThreeContexts, "judge-1")).resolves.toMatchObject({
+      score: 100,
+    });
+    expect(models.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes 'support'/'supporting' as synonyms for the supported field", async () => {
+    models.chat.mockResolvedValueOnce({
+      content: JSON.stringify({
+        claims: [
+          { claim: "七天内可退款", supporting: true, reason: "context 1" },
+          { claim: "自动到账", support: false, reason: "not present" },
+        ],
+      }),
+    });
+    const evaluator = new FaithfulnessEvaluator(models as unknown as ModelsService);
+    await expect(evaluator.score(inputWithThreeContexts, "judge-1")).resolves.toMatchObject({
+      score: 50,
+    });
+    expect(models.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("defaults a missing reason instead of failing the whole response", async () => {
+    models.chat.mockResolvedValueOnce({
+      content: JSON.stringify({ claims: [{ claim: "七天内可退款", supported: true }] }),
+    });
+    const evaluator = new FaithfulnessEvaluator(models as unknown as ModelsService);
+    const result = await evaluator.score(inputWithThreeContexts, "judge-1");
+    expect(result?.score).toBe(100);
+    expect(result?.evidence).toEqual(["(judge did not provide a reason)"]);
+    expect(models.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not accept additionalProperties as a route to inventing a missing supported value", async () => {
+    // claim/reason 都在，但 supported 及其近义词一个都没给——这不是命名漂移，是真缺信息，
+    // 该走修复重试而不是悄悄猜一个值；重试仍未给出就该失败，而不是默认 true/false。
+    models.chat.mockResolvedValue({
+      content: JSON.stringify({ claims: [{ claim: "x", reason: "y" }] }),
+    });
+    const evaluator = new FaithfulnessEvaluator(models as unknown as ModelsService);
+    await expect(evaluator.score(inputWithThreeContexts, "judge-1")).rejects.toThrow(
+      "faithfulness judge output invalid after retry",
+    );
+    expect(models.chat).toHaveBeenCalledTimes(3);
+  });
+
+  it("repairs a schema violation on retry by feeding back the prior output and the exact error", async () => {
+    models.chat
+      .mockResolvedValueOnce({ content: JSON.stringify({ claims: [{ claim: "x", reason: "y" }] }) })
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          claims: [{ claim: "x", supported: true, reason: "fixed" }],
+        }),
+      });
+    const evaluator = new FaithfulnessEvaluator(models as unknown as ModelsService);
+    const result = await evaluator.score(inputWithThreeContexts, "judge-1");
+    expect(result?.score).toBe(100);
     expect(models.chat).toHaveBeenCalledTimes(2);
+
+    // 第二次调用必须能看到「上次说了什么、错在哪」——不是原样重发第一次的两条消息。
+    const secondCallMessages = models.chat.mock.calls[1][1];
+    expect(secondCallMessages).toHaveLength(3);
+    const repairMessage = secondCallMessages[2];
+    expect(repairMessage.role).toBe("user");
+    expect(repairMessage.content).toContain("Your previous response failed validation");
+    expect(repairMessage.content).toContain(JSON.stringify({ claims: [{ claim: "x", reason: "y" }] }));
+    expect(repairMessage.content).toMatch(/supported/);
+  });
+
+  it("does not attempt repair after a provider-level failure — there is no output to repair from", async () => {
+    models.chat
+      .mockRejectedValueOnce(new Error("network blip"))
+      .mockResolvedValueOnce({
+        content: JSON.stringify({ claims: [{ claim: "x", supported: true, reason: "y" }] }),
+      });
+    const evaluator = new FaithfulnessEvaluator(models as unknown as ModelsService);
+    const result = await evaluator.score(inputWithThreeContexts, "judge-1");
+    expect(result?.score).toBe(100);
+    // 只有 system + 原 user 两条——provider 级失败没有"上次输出"可回填，原样重试。
+    expect(models.chat.mock.calls[1][1]).toHaveLength(2);
+  });
+
+  it("withJudgeRetry passes the prior schema failure's raw output and message into the next attempt", async () => {
+    let received: unknown;
+    let calls = 0;
+    const attempt = jest.fn(async (priorFailure?: unknown) => {
+      calls += 1;
+      if (calls === 1) throw new RetriableJudgeError("schema violation: X", "raw-bad-output");
+      received = priorFailure;
+      return "ok";
+    });
+    await expect(withJudgeRetry("faithfulness", attempt)).resolves.toBe("ok");
+    expect(received).toEqual({ rawOutput: "raw-bad-output", errorMessage: "schema violation: X" });
+  });
+
+  it("withJudgeRetry omits priorFailure when the first attempt had no raw output (provider error)", async () => {
+    let received: unknown = "not-yet-overwritten";
+    let calls = 0;
+    const attempt = jest.fn(async (priorFailure?: unknown) => {
+      calls += 1;
+      if (calls === 1) throw new RetriableJudgeError("provider call failed");
+      received = priorFailure;
+      return "ok";
+    });
+    await expect(withJudgeRetry("faithfulness", attempt)).resolves.toBe("ok");
+    expect(received).toBeUndefined();
+  });
+
+  it("repairInstruction embeds the prior output and error verbatim", () => {
+    const instruction = repairInstruction({ rawOutput: "{bad}", errorMessage: "missing field X" });
+    expect(instruction).toContain("{bad}");
+    expect(instruction).toContain("missing field X");
+    expect(instruction).toContain("Your previous response failed validation");
   });
 
   it("bounds persisted evidence independently of the parser", () => {
@@ -279,7 +409,7 @@ describe("EvaluationJudgeService", () => {
     expect(result.evidence.every((item) => item.length === 300)).toBe(true);
   });
 
-  it("rejects 501-character relevancy questions and precision reasons after retry", async () => {
+  it("rejects 501-character relevancy questions and precision reasons after exhausting retries", async () => {
     models.chat.mockResolvedValue({
       content: JSON.stringify({ questions: ["q".repeat(501)] }),
     });
@@ -287,7 +417,7 @@ describe("EvaluationJudgeService", () => {
     await expect(relevancy.score(inputWithThreeContexts, modelIds)).rejects.toThrow(
       "answer relevancy judge output invalid after retry",
     );
-    expect(models.chat).toHaveBeenCalledTimes(2);
+    expect(models.chat).toHaveBeenCalledTimes(3);
 
     models.chat.mockReset().mockResolvedValue({
       content: JSON.stringify({
@@ -302,7 +432,7 @@ describe("EvaluationJudgeService", () => {
     await expect(precision.score(inputWithThreeContexts, "judge-1")).rejects.toThrow(
       "context precision judge output invalid after retry",
     );
-    expect(models.chat).toHaveBeenCalledTimes(2);
+    expect(models.chat).toHaveBeenCalledTimes(3);
   });
 
   it("skips only faithfulness when the candidate is ineligible", async () => {
@@ -347,7 +477,7 @@ describe("EvaluationJudgeService", () => {
     await expect(evaluator.score(inputWithThreeContexts, "judge-1")).rejects.toThrow(
       "context precision judge output invalid after retry",
     );
-    expect(models.chat).toHaveBeenCalledTimes(2);
+    expect(models.chat).toHaveBeenCalledTimes(3);
   });
 
   it("maps negative and zero-vector cosine to zero and retries malformed embeddings", async () => {

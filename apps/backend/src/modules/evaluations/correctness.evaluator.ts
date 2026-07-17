@@ -7,8 +7,10 @@ import {
   invalidJudgeOutput,
   limitedEvidence,
   parseJudgeOutput,
+  repairInstruction,
   structuredOutput,
   withJudgeRetry,
+  type PriorJudgeFailure,
 } from "./evaluation-judge.utils";
 
 /**
@@ -56,7 +58,9 @@ export class CorrectnessEvaluator {
     });
     const outputSpec = structuredOutput("evaluation_correctness_v2", OutputSchema);
 
-    const { output, usage } = await withJudgeRetry("correctness", async () => {
+    const { output, usage } = await withJudgeRetry(
+      "correctness",
+      async (priorFailure?: PriorJudgeFailure) => {
       const response = await callJudgeProvider(() =>
         this.models.chat(
           judgeModelId,
@@ -68,7 +72,7 @@ export class CorrectnessEvaluator {
                 "zero-indexed array. Return exactly one judgment per gold point, each carrying the " +
                 '"index" of the gold point it judges. For every gold point decide: "hit" if the answer ' +
                 'conveys it, "missing" if the answer does not mention it, "contradicted" if the answer ' +
-                "states something incompatible with it. Return strict JSON only.",
+                "states something incompatible with it. Return JSON only, no markdown code fences.",
             },
             {
               role: "user",
@@ -78,6 +82,9 @@ export class CorrectnessEvaluator {
                 goldPoints: input.goldPoints.map((point, index) => ({ index, point })),
               }),
             },
+            ...(priorFailure
+              ? [{ role: "user" as const, content: repairInstruction(priorFailure) }]
+              : []),
           ],
           { temperature: 0, structuredOutput: outputSpec },
         ),
