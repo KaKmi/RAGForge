@@ -50,9 +50,11 @@ describe("EvaluationsService", () => {
     const control = {
       getSettings: jest.fn().mockResolvedValue(settings),
       updateSettings: jest.fn().mockResolvedValue(settings),
-      getOrCreateWatermark: jest.fn().mockResolvedValue({
+      findWatermark: jest.fn().mockResolvedValue({
         lastTs: new Date("2026-07-15T01:55:00.000Z"),
+        lastTraceId: "",
         dailyCount: 0,
+        lastRunAt: new Date("2026-07-15T01:58:00.000Z"),
       }),
     };
     const clickhouse = {
@@ -66,6 +68,7 @@ describe("EvaluationsService", () => {
       getByAgent: jest.fn().mockResolvedValue([]),
       getLowSamples: jest.fn().mockResolvedValue([]),
       countEligible: jest.fn().mockResolvedValue(0),
+      countEvaluable: jest.fn().mockResolvedValue(0),
       countBacklog: jest.fn().mockResolvedValue(0),
       getLatestSuccess: jest.fn().mockResolvedValue(undefined),
       getLatestFailure: jest.fn().mockResolvedValue(undefined),
@@ -166,6 +169,74 @@ describe("EvaluationsService", () => {
     expect(result.byAgent).toEqual([
       { agentId: "agent-empty", agentName: "Empty Agent", sampleCount: 0, scores: null },
     ]);
+  });
+
+  // 一个 GET 绝不能推进/播种游标：getOrCreateWatermark 会把它钉在 now-24h，
+  // 于是「打开一次屏1」就把更早的历史永久排除出候选集。
+  // control fixture 上**故意没有** getOrCreateWatermark：service 若去调它会直接 TypeError，
+  // 这比断言「没被调用」更硬——加回那一行的人会立刻看到红。
+  it("never creates the watermark from the read path", async () => {
+    const { service, control } = setup();
+    await service.getOverview({}, new Date("2026-07-15T02:00:00.000Z"));
+    expect(control.findWatermark).toHaveBeenCalledWith("online-quality-v1");
+  });
+
+  // status 是一条优先级链（disabled → model_unavailable → …），要测后面的档必须先把前面的让开。
+  function setupRunning() {
+    const harness = setup();
+    harness.control.getSettings.mockResolvedValue({
+      ...settings,
+      enabled: true,
+      judgeModelId: "judge-1",
+      embeddingModelId: "embed-1",
+    });
+    harness.models.get.mockImplementation(async (id: string) => ({
+      id,
+      name: id,
+      enabled: true,
+      type: id === "judge-1" ? "llm" : "embedding",
+    }));
+    return harness;
+  }
+
+  it.each([
+    ["水位线行还不存在（worker 一轮都没跑过）", undefined],
+    [
+      "lastRunAt 为空",
+      { lastTs: new Date("2026-07-15T01:55:00.000Z"), lastTraceId: "", dailyCount: 0, lastRunAt: null },
+    ],
+    [
+      "lastRunAt 超过两轮 cron 没动",
+      {
+        lastTs: new Date("2026-07-15T01:00:00.000Z"),
+        lastTraceId: "",
+        dailyCount: 0,
+        lastRunAt: new Date("2026-07-15T01:20:00.000Z"),
+      },
+    ],
+  ])("reports worker_stalled when %s", async (_label, watermark) => {
+    const { service, control } = setupRunning();
+    control.findWatermark.mockResolvedValue(watermark);
+    const result = await service.getOverview({}, new Date("2026-07-15T02:00:00.000Z"));
+    // 没流量时 backlog=0，旧口径会把「worker 死了」报成 healthy——这正是要分开的两件事。
+    expect(result.meta.backlog).toBe(0);
+    expect(result.meta.status).toBe("worker_stalled");
+  });
+
+  it("keeps a freshly reporting worker healthy", async () => {
+    const { service } = setupRunning();
+    const result = await service.getOverview({}, new Date("2026-07-15T02:00:00.000Z"));
+    expect(result.meta.status).toBe("healthy");
+  });
+
+  // 游标不存在 ⇒ 此刻还没有任何 trace 被越过 ⇒ 全窗口都仍可评，「已错过」为 0。
+  it("counts everything as still evaluable before the first cycle", async () => {
+    const { service, control, clickhouse } = setup();
+    control.findWatermark.mockResolvedValue(undefined);
+    clickhouse.countEligible.mockResolvedValue(32);
+    const result = await service.getOverview({}, new Date("2026-07-15T02:00:00.000Z"));
+    expect(clickhouse.countEvaluable).not.toHaveBeenCalled();
+    expect(result.meta).toMatchObject({ eligibleCount: 32, evaluableCount: 32 });
   });
 });
 

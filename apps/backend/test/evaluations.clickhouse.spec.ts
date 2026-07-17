@@ -4,8 +4,17 @@ import { ClickHouseEvaluationsRepository } from "../src/modules/evaluations/clic
 const from = new Date("2026-07-08T00:00:00.000Z");
 const to = new Date("2026-07-15T00:00:00.000Z");
 
+// 游标谓词的单一事实来源：listCandidates / countBacklog / countEvaluable 必须逐字用它。
+const CURSOR_PREDICATE = "(start_time, trace_id) > ({lastTs:DateTime64(9)}, {lastTraceId:String})";
+
 function jsonResult<T>(rows: T[]) {
   return { json: async () => rows };
+}
+
+function fakeClickHouse(...rows: Array<Array<Record<string, unknown>>>) {
+  const query = jest.fn().mockResolvedValueOnce(jsonResult([{ result: 1 }]));
+  for (const row of rows) query.mockResolvedValueOnce(jsonResult(row));
+  return { command: jest.fn().mockResolvedValue(undefined), query };
 }
 
 describe("ClickHouseEvaluationsRepository SQL", () => {
@@ -172,6 +181,43 @@ describe("ClickHouseEvaluationsRepository SQL", () => {
       answerRelevancyThreshold: 80,
       contextPrecisionThreshold: 75,
     });
+  });
+
+  it("counts backlog with the same strict tuple cursor listCandidates advances by", async () => {
+    const cursor = { lastTs: new Date("2026-07-15T15:46:53.332Z"), lastTraceId: "a".repeat(32) };
+
+    const candidatesCh = fakeClickHouse([]);
+    await new ClickHouseEvaluationsRepository(candidatesCh as never).listCandidates(cursor, to, 50);
+    const candidatesSql = candidatesCh.query.mock.calls.at(-1)?.[0].query as string;
+
+    const backlogCh = fakeClickHouse([{ count: "0" }]);
+    const repo = new ClickHouseEvaluationsRepository(backlogCh as never);
+    await expect(repo.countBacklog(cursor, to)).resolves.toBe(0);
+    const call = backlogCh.query.mock.calls.at(-1)?.[0];
+
+    // 回归缺口 20(c)：backlog 曾复用 countEligible 的含端 `start_time >= lastTs`。finishCycle 把
+    // 水位线压在最后一条处理过的 trace 上 ⇒ 那条已处理的 trace 被永远算作待处理 ⇒ 静默超过
+    // LAG_BUFFER 即 backlog 恒 1 ⇒ 页面永久「评测滞后」。两处谓词必须同源。
+    expect(candidatesSql.replace(/\bt\./g, "")).toContain(CURSOR_PREDICATE);
+    expect(call.query as string).toContain(CURSOR_PREDICATE);
+    expect(call.query as string).not.toContain("start_time >= {lastTs");
+    expect(call.query_params).toMatchObject({ lastTraceId: "a".repeat(32) });
+  });
+
+  it("counts evaluable traces inside the window but only after the cursor", async () => {
+    const clickhouse = fakeClickHouse([{ count: "1" }]);
+    const repo = new ClickHouseEvaluationsRepository(clickhouse as never);
+    const cursor = { lastTs: new Date("2026-07-14T00:00:00.000Z"), lastTraceId: "b".repeat(32) };
+
+    await expect(repo.countEvaluable(from, to, cursor, "agent-1")).resolves.toBe(1);
+
+    const call = clickhouse.query.mock.calls.at(-1)?.[0];
+    const sql = call.query as string;
+    // 「仍可评」= 窗口内 ∩ 游标之后。缺了游标条件就退化成 eligibleCount，(a) 的分母又不可比了。
+    expect(sql).toContain(CURSOR_PREDICATE);
+    expect(sql).toContain("start_time >= {from:DateTime64(9)}");
+    expect(sql).toContain("start_time < {to:DateTime64(9)}");
+    expect(call.query_params).toMatchObject({ lastTraceId: "b".repeat(32), agentId: "agent-1" });
   });
 });
 
@@ -450,6 +496,52 @@ describeClickHouse("evaluation read model", () => {
     // 回归 Finding 1：真实 ClickHouse 序列化下 targetTraceId 必须是真 id，而非 undefined
     expect(rows[0].targetTraceId).toBe(target);
     expect(rows[0].faithfulness).toBe(40);
+  });
+
+  it("reports zero backlog when the watermark sits exactly on the last processed trace", async () => {
+    const at = "2026-07-15 02:03:00.000000000";
+    await insertAgentRoot(client, {
+      traceId: target,
+      agentId: "agent-real",
+      agentName: "Real Agent",
+      at,
+    });
+    const before = new Date("2026-07-15T03:00:00.000Z");
+    const lastTs = new Date("2026-07-15T02:03:00.000Z");
+
+    // 回归缺口 20(c)：水位线正好压在最后一条 trace 上是 finishCycle 的**常态**，不是边角。
+    // 含端比较会把它数成「待处理 1」——本机实测那个永不消失的幻影。
+    await expect(repository.countBacklog({ lastTs, lastTraceId: target }, before)).resolves.toBe(0);
+
+    // 同一时间戳、更小的 trace_id：只有元组比较才追得上这条，含端/纯时间比较都会数错。
+    await expect(
+      repository.countBacklog({ lastTs, lastTraceId: "0".repeat(32) }, before),
+    ).resolves.toBe(1);
+  });
+
+  it("excludes cursor-passed traces from the evaluable count", async () => {
+    await insertAgentRoot(client, {
+      traceId: target,
+      agentId: "agent-real",
+      agentName: "Real Agent",
+      at: "2026-07-15 02:03:00.000000000",
+    });
+    const window = { from: new Date("2026-07-15T02:00:00.000Z"), to: new Date("2026-07-15T03:00:00.000Z") };
+
+    // 游标之前：窗口内合格，但永远不会被评 ⇒ 不算「仍可评」。这正是屏1 那 31 条的处境。
+    await expect(
+      repository.countEvaluable(window.from, window.to, {
+        lastTs: new Date("2026-07-15T02:03:00.000Z"),
+        lastTraceId: target,
+      }),
+    ).resolves.toBe(0);
+    // 游标之后：仍有机会。
+    await expect(
+      repository.countEvaluable(window.from, window.to, {
+        lastTs: new Date("2026-07-15T02:00:00.000Z"),
+        lastTraceId: "",
+      }),
+    ).resolves.toBe(1);
   });
 
   it("excludes traces with a blank agent_id from the per-agent breakdown", async () => {

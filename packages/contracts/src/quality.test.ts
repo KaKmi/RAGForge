@@ -77,10 +77,10 @@ describe("online quality contracts", () => {
         sampleRate: 0.1,
         evaluatedCount: 1,
         eligibleCount: 10,
+        evaluableCount: 2,
         judgeModel: "qwen-plus",
         judgeVersion: "online-v1",
         status: "healthy",
-        lagSeconds: 10,
         backlog: 0,
       },
       metrics: {
@@ -144,10 +144,10 @@ describe("online quality contracts", () => {
         sampleRate: 0.1,
         evaluatedCount: 12,
         eligibleCount: 100,
+        evaluableCount: 40,
         judgeModel: "qwen-plus",
         judgeVersion: "online-v1",
         status: "healthy",
-        lagSeconds: 120,
         backlog: 3,
       },
       metrics: {

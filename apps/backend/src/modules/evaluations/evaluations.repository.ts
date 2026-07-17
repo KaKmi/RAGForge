@@ -53,6 +53,21 @@ export class EvaluationsRepository {
     return settings;
   }
 
+  /**
+   * 只读取水位线，不存在也不创建——读路径（屏1 总览）专用。
+   * getOrCreateWatermark 会把游标播种在 now-24h，那是**破坏性**的：此后所有更早的 trace
+   * 永久出不了候选集。它只该由真正要推进游标的 worker 调用；一个 GET 绝不能有这种副作用
+   * （曾经有：打开屏1 即钉死游标，尤其在只起 api 没起 worker 时）。
+   */
+  async findWatermark(workerName: string): Promise<EvalWatermarkRow | undefined> {
+    const [watermark] = await this.db
+      .select()
+      .from(evalWatermarks)
+      .where(eq(evalWatermarks.workerName, workerName))
+      .limit(1);
+    return watermark;
+  }
+
   async getOrCreateWatermark(workerName: string, now: Date): Promise<EvalWatermarkRow> {
     const today = utcDate(now);
     await this.db

@@ -14,6 +14,7 @@ import {
   Spin,
   Statistic,
   Switch,
+  Tooltip,
   Typography,
   message,
 } from "antd";
@@ -59,8 +60,14 @@ const STATUS_LABEL: Record<QualityOverviewResponse["meta"]["status"], string> = 
   lagging: "评测滞后",
   budget_reduced: "预算降采样",
   model_unavailable: "评测模型不可用",
+  worker_stalled: "评测 worker 未在运行",
 };
-// Alert 语义色：healthy=success，disabled=info，其余（滞后/降采样/不可用）=warning——保留历史分数不报错
+// 「没在跑」不是「落后」——worker 是独立进程（PROCESS_ROLE=worker），没起来时这里是唯一的信号。
+const STATUS_HINT: Partial<Record<QualityOverviewResponse["meta"]["status"], string>> = {
+  worker_stalled: "worker 超过 35 分钟没有报到。评测已停，新问答不会被评分。",
+  lagging: "worker 在跑，但候选还没消化完。",
+};
+// Alert 语义色：healthy=success，disabled=info，其余（滞后/降采样/不可用/未运行）=warning——保留历史分数不报错
 const STATUS_ALERT: Record<
   QualityOverviewResponse["meta"]["status"],
   "success" | "info" | "warning"
@@ -70,6 +77,7 @@ const STATUS_ALERT: Record<
   lagging: "warning",
   budget_reduced: "warning",
   model_unavailable: "warning",
+  worker_stalled: "warning",
 };
 const TREND_SERIES = [
   { key: "faithfulness", label: "事实一致性", color: "#1677ff" },
@@ -178,6 +186,14 @@ export default function QualityPage() {
     }
     return rows;
   }, [overview, agentId]);
+
+  // 窗口内既没评过、水位线又已越过的 trace —— 永久错过。三个计数同窗口同过滤，故可直接相减。
+  const missedCount = overview
+    ? Math.max(
+        0,
+        overview.meta.eligibleCount - overview.meta.evaluatedCount - overview.meta.evaluableCount,
+      )
+    : 0;
 
   const updateUrl = (key: string, value?: string) => {
     const next = new URLSearchParams(searchParams);
@@ -301,13 +317,21 @@ export default function QualityPage() {
             type={STATUS_ALERT[overview.meta.status]}
             showIcon
             style={{ marginBottom: 16 }}
+            description={STATUS_HINT[overview.meta.status]}
             title={
               <Space size={12} wrap>
                 <strong>{STATUS_LABEL[overview.meta.status]}</strong>
                 <Text type="secondary">
-                  已评测 {overview.meta.evaluatedCount} / 可评测 {overview.meta.eligibleCount} ·
-                  待处理 {overview.meta.backlog}
+                  已评测 {overview.meta.evaluatedCount} / 窗口内 {overview.meta.eligibleCount}
                 </Text>
+                {missedCount > 0 && (
+                  <Tooltip title="水位线已越过这些 trace，它们不会再被评测；调高抽样率也不会回补。">
+                    <Text type="secondary" style={{ borderBottom: "1px dotted", cursor: "help" }}>
+                      已错过 {missedCount}
+                    </Text>
+                  </Tooltip>
+                )}
+                <Text type="secondary">待处理 {overview.meta.backlog}</Text>
               </Space>
             }
             action={

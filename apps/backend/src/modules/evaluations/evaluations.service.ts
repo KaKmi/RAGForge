@@ -24,6 +24,10 @@ import type { OnlineEvalSettingsRow } from "./schema";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LAG_BUFFER_MS = 5 * 60 * 1000;
 const LOW_SAMPLE_COUNT = 20;
+// worker 的 cron 是 */15，每轮 tryAcquireLease 都会盖 lastRunAt。放两轮 + 5min 余量：
+// 超过它没动过 = worker 没在跑（019 拆进程后这是屏1 唯一能拿到的活性证据——worker 无 HTTP、
+// 无健康探针、compose 里也没有它的服务，「只起了 api」是安静的常态）。
+const WORKER_STALE_MS = 35 * 60 * 1000;
 
 @Injectable()
 export class EvaluationsService {
@@ -49,32 +53,49 @@ export class EvaluationsService {
       from: new Date(from.getTime() - duration),
       to: from,
     };
-    const watermark = await this.controlRepo.getOrCreateWatermark(ONLINE_EVALUATION_WORKER, now);
+    // 只读——绝不 getOrCreate：那会把游标播种在 now-24h，让一次页面刷新永久吞掉更早的历史。
+    const watermark = await this.controlRepo.findWatermark(ONLINE_EVALUATION_WORKER);
     const backlogTo = new Date(now.getTime() - LAG_BUFFER_MS);
-    const [aggregate, previousAggregate, trend, byAgent, lowSamples, eligibleCount, backlog] =
-      await Promise.all([
-        this.clickhouseRepo.getOverview(current),
-        this.clickhouseRepo.getOverview(previous),
-        this.clickhouseRepo.getMinuteAggregates(current),
-        this.clickhouseRepo.getByAgent(current),
-        this.clickhouseRepo.getLowSamples(current, thresholds(settings)),
-        this.clickhouseRepo.countEligible(from, to, query.agentId),
-        watermark.lastTs < backlogTo
-          ? this.clickhouseRepo.countBacklog(watermark.lastTs, backlogTo)
-          : Promise.resolve(0),
-      ]);
+    // 水位线行还不存在 = worker 一轮都没跑过 ⇒ 游标不存在，此刻还没有任何 trace 被越过。
+    const cursor = watermark
+      ? { lastTs: watermark.lastTs, lastTraceId: watermark.lastTraceId }
+      : null;
+    const [
+      aggregate,
+      previousAggregate,
+      trend,
+      byAgent,
+      lowSamples,
+      eligibleCount,
+      evaluableCount,
+      backlog,
+    ] = await Promise.all([
+      this.clickhouseRepo.getOverview(current),
+      this.clickhouseRepo.getOverview(previous),
+      this.clickhouseRepo.getMinuteAggregates(current),
+      this.clickhouseRepo.getByAgent(current),
+      this.clickhouseRepo.getLowSamples(current, thresholds(settings)),
+      this.clickhouseRepo.countEligible(from, to, query.agentId),
+      cursor
+        ? this.clickhouseRepo.countEvaluable(from, to, cursor, query.agentId)
+        : this.clickhouseRepo.countEligible(from, to, query.agentId),
+      cursor && cursor.lastTs < backlogTo
+        ? this.clickhouseRepo.countBacklog(cursor, backlogTo)
+        : Promise.resolve(0),
+    ]);
     const judge = await this.resolveSelectedModel(settings.judgeModelId, "llm");
     const embedding = await this.resolveSelectedModel(settings.embeddingModelId, "embedding");
     const status = !settings.enabled
       ? "disabled"
       : !judge || !embedding
         ? "model_unavailable"
-        : watermark.dailyCount >= Math.floor(settings.dailyCap * 0.8)
-          ? "budget_reduced"
-          : backlog > 0
-            ? "lagging"
-            : "healthy";
-    const lagSeconds = Math.max(0, Math.floor((backlogTo.getTime() - watermark.lastTs.getTime()) / 1000));
+        : workerStalled(watermark?.lastRunAt, now)
+          ? "worker_stalled"
+          : (watermark?.dailyCount ?? 0) >= Math.floor(settings.dailyCap * 0.8)
+            ? "budget_reduced"
+            : backlog > 0
+              ? "lagging"
+              : "healthy";
 
     return {
       meta: {
@@ -82,10 +103,10 @@ export class EvaluationsService {
         sampleRate: settings.sampleRate,
         evaluatedCount: aggregate.sampleCount,
         eligibleCount,
+        evaluableCount,
         judgeModel: judge?.name ?? null,
         judgeVersion: settings.judgeVersion,
         status,
-        lagSeconds,
         backlog,
       },
       metrics: {
@@ -223,6 +244,17 @@ export class EvaluationsService {
       return undefined;
     }
   }
+}
+
+/**
+ * 「worker 没在跑」与「worker 在跑但落后」是两件事，此前在屏1 上同形（都显示评测滞后）。
+ * lastRunAt 由 tryAcquireLease 每轮盖一次——它断言的是「worker 醒过来了」，
+ * 与 backlog（有没有活儿）正交：没流量时 backlog=0 但 worker 照样该每 15 分钟报到一次。
+ * 空值 = 一轮都没跑过（水位线行可能刚被 worker 建出来还没跑完第一轮）。
+ */
+function workerStalled(lastRunAt: Date | null | undefined, now: Date): boolean {
+  if (!lastRunAt) return true;
+  return now.getTime() - lastRunAt.getTime() > WORKER_STALE_MS;
 }
 
 function score(value: number | null): number | null {

@@ -117,11 +117,24 @@ export const QualityOverviewResponseSchema = z.object({
     enabled: z.boolean(),
     sampleRate: z.number().min(0).max(1),
     evaluatedCount: count,
+    // 窗口内非 preview trace 总数。与 evaluatedCount 同窗口，故「已评测/窗口内」是可比的覆盖率。
     eligibleCount: count,
+    // 窗口内且仍在游标之后的 trace 数 —— 只有这些还有机会被评。
+    // 游标已越过的 trace 永不回头（listCandidates 用严格元组游标），
+    // 故「已错过」= eligibleCount - evaluatedCount - evaluableCount，由前端派生。
+    evaluableCount: count,
     judgeModel: z.string().nullable(),
     judgeVersion: z.string().min(1),
-    status: z.enum(["disabled", "healthy", "lagging", "budget_reduced", "model_unavailable"]),
-    lagSeconds: z.number().nonnegative().nullable(),
+    // worker_stalled 排在 backlog 判定之前：worker 没在跑时，backlog 是多少都不重要，
+    // 且没流量时 backlog=0 会把「worker 死了」伪装成 healthy。
+    status: z.enum([
+      "disabled",
+      "healthy",
+      "lagging",
+      "budget_reduced",
+      "model_unavailable",
+      "worker_stalled",
+    ]),
     backlog: count,
   }),
   metrics: z.object({

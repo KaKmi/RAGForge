@@ -27,10 +27,10 @@ const baseOverview = {
     sampleRate: 0.1,
     evaluatedCount: 30,
     eligibleCount: 300,
+    evaluableCount: 270,
     judgeModel: "qwen-plus",
     judgeVersion: "online-v1",
     status: "healthy" as const,
-    lagSeconds: 60,
     backlog: 0,
   },
   metrics: {
@@ -127,10 +127,24 @@ it("keeps previous data visible when refresh fails", async () => {
   await waitFor(() => expect(message.error).toHaveBeenCalled());
 });
 
+// worker 是独立进程（019）：没起来时屏1 是唯一的信号，不能和「在跑但落后」同形。
+it("names a stalled worker instead of calling it lagging", async () => {
+  vi.mocked(api.getQualityOverview).mockResolvedValue({
+    ...baseOverview,
+    meta: { ...baseOverview.meta, status: "worker_stalled" },
+  });
+  renderQuality();
+  expect(await screen.findByText("评测 worker 未在运行")).toBeInTheDocument();
+  expect(screen.getByText(/新问答不会被评分/)).toBeInTheDocument();
+  expect(screen.queryByText("评测滞后")).not.toBeInTheDocument();
+  expect(screen.getByText("92")).toBeInTheDocument();
+});
+
 it.each([
   ["healthy", "在线 LLM 裁判"],
   ["lagging", "评测滞后"],
   ["budget_reduced", "预算降采样"],
+  ["worker_stalled", "评测 worker 未在运行"],
 ] as const)("renders %s status without discarding scores", async (status, label) => {
   vi.mocked(api.getQualityOverview).mockResolvedValue({
     ...baseOverview,
@@ -139,6 +153,35 @@ it.each([
   renderQuality();
   expect(await screen.findByText(new RegExp(label.replaceAll(" ", "\\s*")))).toBeInTheDocument();
   expect(screen.getByText("92")).toBeInTheDocument();
+});
+
+// 缺口 20(a)：横幅曾写「已评测 30 / 可评测 300」，可 300 里绝大多数水位线已越过、永不会被评。
+// 分母改称「窗口内」（与分子同窗口 ⇒ 可比的覆盖率），错过的量单列，不再伪装成待办。
+it("separates the window total from what is still evaluable", async () => {
+  vi.mocked(api.getQualityOverview).mockResolvedValue({
+    ...baseOverview,
+    meta: { ...baseOverview.meta, evaluatedCount: 0, eligibleCount: 32, evaluableCount: 1, backlog: 1 },
+    metrics: {
+      faithfulness: metric(null, 0),
+      answerRelevancy: metric(null, 0),
+      contextPrecision: metric(null, 0),
+    },
+  });
+  renderQuality();
+  expect(await screen.findByText(/已评测\s*0\s*\/\s*窗口内\s*32/)).toBeInTheDocument();
+  expect(screen.getByText(/已错过\s*31/)).toBeInTheDocument();
+  expect(screen.getByText(/待处理\s*1/)).toBeInTheDocument();
+  expect(screen.queryByText(/可评测/)).not.toBeInTheDocument();
+});
+
+it("omits the missed count when the cursor has passed nothing", async () => {
+  vi.mocked(api.getQualityOverview).mockResolvedValue({
+    ...baseOverview,
+    meta: { ...baseOverview.meta, evaluatedCount: 30, eligibleCount: 300, evaluableCount: 270 },
+  });
+  renderQuality();
+  expect(await screen.findByText(/已评测\s*30\s*\/\s*窗口内\s*300/)).toBeInTheDocument();
+  expect(screen.queryByText(/已错过/)).not.toBeInTheDocument();
 });
 
 it("renders zero-sample empty state", async () => {

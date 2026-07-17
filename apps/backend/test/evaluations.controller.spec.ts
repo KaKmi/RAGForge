@@ -11,10 +11,10 @@ const overviewFixture = {
     sampleRate: 0.1,
     evaluatedCount: 0,
     eligibleCount: 0,
+    evaluableCount: 0,
     judgeModel: null,
     judgeVersion: "online-v1",
     status: "disabled" as const,
-    lagSeconds: 0,
     backlog: 0,
   },
   metrics: {

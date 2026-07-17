@@ -390,8 +390,53 @@ export class ClickHouseEvaluationsRepository {
     return Number(row?.count ?? 0);
   }
 
-  async countBacklog(after: Date, before: Date): Promise<number> {
-    return this.countEligible(after, before);
+  // 窗口内且仍在游标之后 —— 只有这些还有机会被评。游标已越过的 trace 永不回头。
+  async countEvaluable(
+    from: Date,
+    to: Date,
+    cursor: EvaluationCursor,
+    agentId?: string,
+  ): Promise<number> {
+    if (!(await this.ensureCandidateViews())) return 0;
+    const result = await this.clickhouse.query({
+      query: `SELECT count() AS count FROM codecrush_traces
+        WHERE preview = 0
+          AND (start_time, trace_id) > ({lastTs:DateTime64(9)}, {lastTraceId:String})
+          AND start_time >= {from:DateTime64(9)} AND start_time < {to:DateTime64(9)}
+          AND ({agentId:String} = '' OR agent_id = {agentId:String})`,
+      query_params: {
+        from: toClickHouseDateTime(from),
+        to: toClickHouseDateTime(to),
+        lastTs: toClickHouseDateTime(cursor.lastTs),
+        lastTraceId: cursor.lastTraceId,
+        agentId: agentId ?? "",
+      },
+      format: "JSONEachRow",
+    });
+    const [row] = await result.json<{ count: number | string }>();
+    return Number(row?.count ?? 0);
+  }
+
+  // 谓词必须与 listCandidates 同源（严格元组游标 + start_time <= 上界），否则数出的不是 worker
+  // 实际会取的候选集。曾用 countEligible 的 `start_time >= lastTs` 代替：finishCycle 把水位线
+  // 压在最后一条处理过的 trace 上，含端比较把那条已处理的 trace 永远算作待处理 ⇒ 静默超过
+  // LAG_BUFFER 即恒 backlog=1 ⇒ 页面永久「评测滞后」。
+  async countBacklog(cursor: EvaluationCursor, before: Date): Promise<number> {
+    if (!(await this.ensureCandidateViews())) return 0;
+    const result = await this.clickhouse.query({
+      query: `SELECT count() AS count FROM codecrush_traces
+        WHERE preview = 0
+          AND (start_time, trace_id) > ({lastTs:DateTime64(9)}, {lastTraceId:String})
+          AND start_time <= {before:DateTime64(9)}`,
+      query_params: {
+        lastTs: toClickHouseDateTime(cursor.lastTs),
+        lastTraceId: cursor.lastTraceId,
+        before: toClickHouseDateTime(before),
+      },
+      format: "JSONEachRow",
+    });
+    const [row] = await result.json<{ count: number | string }>();
+    return Number(row?.count ?? 0);
   }
 
   async getLatestSuccess(targetTraceId: string): Promise<LatestEvaluationSuccess | undefined> {
