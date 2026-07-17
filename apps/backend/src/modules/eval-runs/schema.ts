@@ -112,10 +112,10 @@ export const evalRuns = pgTable(
     configVersionId: uuid("config_version_id").notNull(),
     judgeModelId: uuid("judge_model_id").notNull(),
     embeddingModelId: uuid("embedding_model_id").notNull(),
-    /** 离线独立版本；在线 judgeVersion 保持 online-v1 不动（017 基线）。 */
+    /** 离线独立量具版本；v2 默认仅作用于新建 run，不重写历史行。 */
     offlineJudgeVersion: varchar("offline_judge_version", { length: 100 })
       .notNull()
-      .default("offline-v1"),
+      .default("offline-v2"),
     status: varchar("status", { length: 20 }).notNull().default("queued"), // 原型 §18.A 逐字
     scope: varchar("scope", { length: 20 }).notNull().default("all"), // W2a 仅 all；low_score/tags 留 W2b
     /**

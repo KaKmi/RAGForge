@@ -29,7 +29,7 @@ export const onlineEvalSettings = pgTable(
     answerRelevancyThreshold: smallint("answer_relevancy_threshold").notNull().default(80),
     contextPrecisionThreshold: smallint("context_precision_threshold").notNull().default(80),
     dailyCap: integer("daily_cap").notNull().default(500),
-    judgeVersion: varchar("judge_version", { length: 100 }).notNull().default("online-v1"),
+    judgeVersion: varchar("judge_version", { length: 100 }).notNull().default("online-v2"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

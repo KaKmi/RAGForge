@@ -148,6 +148,13 @@
       "when": 1784272083900,
       "tag": "0020_secret_nightmare",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784292452994,
+      "tag": "0021_judge_scoring_v2",
+      "breakpoints": true
     }
   ]
 }
