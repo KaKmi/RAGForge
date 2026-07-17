@@ -261,6 +261,7 @@ describe("EvaluationJudgeService", () => {
     const relevancy = new AnswerRelevancyEvaluator(models as unknown as ModelsService);
     await expect(relevancy.score(inputWithThreeContexts, modelIds)).resolves.toMatchObject({
       score: 100,
+      evidence: ["q".repeat(300)],
     });
 
     models.chat.mockReset().mockResolvedValueOnce({
