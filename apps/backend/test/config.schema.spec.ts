@@ -87,3 +87,34 @@ describe("envSchema 离线评测单用例超时 (E-W2a QA P1)", () => {
     expect(envSchema.safeParse({ ...valid, EVAL_RUN_CASE_TIMEOUT_MS: "0" }).success).toBe(false);
   });
 });
+
+describe("envSchema 进程角色分流 (019)", () => {
+  const valid = {
+    ...base,
+    JWT_SECRET: "dev-only-change-me-please-32-chars-min!!",
+    MODEL_API_KEY_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString("base64"),
+  };
+
+  it("PROCESS_ROLE 未设置时默认 all（零变化默认）", () => {
+    const r = envSchema.safeParse(valid);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.PROCESS_ROLE).toBe("all");
+  });
+
+  it("空串按未设置处理 → all（与 parseProcessRole 同一校验器，语义必然一致）", () => {
+    const r = envSchema.safeParse({ ...valid, PROCESS_ROLE: "" });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.PROCESS_ROLE).toBe("all");
+  });
+
+  it("worker 合法通过", () => {
+    const r = envSchema.safeParse({ ...valid, PROCESS_ROLE: "worker" });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.PROCESS_ROLE).toBe("worker");
+  });
+
+  it("非法值（含大小写错）→ 校验失败", () => {
+    expect(envSchema.safeParse({ ...valid, PROCESS_ROLE: "API" }).success).toBe(false);
+    expect(envSchema.safeParse({ ...valid, PROCESS_ROLE: "bogus" }).success).toBe(false);
+  });
+});

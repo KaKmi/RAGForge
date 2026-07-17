@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseProcessRole, type ProcessRole } from "./process-role";
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -39,5 +40,18 @@ export const envSchema = z.object({
     .string()
     .default("true")
     .transform((v) => v !== "false"),
+  // 019：进程角色分流。校验逻辑完全委托 parseProcessRole（全仓唯一校验器，
+  // main.ts/tracing.ts 在 DI 前也调它），本字段只是把结果带进 Env 供 AppConfigService 读。
+  PROCESS_ROLE: z
+    .string()
+    .optional()
+    .transform((value, ctx): ProcessRole => {
+      try {
+        return parseProcessRole({ PROCESS_ROLE: value });
+      } catch (error) {
+        ctx.addIssue({ code: "custom", message: (error as Error).message });
+        return z.NEVER;
+      }
+    }),
 });
 export type Env = z.infer<typeof envSchema>;

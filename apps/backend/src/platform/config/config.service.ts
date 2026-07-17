@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { Env } from "./config.schema";
+import type { ProcessRole } from "./process-role";
 
 @Injectable()
 export class AppConfigService {
@@ -51,5 +52,9 @@ export class AppConfigService {
   /** 离线评测单用例编排超时（默认 120s；口径与偏离理由见 config.schema.ts 的注释）。 */
   get evalRunCaseTimeoutMs(): number {
     return this.config.get("EVAL_RUN_CASE_TIMEOUT_MS", { infer: true });
+  }
+  /** 进程角色（019）：api|worker|all，默认 all。QueueModule 的消费门控经此读取。 */
+  get processRole(): ProcessRole {
+    return this.config.get("PROCESS_ROLE", { infer: true });
   }
 }
