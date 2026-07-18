@@ -133,7 +133,10 @@ export const evalManualScoreJobs = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    primaryKey({ columns: [t.targetTraceId, t.judgeVersion] }),
+    // 显式命名：不给名字时 drizzle 生成的是
+    // `eval_manual_score_jobs_target_trace_id_judge_version_pk`（见 0020 里账本表的实例），
+    // 与手写迁移里的 `..._pk` 对不上 —— 名字漂移会让将来任何按名字 DROP CONSTRAINT 的迁移失败。
+    primaryKey({ name: "eval_manual_score_jobs_pk", columns: [t.targetTraceId, t.judgeVersion] }),
     check(
       "eval_manual_score_jobs_status_check",
       sql`${t.status} IN ('queued','running','scored','failed')`,

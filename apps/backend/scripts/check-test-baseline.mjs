@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 
 /** 实测值（2026-07-18，docker infra 全绿）。新增用例后请上调。 */
 const BASELINES = {
-  db: { suites: 11, tests: 80, script: "test:db" },
+  db: { suites: 11, tests: 82, script: "test:db" },
   infra: { suites: 6, tests: 73, script: "test:infra" },
 };
 
