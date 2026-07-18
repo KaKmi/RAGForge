@@ -115,6 +115,9 @@ describe("application contracts", () => {
 
   it("keeps base updates strict", () => {
     expect(UpdateApplicationRequestSchema.parse({ enabled: false })).toEqual({ enabled: false });
+    expect(UpdateApplicationRequestSchema.parse({ evalGateEnabled: true })).toEqual({
+      evalGateEnabled: true,
+    });
     expect(() => UpdateApplicationRequestSchema.parse({ slug: "new-slug" })).toThrow();
   });
 
@@ -125,6 +128,9 @@ describe("application contracts", () => {
       name: "售后",
       description: "",
       enabled: true,
+      // B1/F5：门禁开关。required（无 .default）——契约层必须钉住必填性，
+      // 否则后端漏映射时前端会静默读到 undefined。
+      evalGateEnabled: false,
       productionVersion: null,
       productionConfigVersionId: null,
       latestVersion: 1,
@@ -140,6 +146,7 @@ describe("application contracts", () => {
     expect(() =>
       ApplicationSchema.parse({ ...value, productionConfigVersionId: undefined }),
     ).toThrow();
+    expect(() => ApplicationSchema.parse({ ...value, evalGateEnabled: undefined })).toThrow();
 
     const version = {
       ...config,

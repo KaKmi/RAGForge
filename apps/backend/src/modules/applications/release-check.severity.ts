@@ -29,5 +29,12 @@ export function hasBlockingIssue(issues: readonly ReleaseCheckIssue[]): boolean 
 export function normalizeIssueSeverity(
   issues: readonly ReleaseCheckIssue[],
 ): ReleaseCheckIssue[] {
-  return issues.map((issue) => (issue.severity ? issue : { ...issue, severity: "error" }));
+  return issues.map((issue) => {
+    // `as Partial<...>` 不是多余的：z.infer 把带 .default() 的字段推成**必填**，
+    // 于是 TS 认为 `issue.severity` 恒真、这个分支恒不成立——一次
+    // `no-unnecessary-condition` 之类的清理就会把它删掉。类型是编译期的谎言，
+    // 运行期这里拿到的是未过 Zod 的库中 jsonb。强制转换把这个落差写进代码本身。
+    const severity = (issue as Partial<ReleaseCheckIssue>).severity ?? "error";
+    return { ...issue, severity };
+  });
 }
