@@ -110,6 +110,19 @@ export const evalCaseVersions = pgTable(
   (t) => [uniqueIndex("eval_case_versions_case_version_unique").on(t.caseId, t.version)],
 );
 
+/**
+ * 「全局活跃槽位」部分唯一索引的名字（018 §12 缺口 13）。
+ *
+ * **必须是常量，不能两处各写一遍字面量**：`eval-runs.repository.ts` 的
+ * `isSingleActiveRunConflict` 按此名**精确匹配** 23505（笼统匹配会把
+ * `eval_run_results_run_case_unique` 这类真 bug 伪装成正常的 409）。改了索引名却漏改
+ * 判别函数，`POST /eval/runs` 的并发兜底就从 409 静默退化成 500，且编译期毫无信号。
+ *
+ * 第三处副本在 `drizzle/0023_eval_run_active_slot.sql`（迁移是手写 SQL，无从共享常量；
+ * 该文件已冻结，见 `drizzle/README.md`），由 `eval-runs.lease.db.spec.ts` 的真库断言钉住。
+ */
+export const EVAL_RUNS_SINGLE_ACTIVE_UNIQUE = "eval_runs_single_active_unique";
+
 /** run。 */
 export const evalRuns = pgTable(
   "eval_runs",
@@ -164,6 +177,7 @@ export const evalRuns = pgTable(
     index("eval_runs_active_idx").on(t.status), // queued/running 并发检查
     /**
      * 018 §12 缺口 13：**「全局同时最多 1 个 run」的唯一硬保证**。
+     * 索引名走 `EVAL_RUNS_SINGLE_ACTIVE_UNIQUE` 常量，与判别函数同源（见该常量注释）。
      *
      * `create()` 的 `findActiveRun()` 只是快速路径与文案来源——它与 `insertRun()`
      * 之间无事务、无锁，两个并发请求会双双越过它（TOCTOU 双开）。后果非良性：
@@ -174,7 +188,7 @@ export const evalRuns = pgTable(
      * 迁移见 `drizzle/0023_eval_run_active_slot.sql`；冲突判别见
      * `eval-runs.repository.ts` 的 `isSingleActiveRunConflict`（按此名精确匹配）。
      */
-    uniqueIndex("eval_runs_single_active_unique")
+    uniqueIndex(EVAL_RUNS_SINGLE_ACTIVE_UNIQUE)
       .on(sql`(${t.status} IN ('queued','running'))`)
       .where(sql`${t.status} IN ('queued','running')`),
   ],

@@ -1,9 +1,11 @@
 import { Inject, Injectable } from "@nestjs/common";
+import type { EvalRunStatus } from "@codecrush/contracts";
 import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import { EVAL_RUN_REAP_GRACE_MS } from "./eval-run.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
 import {
+  EVAL_RUNS_SINGLE_ACTIVE_UNIQUE,
   evalCaseVersions,
   evalRunResults,
   evalRuns,
@@ -121,11 +123,13 @@ const ACTIVE_STATUSES = ["queued", "running"] as const;
  *    `DrizzleQueryError.cause`，直接读 `error.code` 恒 undefined。
  *  · **必须按约束名精确匹配** —— `eval_run_results_run_case_unique` 也是 23505，
  *    笼统吞掉会把「续跑撞唯一索引」这类真 bug 伪装成正常的 409。
+ *    索引名取 `schema.ts` 的 `EVAL_RUNS_SINGLE_ACTIVE_UNIQUE` 常量，与建索引处同源：
+ *    改名漏改这里会让并发兜底从 409 静默退化成 500。
  */
 export function isSingleActiveRunConflict(error: unknown): boolean {
   const candidate = (error as { cause?: unknown } | null)?.cause ?? error;
   const pgError = candidate as { code?: string; constraint?: string } | null;
-  return pgError?.code === "23505" && pgError.constraint === "eval_runs_single_active_unique";
+  return pgError?.code === "23505" && pgError.constraint === EVAL_RUNS_SINGLE_ACTIVE_UNIQUE;
 }
 
 @Injectable()
@@ -448,7 +452,7 @@ export class EvalRunsRepository {
    */
   async finishRunAsOwner(
     id: string,
-    status: string,
+    status: EvalRunStatus,
     now: Date,
     error: string | null,
     owner: string,
@@ -472,7 +476,7 @@ export class EvalRunsRepository {
    */
   async finishRunUnowned(
     id: string,
-    status: string,
+    status: EvalRunStatus,
     now: Date,
     error: string | null,
   ): Promise<boolean> {
