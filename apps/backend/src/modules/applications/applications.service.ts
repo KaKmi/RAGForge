@@ -66,6 +66,27 @@ export type ApplicationDeletionGuard = (applicationId: string) => Promise<string
  * B1/F5：评测门禁 issue 提供方。由 eval-runs 侧注册（注册表反转，同 ApplicationDeletionGuard）——
  * applications **不知道** eval-runs，依赖方向保持 eval-runs → applications 单向。
  */
+/** B1/F5：门禁取数的超时上限。超时 → 与读取失败同路，产出 UNAVAILABLE warning（仍放行）。 */
+const EVAL_GATE_TIMEOUT_MS = 5000;
+
+/**
+ * 超时包装。注意 `clearTimeout` 必须在 finally 里——否则即便 provider 先返回，
+ * 悬着的定时器也会把 Node 进程多吊住 5 秒（jest 里表现为 suite 结束后卡住）。
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`eval gate 取数超时（>${ms}ms）`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export type EvalGateProvider = (
   applicationId: string,
   configVersionId: string,
@@ -554,6 +575,11 @@ export class ApplicationsService {
   private evalGateProvider: EvalGateProvider | null = null;
 
   registerEvalGateProvider(provider: EvalGateProvider): void {
+    // 覆盖而非追加（与 deletionGuards 的 push 刻意不同）：门禁结论只有一个才有意义，
+    // 多个 provider 互相覆盖是配置错误，不该静默发生。
+    if (this.evalGateProvider) {
+      this.logger.warn("eval gate provider 被重复注册，后注册者覆盖前者");
+    }
     this.evalGateProvider = provider;
   }
 
@@ -580,9 +606,23 @@ export class ApplicationsService {
       return [];
     }
     try {
-      const issues = await this.evalGateProvider(applicationId, configVersionId);
+      // 超时兜底：门禁跑在 ReleaseCheck 的异步 processor 里，取数要读两侧 run 的全量
+      // 结果集。评测集一大就可能拖很久，而这个 job 唯一的兜底是 15 分钟的僵尸窗口。
+      // 超时按「读不到」处理 —— 与其让用户对着「预演中」干等，不如明说「未做回退判断」。
+      const issues = await withTimeout(
+        this.evalGateProvider(applicationId, configVersionId),
+        EVAL_GATE_TIMEOUT_MS,
+      );
       // 纵深防御：provider 万一产出了 error 级 issue，也不得让它获得阻断力——
       // 门禁按设计只做软提示，阻断权属于 staticGate/预演。
+      // 降级要留痕：静默改写会把「provider 开始产 error」这种真 bug 一并吞掉。
+      for (const issue of issues) {
+        if (issue.severity && issue.severity !== "warning") {
+          this.logger.warn(
+            `eval gate provider 产出了非 warning 级 issue（已强制降级）：${issue.code}/${issue.severity}`,
+          );
+        }
+      }
       return issues.map((issue) => ({ ...issue, severity: "warning" as const }));
     } catch (err) {
       this.logger.warn(`eval gate provider failed app=${applicationId}: ${String(err)}`);

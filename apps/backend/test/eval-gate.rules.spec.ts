@@ -41,6 +41,21 @@ describe("buildGateIssues", () => {
     expect(issues[0].message).not.toContain("下降 0 分");
   });
 
+  /**
+   * 【跨文件耦合的钉，勿删】
+   * |delta| < 0.05 仍会渲染成「下降 0 分」。这在今天**不可达**，唯一的理由是
+   * overallScore 是 `ROUND(AVG(...)::numeric, 1)`（eval-runs.repository.ts:101-113），
+   * 故任何非零 delta 都是 0.1 的倍数。若哪天把那个 ROUND 去掉，这条会红——
+   * 那正是我们要的提醒，而不是让「下降 0 分」重新溜回 UI。
+   */
+  it("形式化记录：|delta|<0.05 会退化成 0（依赖 SQL 侧 ROUND(...,1) 才不可达）", () => {
+    const issues = buildGateIssues(
+      { kind: "compared", finishedAt: FRESH, regressedCount: 0, overallDelta: -0.04 },
+      NOW,
+    );
+    expect(issues[0].message).toBe("综合分下降 0 分");
+  });
+
   it("整数跌幅不带尾随 .0（保持原型口径「下降 4 分」）", () => {
     const issues = buildGateIssues(
       { kind: "compared", finishedAt: FRESH, regressedCount: 0, overallDelta: -4 },

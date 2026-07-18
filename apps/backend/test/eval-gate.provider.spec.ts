@@ -45,6 +45,12 @@ const result = (caseVersionId: string, verdict: string, score: number) => ({
   contextPrecision: score,
   correctness: score,
   citation: score,
+  // 其余 COMPARE_METRIC_KEYS 必须显式给 null：classifyCase 的守卫是
+  // `av !== null && bv !== null`，undefined 会穿过守卫算出 NaN，
+  // 于是这几个指标在夹具里静默失效（test/ 不过 tsc，永远不会有人提醒）。
+  contextRecall: null,
+  ndcg5: null,
+  hitRate5: null,
   latencyMs: 100,
   tokensUsed: 10,
   errorMessage: null,
@@ -97,18 +103,28 @@ function make(opts: {
       finishedAt: NOW_ISH,
     })),
   };
+  /**
+   * ⚠️ 这个假实现必须**按行身份**派发，不能按位置返回固定常量。
+   * 若写成「第一个返回基线数据、第二个返回候选数据」，那么把实参顺序写反时
+   * 假实现照样吐出同样的东西，anti-swap 钉就形同虚设（review 实测：三处 swap 中
+   * 只有一处会红）。按 id 派发后，任一处写反都会让基线/候选数据错位而变红。
+   */
+  const inputFor = (r: { id: string }) =>
+    r.id === "run-baseline"
+      ? {
+          // overallScore 必须显式给值：buildCompareResponse 用 `!== null` 判定，
+          // undefined 会算出 NaN，测试就会为了错误的理由变绿。
+          summary: { id: r.id, overallScore: opts.baselineOverall ?? 80 },
+          results: opts.baselineResults ?? [],
+        }
+      : {
+          summary: { id: r.id, overallScore: opts.candidateOverall ?? 80 },
+          results: opts.candidateResults ?? [],
+        };
   const runs = {
     loadCompareInputs: jest.fn(async (aRow: { id: string }, bRow: { id: string }) => [
-      {
-        // overallScore 必须显式给值：buildCompareResponse 用 `!== null` 判定，
-        // undefined 会算出 NaN，测试就会为了错误的理由变绿。
-        summary: { id: aRow.id, overallScore: opts.baselineOverall ?? 80 },
-        results: opts.baselineResults ?? [],
-      },
-      {
-        summary: { id: bRow.id, overallScore: opts.candidateOverall ?? 80 },
-        results: opts.candidateResults ?? [],
-      },
+      inputFor(aRow),
+      inputFor(bRow),
     ]),
   };
   const registrar = new EvalGateProviderRegistrar(
@@ -146,12 +162,17 @@ describe("EvalGateProviderRegistrar.resolve（B1/F5 门禁解析器）", () => {
   });
 
   it("候选劣于基线 → REGRESSION（warning）", async () => {
-    const { call } = make({
+    const { call, runs } = make({
       baselineResults: [result("c1", "pass", 90), result("c2", "pass", 90)],
       candidateResults: [result("c1", "low", 50), result("c2", "low", 50)],
     });
     const issues = (await call()) as { code: string; severity: string; message: string }[];
     expect(issues.map((i) => i.code)).toContain("EVAL_GATE_REGRESSION");
+    // 直接钉住实参位置：a=基线(production)、b=候选。符号全靠这个顺序。
+    expect(runs.loadCompareInputs).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "run-baseline" }),
+      expect.objectContaining({ id: "run-candidate" }),
+    );
     expect(issues.every((i) => i.severity === "warning")).toBe(true);
     expect(issues.find((i) => i.code === "EVAL_GATE_REGRESSION")!.message).toBe("存在 2 条回退用例");
   });

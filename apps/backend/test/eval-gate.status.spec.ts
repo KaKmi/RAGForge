@@ -87,6 +87,38 @@ describe("getEvalGateStatus（B1/F5 门禁读端点）", () => {
     expect(status.issues[0].severity).toBe("warning");
   });
 
+  /**
+   * 门禁跑在 ReleaseCheck 的异步 processor 里，取数要读两侧 run 的全量结果集，
+   * 评测集一大就可能拖很久。超时必须按「读不到」处理并放行。
+   */
+  it("provider 超时 → fail-open，返回 UNAVAILABLE warning（不吊死 ReleaseCheck）", async () => {
+    jest.useFakeTimers();
+    try {
+      const svc = service({ evalGateEnabled: true });
+      svc.registerEvalGateProvider(() => new Promise(() => {})); // 永不 resolve
+      const pending = svc.collectEvalGateIssues("app-1", "cv-1");
+      await jest.advanceTimersByTimeAsync(5001);
+      await expect(pending).resolves.toEqual([
+        {
+          code: EVAL_GATE_ISSUE_CODES.UNAVAILABLE,
+          message: "评测数据暂不可用，未做回退判断",
+          severity: "warning",
+        },
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("重复注册 provider 会告警（覆盖而非追加是有意的，但不该静默）", async () => {
+    const svc = service();
+    const warn = jest.spyOn(svc["logger"], "warn").mockImplementation(() => undefined);
+    svc.registerEvalGateProvider(async () => []);
+    expect(warn).not.toHaveBeenCalled();
+    svc.registerEvalGateProvider(async () => []);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("重复注册"));
+  });
+
   it("collectEvalGateIssues 把 applicationId/configVersionId 原样传给 provider", async () => {
     const svc = service();
     const seen: string[][] = [];
