@@ -421,6 +421,19 @@ describe("findCaseRefsBySourceTrace", () => {
     await expect(service.findCaseRefsBySourceTrace(TRACE)).resolves.toEqual([]);
   });
 
+  /**
+   * 集软删**不级联**到用例行（同文件 listReviewedCaseVersions 的注释记过这一点），
+   * 所以「集没了但用例行还在」是真实存在的状态——必须靠 join 上的
+   * isNull(evalSets.deletedAt) 挡掉，否则会返回一个指向已删除集的引用。
+   */
+  it("集被软删后，其用例不再算已入集", async () => {
+    const { service, sets } = setup({
+      cases: [{ id: "c1", setId: "s1", status: "draft", sourceTraceId: TRACE }],
+    });
+    sets[0].deletedAt = new Date();
+    await expect(service.findCaseRefsBySourceTrace(TRACE)).resolves.toEqual([]);
+  });
+
   it("同一条 trace 进了多个集时全部返回", async () => {
     const { service, sets } = setup({
       cases: [

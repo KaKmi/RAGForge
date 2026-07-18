@@ -141,7 +141,6 @@ export class EvalSetsRepository {
     return rows[0];
   }
 
-  /** 大小写不敏感查重（走 `eval_sets_name_unique` 的 `lower(name) WHERE deleted_at IS NULL` 部分索引）。 */
   /**
    * B1/F2：这条 trace 已进过哪些评测集（Trace 详情按钮的两态判据）。
    * 软删的用例与软删的集都不算——按钮会因此显示「加入评测集」而不是「已在评测集」，
@@ -158,9 +157,13 @@ export class EvalSetsRepository {
           isNull(evalCases.deletedAt),
           isNull(evalSets.deletedAt),
         ),
-      );
+      )
+      // 无 ORDER BY 时 PG 不保证顺序（计划变更/VACUUM 都会让它抖），
+      // 前端「已在：集A、集B」的顺序会在刷新之间乱跳。与同文件 listCases:223 同一约定。
+      .orderBy(asc(evalSets.name), asc(evalCases.createdAt), asc(evalCases.id));
   }
 
+  /** 大小写不敏感查重（走 eval_sets_name_unique 的部分索引）。 */
   async findSetByName(name: string): Promise<EvalSetRow | undefined> {
     const rows = await this.db
       .select()

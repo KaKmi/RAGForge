@@ -630,6 +630,77 @@ describeInfra("E-W2b 功能波（HTTP e2e，真 PG + 真 ClickHouse）", () => {
     );
   });
 
+  // ─────────────────────────────── B1/F2：case-refs（真 SQL）───────────────────────────────
+
+  /**
+   * 这条 e2e 存在的理由：`eval-sets.service.spec.ts` 里 service 只是对 repo 的一行透传，
+   * 假 repo 验的是它自己的过滤逻辑，**证明不了 drizzle 查询**——把 innerJoin 改成 leftJoin、
+   * 或删掉任一个 isNull，单测全都照绿。软删语义只有真库能证。
+   */
+  it("B1/F2：GET /eval/sets/case-refs 按 sourceTraceId 返回已入集引用，软删后消失", async () => {
+    const traceId = "c".repeat(32);
+    const setId = await createSet(`case-refs-${Date.now()}`);
+    const res = await http()
+      .post(`/api/eval/sets/${setId}/cases`)
+      .send({ question: "能开专票吗", goldPoints: ["可以开"], sourceTraceId: traceId })
+      .expect(201);
+    const caseId = res.body.id as string;
+
+    const hit = await http()
+      .get("/api/eval/sets/case-refs")
+      .query({ sourceTraceId: traceId })
+      .expect(200);
+    expect(hit.body).toEqual([{ setId, setName: expect.any(String), caseId }]);
+
+    // 未入集的 trace → 空数组（不是 null）
+    const miss = await http()
+      .get("/api/eval/sets/case-refs")
+      .query({ sourceTraceId: "d".repeat(32) })
+      .expect(200);
+    expect(miss.body).toEqual([]);
+
+    // 非法 traceId → 400（strictObject + 32hex 正则）
+    await http().get("/api/eval/sets/case-refs").query({ sourceTraceId: "nope" }).expect(400);
+
+    // 用例软删 → 不再算已入集（证 isNull(evalCases.deletedAt)）
+    await http().delete(`/api/eval/sets/${setId}/cases/${caseId}`).expect(204);
+    const afterCaseDelete = await http()
+      .get("/api/eval/sets/case-refs")
+      .query({ sourceTraceId: traceId })
+      .expect(200);
+    expect(afterCaseDelete.body).toEqual([]);
+  });
+
+  /**
+   * 集软删**不级联**到用例行，所以「集没了、用例行还在」是真实状态，
+   * 必须靠 join 上的 isNull(evalSets.deletedAt) 挡掉——否则会返回指向已删除集的引用。
+   */
+  it("B1/F2：集被软删后，其用例不再出现在 case-refs（证 join 侧的软删过滤）", async () => {
+    const traceId = "e".repeat(32);
+    const setId = await createSet(`case-refs-setdel-${Date.now()}`);
+    await http()
+      .post(`/api/eval/sets/${setId}/cases`)
+      .send({ question: "退货几天", goldPoints: ["7 天"], sourceTraceId: traceId })
+      .expect(201);
+    expect(
+      (await http().get("/api/eval/sets/case-refs").query({ sourceTraceId: traceId }).expect(200))
+        .body,
+    ).toHaveLength(1);
+
+    // 只软删集，用例行原地不动
+    await harness.pool.query(`UPDATE eval_sets SET deleted_at = now() WHERE id = $1`, [setId]);
+    const liveCases = await harness.pool.query(
+      `SELECT count(*)::int AS n FROM eval_cases WHERE set_id = $1 AND deleted_at IS NULL`,
+      [setId],
+    );
+    expect(liveCases.rows[0].n).toBe(1); // 前提成立：集软删确实没级联
+
+    expect(
+      (await http().get("/api/eval/sets/case-refs").query({ sourceTraceId: traceId }).expect(200))
+        .body,
+    ).toEqual([]);
+  });
+
   // ─────────────────────────────── ClickHouse 读工具 ───────────────────────────────
 
   async function countEvalSpans(): Promise<number> {
