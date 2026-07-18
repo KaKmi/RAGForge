@@ -6,7 +6,7 @@ number: "019"
 status: draft
 services: [backend, infra]
 related: ["design/002", "design/003", "design/017", "design/018"]
-last_modified: "2026-07-17"
+last_modified: "2026-07-18"
 ---
 
 # 019 — 评测 worker 独立部署物（PROCESS_ROLE 分流）
@@ -33,6 +33,11 @@ draft——设计已过 peer 对抗（0 P1 / 2 P2 / 4 P3，全部裁决并回写
 - 不拆 `ingestion` / `release-check`——003:256 阈值（排队 P95 >5min 或 >100 文档/分）未触发；触发时改 `QUEUE_CONSUMER_ROLES` 一行即可迁移。
 - 不换队列——BullMQ/RabbitMQ 已评估否决（见 Alternatives）。
 - 不做 worker 多副本——018 缺口 13（活跃槽位非原子守卫）未收口前不受支持；本设计把该前提从「单进程部署」改写为「worker 单副本」，语义等价。
+  > ⚠️ **回写（2026-07-18，E-W2b 技术债收口波）**：缺口 13 **已收口**（部分唯一索引
+  > `eval_runs_single_active_unique` + 23505 → 409），但**这不意味着本条前提已解除**。
+  > 多副本还卡在**另一个**、019 当时未点名的阻塞项：018 缺口 10 的「**用例执行期间无心跳**」
+  > 窗口——续租只发生在用例**之间**，单条用例跑满 `EVAL_RUN_CASE_TIMEOUT_MS`（默认 120s）
+  > 期间租约不推进，故 TTL 与心跳的关系须另行论证。**「worker 单副本」前提继续有效。**
 - 不修 018 缺口 15 的 (a)(b)(c)(d)（租约守卫 P3）、缺口 9（AbortSignal 硬中断）——属租约收口波。
 - 不动 017（E-W1 冻结基线）：`online-eval` 只是换进程消费，判分逻辑/judgeVersion/解析契约一字不改。
 
