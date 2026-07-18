@@ -7,6 +7,7 @@ import {
   EVAL_RUN_LEASE_MS,
   EVAL_RUN_REAP_GRACE_MS,
 } from "../src/modules/eval-runs/eval-run.constants";
+import { dbGate } from "./helpers/gated-suite";
 
 /**
  * **真库**租约/回收语义（`RUN_DB_TESTS=1` + `MIGRATION_TEST_DATABASE_URL` 时才跑，
@@ -30,8 +31,7 @@ import {
  * 死于 `schema "public" does not exist`）。
  */
 
-const enabled = process.env.RUN_DB_TESTS === "1" && !!process.env.MIGRATION_TEST_DATABASE_URL;
-const describeDb = enabled ? describe : describe.skip;
+const describeDb = dbGate();
 const migrationsDir = join(__dirname, "..", "drizzle");
 jest.setTimeout(180_000);
 

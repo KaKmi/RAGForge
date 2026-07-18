@@ -18,9 +18,9 @@ import { join } from "path";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { BACKFILL_ACTOR, runBackfill, verifyBackfill } from "../src/db/backfill-prompt-contracts";
+import { dbGate } from "./helpers/gated-suite";
 
-const enabled = process.env.RUN_DB_TESTS === "1" && !!process.env.MIGRATION_TEST_DATABASE_URL;
-const describeDb = enabled ? describe : describe.skip;
+const describeDb = dbGate();
 
 jest.setTimeout(180_000);
 

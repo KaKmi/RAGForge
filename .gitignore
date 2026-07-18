@@ -8,6 +8,8 @@ dist-worker/
 .env.*
 !.env.example
 coverage/
+# 门控套件的 jest --json 产物（scripts/check-test-baseline.mjs 的输入，跑完即弃）
+jest-results-*.json
 .DS_Store
 
 # Ship 工作流产物（spec/plan/ledger，本地过程数据，不进仓库）

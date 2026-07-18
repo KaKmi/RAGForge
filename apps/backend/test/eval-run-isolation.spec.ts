@@ -5,6 +5,7 @@ import { EvaluationSpanEmitter } from "../src/modules/evaluations/evaluation-spa
 import { EvalRunsRepository } from "../src/modules/eval-runs/eval-runs.repository";
 import { EvalRunWorkerProcessor } from "../src/modules/eval-runs/eval-run-worker.processor";
 import { createEvaluationInfraHarness } from "./helpers/evaluation-infra";
+import { infraGate } from "./helpers/gated-suite";
 
 /**
  * ══════════════════════════════════════════════════════════════════════════════
@@ -28,11 +29,7 @@ import { createEvaluationInfraHarness } from "./helpers/evaluation-infra";
  * 请回头重读 018 决策 B 再决定要不要放宽存储隔离。
  */
 
-const infraEnabled =
-  process.env.RUN_DB_TESTS === "1" &&
-  process.env.RUN_CLICKHOUSE_TESTS === "1" &&
-  Boolean(process.env.MIGRATION_TEST_DATABASE_URL);
-const describeInfra = infraEnabled ? describe : describe.skip;
+const describeInfra = infraGate();
 jest.setTimeout(180_000);
 
 const SET_ID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";

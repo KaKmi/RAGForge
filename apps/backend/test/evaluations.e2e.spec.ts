@@ -31,6 +31,7 @@ import {
   E2E_EMBED_MODEL_ID,
   E2E_JUDGE_MODEL_ID,
 } from "./helpers/evaluation-infra";
+import { infraGate } from "./helpers/gated-suite";
 
 describe("EvaluationsService", () => {
   const settings = {
@@ -425,11 +426,7 @@ describe("EvaluationsService", () => {
   });
 });
 
-const infraEnabled =
-  process.env.RUN_DB_TESTS === "1" &&
-  process.env.RUN_CLICKHOUSE_TESTS === "1" &&
-  Boolean(process.env.MIGRATION_TEST_DATABASE_URL);
-const describeInfra = infraEnabled ? describe : describe.skip;
+const describeInfra = infraGate();
 
 describeInfra("E-W1 infrastructure flow", () => {
   let app: INestApplication;

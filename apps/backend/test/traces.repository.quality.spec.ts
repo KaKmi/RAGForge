@@ -1,9 +1,9 @@
 import { createClient, type ClickHouseClient } from "@clickhouse/client";
 import { ClickHouseTracesRepository } from "../src/modules/traces/clickhouse-traces.repository";
 import { ClickHouseEvaluationsRepository } from "../src/modules/evaluations/clickhouse-evaluations.repository";
+import { clickHouseGate } from "./helpers/gated-suite";
 
-const enabled = process.env.RUN_CLICKHOUSE_TESTS === "1";
-const describeClickHouse = enabled ? describe : describe.skip;
+const describeClickHouse = clickHouseGate();
 const marker = "ew1-task7-pagination";
 const targetIds = Array.from(
   { length: 45 },

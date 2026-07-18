@@ -22,6 +22,7 @@ import {
   E2E_EMBED_MODEL_ID,
   E2E_JUDGE_MODEL_ID,
 } from "./helpers/evaluation-infra";
+import { infraGate } from "./helpers/gated-suite";
 
 /**
  * ══════════════════════════════════════════════════════════════════════════════
@@ -44,11 +45,7 @@ import {
  * 事务与全部 SQL 都是真的，只有「调外部大模型」这一步是桩。
  */
 
-const infraEnabled =
-  process.env.RUN_DB_TESTS === "1" &&
-  process.env.RUN_CLICKHOUSE_TESTS === "1" &&
-  Boolean(process.env.MIGRATION_TEST_DATABASE_URL);
-const describeInfra = infraEnabled ? describe : describe.skip;
+const describeInfra = infraGate();
 jest.setTimeout(180_000);
 
 const hex32 = () => randomUUID().replaceAll("-", "");

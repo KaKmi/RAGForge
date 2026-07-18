@@ -3,9 +3,9 @@ import { join } from "path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { EvaluationsRepository } from "../src/modules/evaluations/evaluations.repository";
+import { dbGate } from "./helpers/gated-suite";
 
-const enabled = process.env.RUN_DB_TESTS === "1" && !!process.env.MIGRATION_TEST_DATABASE_URL;
-const describeDb = enabled ? describe : describe.skip;
+const describeDb = dbGate();
 const migrationsDir = join(__dirname, "..", "drizzle");
 const now = new Date("2026-07-15T02:00:00.000Z");
 

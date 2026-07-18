@@ -48,6 +48,13 @@ jobs:
       MIGRATION_TEST_DATABASE_URL: postgres://codecrush:codecrush@localhost:5432/codecrush_mig_test
     steps:
       - uses: actions/checkout@v4
+      # 门控变量断言放在装依赖**之前**：变量没了就没必要烧 20 分钟 job。
+      # 为什么需要：全部 db spec 的形状是「变量齐才 describe，否则 describe.skip」——
+      # 变量一旦被删/改名/拼错/提到错误 YAML 层级，jest 退出码仍是 0、本 job 显示
+      # 「9 suites 通过」而一条断言都没跑。另两道防线：test/helpers/gated-suite.ts
+      # 的 CI 硬门控（抛错）、scripts/check-test-baseline.mjs 的用例数下限。
+      - name: assert gate env is present
+        run: test -n "$MIGRATION_TEST_DATABASE_URL" || { echo "::error::MIGRATION_TEST_DATABASE_URL 缺失——db job 会静默跳过全部用例并假绿"; exit 1; }
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -58,7 +65,8 @@ jobs:
       - name: create migration test database
         run: PGPASSWORD=codecrush psql -h localhost -U codecrush -d codecrush -c 'CREATE DATABASE codecrush_mig_test'
       # jest 的 moduleNameMapper 直指各包 src，无需先 build
-      # test:db 自带 RUN_DB_TESTS=1 与 --runInBand —— 两者都不得删
+      # test:db 自带 RUN_DB_TESTS=1 与 --runInBand —— 两者都不得删；
+      # 脚本末尾串了 check-test-baseline.mjs（用例数下限 + 零 skip），亦不得删
       - run: pnpm --filter @codecrush/backend test:db
 
   infra:
@@ -70,6 +78,11 @@ jobs:
       CLICKHOUSE_URL: http://localhost:8123
     steps:
       - uses: actions/checkout@v4
+      # 同 db job：两个门控变量缺一，全部 infra spec 都会 describe.skip 而 job 假绿。
+      - name: assert gate env is present
+        run: |
+          test -n "$MIGRATION_TEST_DATABASE_URL" || { echo "::error::MIGRATION_TEST_DATABASE_URL 缺失——infra job 会静默跳过全部用例并假绿"; exit 1; }
+          test -n "$CLICKHOUSE_URL" || { echo "::error::CLICKHOUSE_URL 缺失——ClickHouse spec 会静默跳过（或悄悄回落 localhost）并假绿"; exit 1; }
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

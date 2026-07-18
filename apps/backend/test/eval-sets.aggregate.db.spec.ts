@@ -3,6 +3,7 @@ import { join } from "path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { EvalSetsRepository } from "../src/modules/eval-runs/eval-sets.repository";
+import { dbGate } from "./helpers/gated-suite";
 
 /**
  * 屏2「上次得分」聚合的**真库**语义（`RUN_DB_TESTS=1` + `MIGRATION_TEST_DATABASE_URL` 才跑）。
@@ -19,8 +20,7 @@ import { EvalSetsRepository } from "../src/modules/eval-runs/eval-sets.repositor
  * 破了 ① 屏2 就会把「跑过 5 次但没出分」说成「未运行」（= 断言假事实）；
  * 破了 ② 就会造出「hasCompletedRun=true 但分数恒 NULL」的幻影态，让消歧位本身变成新的谎。
  */
-const enabled = process.env.RUN_DB_TESTS === "1" && !!process.env.MIGRATION_TEST_DATABASE_URL;
-const describeDb = enabled ? describe : describe.skip;
+const describeDb = dbGate();
 const migrationsDir = join(__dirname, "..", "drizzle");
 
 describeDb("EvalSetsRepository.listAggregates —— 上次得分的两列口径（真库）", () => {

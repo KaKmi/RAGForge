@@ -1,9 +1,9 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { Pool } from "pg";
+import { dbGate } from "./helpers/gated-suite";
 
-const enabled = process.env.RUN_DB_TESTS === "1" && !!process.env.MIGRATION_TEST_DATABASE_URL;
-const describeDb = enabled ? describe : describe.skip;
+const describeDb = dbGate();
 const MIGRATIONS_DIR = join(__dirname, "..", "drizzle");
 const BASELINE_TAG = "0020_secret_nightmare";
 const V2_TAG = "0021_judge_scoring_v2";

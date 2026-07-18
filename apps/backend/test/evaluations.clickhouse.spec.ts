@@ -1,5 +1,6 @@
 import { createClient, type ClickHouseClient } from "@clickhouse/client";
 import { ClickHouseEvaluationsRepository } from "../src/modules/evaluations/clickhouse-evaluations.repository";
+import { clickHouseGate } from "./helpers/gated-suite";
 
 const from = new Date("2026-07-08T00:00:00.000Z");
 const to = new Date("2026-07-15T00:00:00.000Z");
@@ -266,8 +267,7 @@ describe("ClickHouseEvaluationsRepository SQL", () => {
   });
 });
 
-const enabled = process.env.RUN_CLICKHOUSE_TESTS === "1";
-const describeClickHouse = enabled ? describe : describe.skip;
+const describeClickHouse = clickHouseGate();
 const target = "a".repeat(32);
 const scoredTarget = "b".repeat(32);
 const failedTarget = "f".repeat(32);

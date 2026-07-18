@@ -4,9 +4,9 @@ import { ApplicationConfigFieldsSchema } from "@codecrush/contracts";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { runBackfill, verifyBackfill } from "../src/db/backfill-applications";
+import { dbGate } from "./helpers/gated-suite";
 
-const enabled = process.env.RUN_DB_TESTS === "1" && !!process.env.MIGRATION_TEST_DATABASE_URL;
-const describeDb = enabled ? describe : describe.skip;
+const describeDb = dbGate();
 const MIGRATIONS_DIR = join(__dirname, "..", "drizzle");
 const ADDITIVE_TAG = "0013_nervous_klaw";
 
