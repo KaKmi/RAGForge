@@ -42,6 +42,16 @@ export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
   structuredOutput?: StructuredOutputSpec;
+  /**
+   * E-W2b F1：外部中止信号（加性可选，省略 → 行为与今日逐字节一致）。与内部固定超时
+   * controller 合并（`AbortSignal.any`）——外部中止时错误文案说「被中止」而非「超时」。
+   */
+  signal?: AbortSignal;
+}
+
+/** embed/rerank 的加性可选项（F1）。 */
+export interface ModelCallOptions {
+  signal?: AbortSignal;
 }
 
 export interface ChatResult {
@@ -69,11 +79,12 @@ export interface ModelProviderPort {
     messages: ChatMessage[],
     opts?: ChatOptions,
   ): AsyncIterable<ChatStreamChunk>;
-  embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult>;
+  embed(config: ModelCallConfig, texts: string[], opts?: ModelCallOptions): Promise<EmbedResult>;
   rerank(
     config: ModelCallConfig,
     query: string,
     documents: string[],
     topN?: number,
+    opts?: ModelCallOptions,
   ): Promise<RerankResult>;
 }

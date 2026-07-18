@@ -28,6 +28,7 @@ import type {
   ChatResult,
   ChatStreamChunk,
   ModelCallConfig,
+  ModelCallOptions,
   ModelProviderPort,
 } from "./ports/model-provider.port";
 import type { ModelProviderRow, NewModelProvider } from "./schema";
@@ -145,9 +146,18 @@ export class ModelsService {
   }
 
   // 供 ingestion 域调用：按 modelId 查行、解密 key、调端口 embed()。密钥解密不出 models 域。
-  async embedTexts(modelId: string, texts: string[]): Promise<number[][]> {
+  // F1：opts.signal 加性透传（省略 → 行为不变）。
+  async embedTexts(
+    modelId: string,
+    texts: string[],
+    opts?: ModelCallOptions,
+  ): Promise<number[][]> {
     const row = await this.mustFind(modelId);
-    const { vectors } = await this.provider.embed(this.toCallConfig(row), texts);
+    const config = this.toCallConfig(row);
+    // 省略 opts 时不传第 3 参 → 调用形状与今日逐字节一致（AC1-2：既有测试 0 改动）。
+    const { vectors } = opts
+      ? await this.provider.embed(config, texts, opts)
+      : await this.provider.embed(config, texts);
     return vectors;
   }
 
@@ -158,9 +168,14 @@ export class ModelsService {
     query: string,
     texts: string[],
     topN?: number,
+    opts?: ModelCallOptions,
   ): Promise<{ index: number; score: number }[]> {
     const row = await this.mustFind(modelId);
-    const { results } = await this.provider.rerank(this.toCallConfig(row), query, texts, topN);
+    const config = this.toCallConfig(row);
+    // 省略 opts 时不传第 5 参 → 调用形状与今日一致（AC1-2）。
+    const { results } = opts
+      ? await this.provider.rerank(config, query, texts, topN, opts)
+      : await this.provider.rerank(config, query, texts, topN);
     return results;
   }
 

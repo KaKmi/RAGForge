@@ -7,5 +7,7 @@ export interface RetrieverPort {
   retrieve(
     req: RetrievalTestRequest,
     observer?: (signal: "keyword_degraded" | "rerank_degraded") => void,
+    /** E-W2b F1：外部中止信号，透传给 embed/rerank（加性可选，省略 → 行为不变）。 */
+    signal?: AbortSignal,
   ): Promise<RetrievalHit[]>;
 }

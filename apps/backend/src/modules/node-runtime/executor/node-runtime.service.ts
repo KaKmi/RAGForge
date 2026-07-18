@@ -96,6 +96,11 @@ export interface NodeExecuteOptions {
     onRepair?: (retryCount: number) => void;
     onGenerationTiming?: (timing: { ttftMs?: number; generationDurationMs: number }) => void;
   };
+  /**
+   * E-W2b F1：外部中止信号，透传给 `models.chat`/`chatStream`（加性可选）。
+   * `executeStructured` 的修复重试前会检查 `signal.aborted`，已中止就不再发起第二次调用。
+   */
+  signal?: AbortSignal;
 }
 
 export interface NodeSampleRequest {
@@ -249,7 +254,7 @@ export class NodeRuntimeService {
           schema: z.toJSONSchema(contract.outputSchema as z.ZodType) as Record<string, unknown>,
           strict: true,
         };
-        const chatOpts = { structuredOutput, temperature: opts?.temperature };
+        const chatOpts = { structuredOutput, temperature: opts?.temperature, signal: opts?.signal };
         // M8 T3：两次尝试（首次 + 修复）是两次独立 completion，token 用量求和
         let uin = 0;
         let uout = 0;
@@ -319,6 +324,9 @@ export class NodeRuntimeService {
         }
         steps.push({ step: first.step, ok: false, issues: first.issues });
         span.setAttribute(RAG.VALIDATION_ERROR_CODE, first.issues[0] ?? "unknown");
+
+        // F1：已中止就不再发起修复重试（第二次调用）——硬中断要立即生效，不浪费一次墙钟。
+        if (opts?.signal?.aborted) throw new Error("节点执行被中止");
 
         const repairMessages: ChatMessage[] = [
           ...messages,
@@ -431,6 +439,7 @@ export class NodeRuntimeService {
         try {
           const stream = await this.models.chatStream(modelId, messages, {
             temperature: opts?.temperature,
+            signal: opts?.signal,
           });
           for await (const chunk of stream) {
             if (chunk.usage) mergeStreamUsage(usageAcc, chunk.usage);
@@ -537,6 +546,7 @@ export class NodeRuntimeService {
       });
       const stream = await this.models.chatStream(modelId, messages, {
         temperature: opts?.temperature,
+        signal: opts?.signal,
       }, () => {
         streamStartedAt = performance.now();
       });

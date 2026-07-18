@@ -41,6 +41,7 @@ export class PgHybridRetriever implements RetrieverPort {
   async retrieve(
     req: RetrievalTestRequest,
     observer?: (signal: "keyword_degraded" | "rerank_degraded") => void,
+    signal?: AbortSignal,
   ): Promise<RetrievalHit[]> {
     return await withSpan(
       "retrieval.retrieve",
@@ -58,7 +59,7 @@ export class PgHybridRetriever implements RetrieverPort {
           ...(req.topN !== undefined ? { [RAG.RETRIEVAL_TOP_N]: req.topN } : {}),
         },
       },
-      (span) => this.doRetrieve(req, (k, v) => span.setAttribute(k, v), observer),
+      (span) => this.doRetrieve(req, (k, v) => span.setAttribute(k, v), observer, signal),
     );
   }
 
@@ -66,6 +67,7 @@ export class PgHybridRetriever implements RetrieverPort {
     req: RetrievalTestRequest,
     tag: (key: string, value: string | number | boolean) => void,
     observer?: (signal: "keyword_degraded" | "rerank_degraded") => void,
+    signal?: AbortSignal,
   ): Promise<RetrievalHit[]> {
     const kb = await this.kbs.get(req.kbId);
     // M8 T3：embed 子 span——doRetrieve 整段在 retrieval.retrieve 的活动上下文内，
@@ -80,7 +82,7 @@ export class PgHybridRetriever implements RetrieverPort {
           "codecrush.span.kind": CODECRUSH_SPAN_KIND.EMBEDDINGS,
         },
       },
-      () => this.models.embedTexts(req.embedModelId, [req.query]),
+      () => this.models.embedTexts(req.embedModelId, [req.query], signal ? { signal } : undefined),
     );
 
     const vecWeight = req.vecWeight ?? 0.5;
@@ -132,7 +134,14 @@ export class PgHybridRetriever implements RetrieverPort {
               "codecrush.span.kind": CODECRUSH_SPAN_KIND.RERANK,
             },
           },
-          () => this.models.rerankTexts(rerankModelId, req.query, candidates.map((c) => c.text)),
+          () =>
+            this.models.rerankTexts(
+              rerankModelId,
+              req.query,
+              candidates.map((c) => c.text),
+              undefined,
+              signal ? { signal } : undefined,
+            ),
         );
         const byIndex = new Map(rerankResults.map((r) => [r.index, r.score]));
         candidates = candidates.map((c, i) => {

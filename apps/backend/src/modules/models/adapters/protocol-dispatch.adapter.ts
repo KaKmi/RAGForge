@@ -7,6 +7,7 @@ import type {
   ChatStreamChunk,
   EmbedResult,
   ModelCallConfig,
+  ModelCallOptions,
   ModelProviderPort,
   RerankResult,
   TestModelResult,
@@ -57,6 +58,30 @@ export const PROBE_BUILDERS: Record<`${ModelType}:${ModelProtocol}` & string, Pr
   "rerank:jina": jinaRerankProbe,
   "rerank:dashscope": dashscopeRerankProbe,
 } as Record<string, ProbeBuilder>;
+
+/**
+ * F1：把外部中止信号与内部固定超时 controller 合并（Node 22 原生 `AbortSignal.any`）。
+ * 外部省略时退回原 controller.signal，行为逐字节不变。
+ */
+function withExternalSignal(controller: AbortController, external?: AbortSignal): AbortSignal {
+  return external ? AbortSignal.any([controller.signal, external]) : controller.signal;
+}
+
+/**
+ * F1：中止归因——外部 signal 触发说「被中止」（不是超时），内部 controller 触发说超时文案，
+ * 其余原样。区分二者让离线 run 不把硬中断误报成 provider 超时。
+ */
+function abortError(
+  err: unknown,
+  external: AbortSignal | undefined,
+  controller: AbortController,
+  abortedMessage: string,
+  timeoutMessage: string,
+): string {
+  if (external?.aborted) return abortedMessage;
+  if (controller.signal.aborted) return timeoutMessage;
+  return err instanceof Error ? err.message : String(err);
+}
 
 /**
  * 协议分发适配器（001「协议格式为路由键」）：请求构造与响应形状校验在 protocols/* 纯函数 builder，
@@ -128,14 +153,16 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
         method: "POST",
         headers: req.headers,
         body: JSON.stringify(req.body),
-        signal: controller.signal,
+        signal: withExternalSignal(controller, opts?.signal),
       });
     } catch (err) {
-      const message = controller.signal.aborted
-        ? `chat 请求超时（>${CHAT_TIMEOUT_MS}ms）`
-        : err instanceof Error
-          ? err.message
-          : String(err);
+      const message = abortError(
+        err,
+        opts?.signal,
+        controller,
+        "chat 请求被中止",
+        `chat 请求超时（>${CHAT_TIMEOUT_MS}ms）`,
+      );
       throw new Error(redactSecret(message, config.apiKey));
     } finally {
       clearTimeout(timer);
@@ -176,14 +203,16 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
         method: "POST",
         headers: req.headers,
         body: JSON.stringify(req.body),
-        signal: controller.signal,
+        signal: withExternalSignal(controller, opts?.signal),
       });
     } catch (err) {
-      const message = controller.signal.aborted
-        ? `chat 流式请求超时（>${CHAT_TIMEOUT_MS}ms）`
-        : err instanceof Error
-          ? err.message
-          : String(err);
+      const message = abortError(
+        err,
+        opts?.signal,
+        controller,
+        "chat 流式请求被中止",
+        `chat 流式请求超时（>${CHAT_TIMEOUT_MS}ms）`,
+      );
       throw new Error(redactSecret(message, config.apiKey));
     } finally {
       clearTimeout(timer);
@@ -223,7 +252,7 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     }
   }
 
-  async embed(config: ModelCallConfig, texts: string[]): Promise<EmbedResult> {
+  async embed(config: ModelCallConfig, texts: string[], opts?: ModelCallOptions): Promise<EmbedResult> {
     const builder = EMBED_BUILDERS[config.protocol];
     if (!builder) {
       // 契约层已收口 embedding 合法协议组合，此分支正常不可达（防御新枚举值漏配 builder）
@@ -238,14 +267,16 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
         method: "POST",
         headers: req.headers,
         body: JSON.stringify(req.body),
-        signal: controller.signal,
+        signal: withExternalSignal(controller, opts?.signal),
       });
     } catch (err) {
-      const message = controller.signal.aborted
-        ? `embedding 请求超时（>${EMBED_TIMEOUT_MS}ms）`
-        : err instanceof Error
-          ? err.message
-          : String(err);
+      const message = abortError(
+        err,
+        opts?.signal,
+        controller,
+        "embedding 请求被中止",
+        `embedding 请求超时（>${EMBED_TIMEOUT_MS}ms）`,
+      );
       throw new Error(redactSecret(message, config.apiKey));
     } finally {
       clearTimeout(timer);
@@ -280,6 +311,7 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
     query: string,
     documents: string[],
     topN?: number,
+    opts?: ModelCallOptions,
   ): Promise<RerankResult> {
     const builder = RERANK_BUILDERS[config.protocol];
     if (!builder) {
@@ -295,14 +327,16 @@ export class ProtocolDispatchAdapter implements ModelProviderPort {
         method: "POST",
         headers: req.headers,
         body: JSON.stringify(req.body),
-        signal: controller.signal,
+        signal: withExternalSignal(controller, opts?.signal),
       });
     } catch (err) {
-      const message = controller.signal.aborted
-        ? `rerank 请求超时（>${RERANK_TIMEOUT_MS}ms）`
-        : err instanceof Error
-          ? err.message
-          : String(err);
+      const message = abortError(
+        err,
+        opts?.signal,
+        controller,
+        "rerank 请求被中止",
+        `rerank 请求超时（>${RERANK_TIMEOUT_MS}ms）`,
+      );
       throw new Error(redactSecret(message, config.apiKey));
     } finally {
       clearTimeout(timer);
