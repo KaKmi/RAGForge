@@ -112,6 +112,22 @@ const OVERALL_SCORE = sql<number | null>`(
 /** 未终结的 run（原型 §6「全局同时最多 1 个 run(串行队列)」的判定集合）。 */
 const ACTIVE_STATUSES = ["queued", "running"] as const;
 
+/**
+ * 「活跃槽位」唯一索引冲突（018 §12 缺口 13）。形状照
+ * `ingestion/processing-runs.repository.ts:11-15` 的 `isActiveRunConflict`。
+ *
+ * ⚠️ 两处细节都不能省：
+ *  · **必须拆 `cause`** —— drizzle 0.45 的 pg-core session 把 pg 错误包进
+ *    `DrizzleQueryError.cause`，直接读 `error.code` 恒 undefined。
+ *  · **必须按约束名精确匹配** —— `eval_run_results_run_case_unique` 也是 23505，
+ *    笼统吞掉会把「续跑撞唯一索引」这类真 bug 伪装成正常的 409。
+ */
+export function isSingleActiveRunConflict(error: unknown): boolean {
+  const candidate = (error as { cause?: unknown } | null)?.cause ?? error;
+  const pgError = candidate as { code?: string; constraint?: string } | null;
+  return pgError?.code === "23505" && pgError.constraint === "eval_runs_single_active_unique";
+}
+
 @Injectable()
 export class EvalRunsRepository {
   constructor(@Inject(DRIZZLE) private readonly db: DB) {}

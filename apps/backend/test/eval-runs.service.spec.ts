@@ -86,6 +86,8 @@ interface SetupOptions {
   versionsThrow?: boolean;
   /** F2：这些 caseVersionId 带 gold 引用（覆盖率断言）。 */
   goldRefCaseVersionIds?: string[];
+  /** 缺口 13：让 insertRun 抛指定错误（模拟撞活跃槽位唯一索引）。 */
+  insertRunError?: unknown;
 }
 
 function setup(opts: SetupOptions = {}) {
@@ -145,6 +147,7 @@ function setup(opts: SetupOptions = {}) {
         : undefined;
     },
     async insertRun(input: NewEvalRunInput) {
+      if (opts.insertRunError) throw opts.insertRunError;
       const row = makeRun({ ...input, id: `new-run-${++nextId}`, status: "queued" });
       runs.set(row.id, row);
       return row;
@@ -269,6 +272,31 @@ describe("EvalRunsService", () => {
   it("create：已有 queued/running 的 run → 409（全局串行）", async () => {
     const { service } = setup({ activeRun: { id: "r-active", status: "running" } });
     await expect(service.create(req(), "admin")).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  // 018 §12 缺口 13：预检与 INSERT 之间的 TOCTOU 窗口，由唯一索引兜底。
+  it("create：并发双开，insertRun 撞活跃槽位唯一索引 → 409（与既有全局串行 409 同一条文案）", async () => {
+    const { service } = setup({
+      insertRunError: Object.assign(new Error("duplicate key"), {
+        cause: { code: "23505", constraint: "eval_runs_single_active_unique" },
+      }),
+    });
+    // 文案与形状都是契约：eval-runs.e2e.spec.ts:565-573 钉死响应体，
+    // 前端按响应体形状分流（client.ts:937 区分裸 {code,recentRunId} 与带 message 的普通 409）。
+    await expect(service.create(req(), "admin")).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.create(req(), "admin")).rejects.toThrow(
+      "已有评测正在运行，请等待完成或先停止",
+    );
+  });
+
+  it("create：**别的**唯一索引冲突原样抛出 —— 不得伪装成 409", async () => {
+    // eval_run_results_run_case_unique 也是 23505。笼统吞掉会把「续跑撞唯一索引」
+    // 这类真 bug 伪装成正常的「已有评测在跑」。
+    const err = Object.assign(new Error("duplicate key"), {
+      cause: { code: "23505", constraint: "eval_run_results_run_case_unique" },
+    });
+    const { service } = setup({ insertRunError: err });
+    await expect(service.create(req(), "admin")).rejects.toBe(err);
   });
 
   // ——— host review 修订：一次 worker 崩溃不得永久锁死整个离线评测功能 ———

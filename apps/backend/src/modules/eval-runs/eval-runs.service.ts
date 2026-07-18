@@ -27,6 +27,7 @@ import { buildCompareResponse, type CompareRunInput } from "./eval-compare";
 import { EvalSetsRepository } from "./eval-sets.repository";
 import {
   EvalRunsRepository,
+  isSingleActiveRunConflict,
   type EvalRunAggregate,
   type EvalRunResultWithCase,
 } from "./eval-runs.repository";
@@ -195,17 +196,28 @@ export class EvalRunsService {
       caseVersionId: row.caseVersionId,
       seq: row.seq,
     }));
-    const run = await this.repo.insertRun({
-      setId: req.setId,
-      applicationId: req.applicationId,
-      configVersionId: req.configVersionId,
-      judgeModelId: req.judgeModelId,
-      embeddingModelId: req.embeddingModelId,
-      caseVersionSnapshot: snapshot,
-      totalCases: snapshot.length,
-      repeatCount: req.repeatCount,
-      createdBy: actor,
-    });
+    let run;
+    try {
+      run = await this.repo.insertRun({
+        setId: req.setId,
+        applicationId: req.applicationId,
+        configVersionId: req.configVersionId,
+        judgeModelId: req.judgeModelId,
+        embeddingModelId: req.embeddingModelId,
+        caseVersionSnapshot: snapshot,
+        totalCases: snapshot.length,
+        repeatCount: req.repeatCount,
+        createdBy: actor,
+      });
+    } catch (err) {
+      // 上面的 findActiveRun 是快速路径（给可读文案、省掉后续无用功），但它与本次
+      // INSERT 之间无事务 —— 两个并发请求会双双越过它。唯一索引是原子兜底。
+      // **抛同一条 ConflictException**：e2e 钉死了响应体，前端按形状分流。
+      if (isSingleActiveRunConflict(err)) {
+        throw new ConflictException("已有评测正在运行，请等待完成或先停止");
+      }
+      throw err;
+    }
     // 入队失败必须把 run 收成 failed 再抛：插行与入队不在同一事务，publish 抛出会留下一条
     // **永远 queued 且没有任何 job 会来跑**的孤儿 run —— 而 queued 同样占着全局串行位，
     // 且回收器只认 `running`（queued 的 lease_until 恒 NULL，无从判活），
