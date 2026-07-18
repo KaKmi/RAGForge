@@ -311,8 +311,10 @@ export class EvalRunsRepository {
    * 任一 `POST /eval/runs` 都会在 `findActiveRun` 守卫**之前**触发本回收器（service:172，
    * 连注定 409 的请求也触发）→ 只看 `created_at` 就会把一条**活 worker 正持有**的 run 判死。
    *
-   * 故 queued 臂必须同时要求「无活租约」（`lease_until IS NULL OR lease_until < now`），
-   * 恢复 `running` 臂本来就有的那层保护：**持租即免疫回收**。`tryAcquireLease` 是原子的，
+   * 故 queued 臂必须同时要求「无活租约」（`lease_until IS NULL OR lease_until < deadline`）。
+   * 锚点用 `deadline` 而非 `now`，与 running 臂同源 —— 见缺口 15(c)。原写法（`< now`）让
+   * 「worker 被 SIGKILL」这条路径上的回收比 pg-boss 的重投早赢 10 分钟，静默架空 retryLimit: 3。
+   * 这层要求恢复了 `running` 臂本来就有的那层保护：**持租即免疫回收**。`tryAcquireLease` 是原子的，
    * 它一旦成功，这条 run 就有了「有人正在管它」的证据，回收器必须让路。反过来，两条**真孤儿**
    * 路径的租约证据都不成立（NULL / 过期时间戳），照常被回收 —— 覆盖面没有缩小。
    *
@@ -325,7 +327,9 @@ export class EvalRunsRepository {
    * 而非续跑。代价是「卡了 15 分钟的 run 诚实地失败」，换来的是死锁**必然自愈**，划算。
    */
   async reapAbandonedRuns(now: Date): Promise<string[]> {
-    // 宽限期：`lease_until < now - GRACE`，不是 `< now`。GRACE > pg-boss 的 job 过期时间，
+    // 宽限期：`lease_until < now - GRACE`，不是 `< now`。**两条臂现在同源于 deadline**
+    // （queued 臂的锚点曾经是 `now`，见 018 §12 缺口 15(c)：那让回收器比 pg-boss 的
+    // 重投早赢 10 分钟，静默架空 retryLimit: 3）。GRACE > pg-boss 的 job 过期时间，
     // 保证「未捕获异常 → releaseLease → 立刻重试」这条路径上，**重试永远先于回收**，
     // 不架空 retryLimit: 3（详见 EVAL_RUN_REAP_GRACE_MS 的注释）。
     const deadline = new Date(now.getTime() - EVAL_RUN_REAP_GRACE_MS);
@@ -361,7 +365,7 @@ export class EvalRunsRepository {
           and(
             eq(evalRuns.status, "queued"),
             lt(evalRuns.createdAt, deadline),
-            or(isNull(evalRuns.leaseUntil), lt(evalRuns.leaseUntil, now)),
+            or(isNull(evalRuns.leaseUntil), lt(evalRuns.leaseUntil, deadline)),
           ),
         ),
       )

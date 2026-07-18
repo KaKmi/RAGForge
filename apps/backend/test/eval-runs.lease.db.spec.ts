@@ -355,6 +355,33 @@ describeDb("eval run lease + reaper（真库三值逻辑）", () => {
     expect((await statusOf(id)).status).toBe("queued");
   });
 
+  // ——— 缺口 15(c)：queued 臂的宽限锚点必须与 running 臂同源（deadline，不是 now）———
+  it("被 SIGKILL 的 worker：租约刚过期但未满一个宽限期 → **不**回收（不架空 retryLimit:3）", async () => {
+    // 现场：worker acquire 后被 SIGKILL，租约在 acquire+5min 过期；
+    // 而 pg-boss 要到 acquire+15min 才重投（pg-boss@12.25.1：expire_seconds=900、
+    // retry_delay=0，见 node_modules/pg-boss/dist/plans.js:28,32）。
+    // 锚点若用 now，回收器在 +5min 即可动手 ⇒ 早赢 10 分钟，重试还没来就把 run 判死。
+    const id = await insertRun(
+      "queued",
+      null,
+      ago(EVAL_RUN_REAP_GRACE_MS / 2), // 租约过期了，但没过一个 GRACE
+      ago(EVAL_RUN_REAP_GRACE_MS + 60_000), // created_at 很旧（满足另一个条件）
+    );
+    expect(await repo.reapAbandonedRuns(new Date())).toEqual([]);
+    expect((await statusOf(id)).status).toBe("queued");
+  });
+
+  it("同一条 run 在租约过期满一个宽限期后 → 照常回收（活性没被牺牲）", async () => {
+    const id = await insertRun(
+      "queued",
+      null,
+      ago(EVAL_RUN_REAP_GRACE_MS + 60_000),
+      ago(EVAL_RUN_REAP_GRACE_MS + 60_000),
+    );
+    expect(await repo.reapAbandonedRuns(new Date())).toEqual([id]);
+    expect((await statusOf(id)).status).toBe("failed");
+  });
+
   // ——— 缺口 15(a)(b)：每次状态推进都必须证明租约所有权 ————————————————
   it("15(a) 失租后 finishRunAsOwner 不生效 —— failed 不会被 done 覆盖", async () => {
     // 最后一条 case 卡住 > 20min 的现场：回收器先判 failed 并清空 owner，

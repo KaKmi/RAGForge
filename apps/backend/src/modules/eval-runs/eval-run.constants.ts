@@ -20,6 +20,11 @@ export const EVAL_RUN_LEASE_MS = 5 * 60_000;
  *  · **未捕获异常**：`releaseLease` 留下 `lease_until = now`，pg-boss 以 retry_delay=0
  *    立刻重试 → 重试比回收早整整一个 GRACE ✓
  *
+ * **两条回收臂现在同源于 `deadline`**（queued 臂的锚点曾是 `now`，见 018 §12 缺口 15(c)）。
+ * 此前 queued 臂对「worker 被 SIGKILL」这条路径不成立：租约在 acquire+TTL(5min) 过期，
+ * 回收器立刻可动手，而 pg-boss 要到 acquire+15min 才重投 ⇒ 回收早赢 10 分钟，
+ * `retryLimit: 3` 被静默架空。改锚点后最早回收时刻是 acquire+TTL+GRACE = 20min > 15min ✓
+ *
  * 为什么要大于 job 过期时间：
  *
  * 未捕获异常时 worker 的 `finally` 会 `releaseLease`，pg-boss 随即重试（默认
