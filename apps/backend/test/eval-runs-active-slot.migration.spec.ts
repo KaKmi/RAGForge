@@ -97,8 +97,11 @@ describeDb("迁移 0023 全局活跃槽位唯一索引（RUN_DB_TESTS=1）", () 
     const a = await seedRun(pool, setId, "queued");
     const b = await seedRun(pool, setId, "running");
 
-    // 报错必须带条数，让操作者知道现场有几条要处理
-    await expect(applyMigrationFile(pool, SLOT_TAG)).rejects.toThrow(/2/);
+    // 报错必须带条数，让操作者知道现场有几条要处理。
+    // 断言锚在 RAISE 的原文上而**不是**裸 `/2/`：后者会被 ENOENT（路径里的 "0023" 含 2）
+    // 之类的**任何**错误满足 —— 那样这条用例会在迁移文件被删掉时依然「绿」，
+    // 即为了错误的理由通过。
+    await expect(applyMigrationFile(pool, SLOT_TAG)).rejects.toThrow(/存在 2 条活跃 eval_runs/);
 
     // 关键：迁移不得悄悄改业务数据（不得把多余的 run 自动收成 failed）
     const rows = await pool.query(
