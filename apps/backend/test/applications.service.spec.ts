@@ -115,7 +115,6 @@ function service(overrides: Record<string, unknown> = {}) {
       id: "llm",
       type: "llm",
       enabled: true,
-      evalGateEnabled: false,
       params: {},
       baseUrl: "http://x",
       protocol: "openai_compat",
