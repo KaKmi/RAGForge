@@ -56,6 +56,9 @@ interface ReleaseContext {
   rerank: ModelMeta;
 }
 
+/** E-W2b F6：应用删除守卫——返回拒绝理由（string）或 null（放行）。 */
+export type ApplicationDeletionGuard = (applicationId: string) => Promise<string | null>;
+
 @Injectable()
 export class ApplicationsService {
   private readonly logger = new Logger(ApplicationsService.name);
@@ -528,7 +531,22 @@ export class ApplicationsService {
       createdAt: row.createdAt.toISOString(),
     };
   }
+  /**
+   * E-W2b F6（018 缺口 5）：删除守卫注册表。消费方（如 eval-runs）注册检查器，避免反向依赖成环
+   * ——applications 暴露端口、不知道 eval-runs。未来版本删除端点出现时同一注册表复用。
+   */
+  private readonly deletionGuards: ApplicationDeletionGuard[] = [];
+
+  registerDeletionGuard(guard: ApplicationDeletionGuard): void {
+    this.deletionGuards.push(guard);
+  }
+
   async delete(id: string): Promise<void> {
+    // 先跑全部 guard（注册序），任一非 null → 409（拒绝理由原样透出）。guard 抛错不吞——诚实报错。
+    for (const guard of this.deletionGuards) {
+      const reason = await guard(id);
+      if (reason !== null) throw new ConflictException(reason);
+    }
     if ((await this.repo.deleteApplication(id)) === 0)
       throw new NotFoundException(`application ${id} not found`);
   }
