@@ -258,8 +258,11 @@ export class EvalRunsService {
 
   /** F8 屏4：两 run 对比。a/b 顺序即基线/候选（前端按 createdAt 排 a=旧 b=新）。 */
   async compare(aId: string, bId: string): Promise<EvalCompareResponse> {
-    const aRow = await this.repo.findAggregateById(aId);
-    const bRow = await this.repo.findAggregateById(bId);
+    // a/b 两侧取数彼此独立，并行发出——串行会让本接口的延迟变成两次全量 listResults 之和。
+    const [aRow, bRow] = await Promise.all([
+      this.repo.findAggregateById(aId),
+      this.repo.findAggregateById(bId),
+    ]);
     if (!aRow || !bRow) throw new NotFoundException("评测报告不存在");
 
     const TERMINAL: EvalRunStatus[] = ["done", "partial", "budget_stop"];
@@ -293,7 +296,8 @@ export class EvalRunsService {
       },
       results: aggregateResults(await this.repo.listResults(row.id)),
     });
-    return buildCompareResponse(await toInput(aRow), await toInput(bRow));
+    const [aInput, bInput] = await Promise.all([toInput(aRow), toInput(bRow)]);
+    return buildCompareResponse(aInput, bInput);
   }
 
   /** F2：本 run 快照里 goldDocRefs 非空的用例数（withGold）/ 快照总数（total）。 */

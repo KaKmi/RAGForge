@@ -130,13 +130,11 @@ export default function ReplayModal({
   const [span, setSpan] = useState<TraceDetailResponse | null>(null);
   const [spanMissing, setSpanMissing] = useState(false);
 
-  useEffect(() => {
-    if (!open || !source) return;
-    setQuestion(source.question);
-    setVersionId(source.configVersionId);
-    setVersions([]);
-    setOrigMissing(false);
-    setRunning(false);
+  /**
+   * 清空一次重放的全部产出态。打开弹窗与「再跑一次」共用——两处若各写一份，
+   * 将来新增一个结果字段忘了同步，就会把上一次的结果漏进下一次的面板。
+   */
+  const resetResult = () => {
     setStreamText("");
     setScores(null);
     setDoneTraceId(null);
@@ -144,6 +142,16 @@ export default function ReplayModal({
     setErrorMsg(null);
     setSpan(null);
     setSpanMissing(false);
+  };
+
+  useEffect(() => {
+    if (!open || !source) return;
+    setQuestion(source.question);
+    setVersionId(source.configVersionId);
+    setVersions([]);
+    setOrigMissing(false);
+    setRunning(false);
+    resetResult();
     void getApplicationDetail(source.applicationId)
       .then((detail) => {
         const list = (detail.versions ?? []).map((v) => ({ id: v.id, version: v.version }));
@@ -172,13 +180,7 @@ export default function ReplayModal({
       return;
     }
     setRunning(true);
-    setFinished(false);
-    setStreamText("");
-    setScores(null);
-    setDoneTraceId(null);
-    setErrorMsg(null);
-    setSpan(null);
-    setSpanMissing(false);
+    resetResult();
     try {
       for await (const ev of streamReplay({
         applicationId: source.applicationId,

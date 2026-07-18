@@ -14,11 +14,9 @@ import {
 import { useNavigate } from "react-router-dom";
 import type { EvalRunListItem, EvalRunStatus } from "@codecrush/contracts";
 import { getEvalRuns } from "../../api/client";
+import { COMPARABLE_RUN_STATUSES } from "./evalShared";
 
 const { Title, Text } = Typography;
-
-/** F8：只有有结果的终态 run 可参与对比（同屏3 报告的 run population）。 */
-const COMPARABLE_STATUSES: EvalRunStatus[] = ["done", "partial", "budget_stop"];
 
 /** 原型 §7「run 列表页 /admin/eval/runs：时间倒序，列=评测集/配置版本/状态/综合分/耗时」。 */
 
@@ -71,7 +69,7 @@ export default function EvalRunsPage() {
   const canCompare =
     selectedRuns.length === 2 &&
     selectedRuns[0].setId === selectedRuns[1].setId &&
-    selectedRuns.every((r) => COMPARABLE_STATUSES.includes(r.status));
+    selectedRuns.every((r) => COMPARABLE_RUN_STATUSES.includes(r.status));
 
   const goCompare = () => {
     if (!canCompare) return;

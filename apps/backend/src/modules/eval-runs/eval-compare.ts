@@ -97,6 +97,15 @@ export function buildCompareResponse(a: CompareRunInput, b: CompareRunInput): Ev
     return { key, a: as.value, b: bs.value, delta, significant };
   });
 
+  /** 每条用例两侧同形：抽出来保证 a/b 不会写歪成不对称的两份。 */
+  const side = (r: EvalRunResult) => ({
+    verdict: r.verdict,
+    minScore: r.minScore,
+    scores: caseScores(r),
+    answer: r.answer,
+    traceId: r.previewTraceId,
+  });
+
   const bByCase = new Map(b.results.map((r) => [r.caseId, r]));
   let improvedCount = 0;
   let regressedCount = 0;
@@ -115,20 +124,8 @@ export function buildCompareResponse(a: CompareRunInput, b: CompareRunInput): Ev
         caseId: ar.caseId,
         seq: ar.seq,
         question: ar.question,
-        a: {
-          verdict: ar.verdict,
-          minScore: ar.minScore,
-          scores: caseScores(ar),
-          answer: ar.answer,
-          traceId: ar.previewTraceId,
-        },
-        b: {
-          verdict: br.verdict,
-          minScore: br.minScore,
-          scores: caseScores(br),
-          answer: br.answer,
-          traceId: br.previewTraceId,
-        },
+        a: side(ar),
+        b: side(br),
         regressed: cls.regressed,
         improved: cls.improved,
       },
@@ -139,7 +136,11 @@ export function buildCompareResponse(a: CompareRunInput, b: CompareRunInput): Ev
     a.summary.overallScore !== null && b.summary.overallScore !== null
       ? b.summary.overallScore - a.summary.overallScore
       : null;
-  const caseCount = (n: number) => (n === 0 ? null : n);
+  /** 0 条用例时不产出「每题均 token」——除零只能给 null，不能给 0（0 会被读成"很省"）。 */
+  const avgPerCase = (input: CompareRunInput): number | null =>
+    input.results.length === 0
+      ? null
+      : Math.round(input.summary.tokensUsed / input.results.length);
   return {
     a: a.summary,
     b: b.summary,
@@ -149,14 +150,8 @@ export function buildCompareResponse(a: CompareRunInput, b: CompareRunInput): Ev
       bP95Ms: p95(b.results.map((r) => r.durationMs)),
     },
     tokens: {
-      aAvgPerCase:
-        caseCount(a.results.length) === null
-          ? null
-          : Math.round(a.summary.tokensUsed / a.results.length),
-      bAvgPerCase:
-        caseCount(b.results.length) === null
-          ? null
-          : Math.round(b.summary.tokensUsed / b.results.length),
+      aAvgPerCase: avgPerCase(a),
+      bAvgPerCase: avgPerCase(b),
     },
     cases,
     summary: {
