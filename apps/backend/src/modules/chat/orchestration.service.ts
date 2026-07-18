@@ -609,6 +609,40 @@ export class OrchestrationService {
     };
   }
 
+  /**
+   * E-W2b F7：单条重放（人在等的场景）。与 `runForEvaluation` 同一安全论证——不传 convId →
+   * IDOR 校验短路；persist=false 不落会话；preview=true 的 cfg → trace 天然被在线统计/候选集排除。
+   * **不打 evalRunId、不发 rag.eval span**（重放分数只走 SSE 帧，不落存储）。
+   *
+   * 超时口径：重放沿用在线 **30s 首 token 熔断**（`streamTextChunks` 内建），不用 120s 批跑口径。
+   * onPrep/onTrace 透传：Service 据此捕获 hits（判分输入）与 traceId（span 树 Tab）。
+   */
+  async *runForReplay(
+    cfg: ResolvedApplicationConfig,
+    query: string,
+    opts: {
+      signal?: AbortSignal;
+      onPrep?: (prep: { hits: Array<{ chunkId: string; text: string; finalScore: number }> }) => void;
+      onTrace?: (traceId: string) => void;
+    } = {},
+  ): AsyncGenerator<ChatStreamEvent> {
+    yield* this.runWithConfig(cfg.applicationId, cfg, query, undefined, undefined, {
+      persist: false,
+      signal: opts.signal,
+      onTrace: opts.onTrace,
+      onPrep: opts.onPrep
+        ? (prep) =>
+            opts.onPrep!({
+              hits: prep.hits.map((h) => ({
+                chunkId: h.chunkId,
+                text: h.text,
+                finalScore: h.finalScore,
+              })),
+            })
+        : undefined,
+    });
+  }
+
   /** 预备阶段：rewrite→intent→路由→检索→兜底判定，产出 PrepResult。无 yield，供 runInContext 包裹挂父。 */
   private async prepare(
     agentId: string,

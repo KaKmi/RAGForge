@@ -20,8 +20,10 @@ import type {
 import { EVAL_RUN_JOB, EVAL_RUN_QUEUE } from "../../platform/queue/queue.constants";
 import type { Queue } from "../../platform/queue/queue.port";
 import { ApplicationsService } from "../applications/applications.service";
+import type { EvalCompareResponse } from "@codecrush/contracts";
 import { EVAL_RUN_IDEMPOTENCY_MS, EVAL_RUN_JOB_RETRY_LIMIT } from "./eval-run.constants";
 import { aggregateResults } from "./eval-run-aggregate";
+import { buildCompareResponse, type CompareRunInput } from "./eval-compare";
 import { EvalSetsRepository } from "./eval-sets.repository";
 import {
   EvalRunsRepository,
@@ -252,6 +254,46 @@ export class EvalRunsService {
       results,
       skipped,
     };
+  }
+
+  /** F8 屏4：两 run 对比。a/b 顺序即基线/候选（前端按 createdAt 排 a=旧 b=新）。 */
+  async compare(aId: string, bId: string): Promise<EvalCompareResponse> {
+    const aRow = await this.repo.findAggregateById(aId);
+    const bRow = await this.repo.findAggregateById(bId);
+    if (!aRow || !bRow) throw new NotFoundException("评测报告不存在");
+
+    const TERMINAL: EvalRunStatus[] = ["done", "partial", "budget_stop"];
+    if (
+      !TERMINAL.includes(aRow.status as EvalRunStatus) ||
+      !TERMINAL.includes(bRow.status as EvalRunStatus)
+    ) {
+      throw new ConflictException("运行未结束，无法对比");
+    }
+
+    const aSnapshot = aRow.caseVersionSnapshot as EvalRunSnapshotEntry[];
+    const bSnapshot = bRow.caseVersionSnapshot as EvalRunSnapshotEntry[];
+    const aSet = new Set(aSnapshot.map((e) => e.caseVersionId));
+    const bSet = new Set(bSnapshot.map((e) => e.caseVersionId));
+    const sameCaseSet =
+      aRow.setId === bRow.setId &&
+      aSet.size === bSet.size &&
+      [...aSet].every((id) => bSet.has(id));
+    if (!sameCaseSet) {
+      // §19.2：前端据 body.code 渲染红条「结论不可比」。
+      throw new ConflictException({ code: "incomparable" });
+    }
+
+    const labels = await this.versionLabels([aRow, bRow]);
+    const toInput = async (row: EvalRunAggregate): Promise<CompareRunInput> => ({
+      summary: {
+        ...toListItem(row, labels.get(row.configVersionId) ?? UNRESOLVED_VERSION_LABEL),
+        judgeModelId: row.judgeModelId,
+        offlineJudgeVersion: row.offlineJudgeVersion,
+        tokensUsed: row.tokensUsed,
+      },
+      results: aggregateResults(await this.repo.listResults(row.id)),
+    });
+    return buildCompareResponse(await toInput(aRow), await toInput(bRow));
   }
 
   /** F2：本 run 快照里 goldDocRefs 非空的用例数（withGold）/ 快照总数（total）。 */

@@ -6,10 +6,12 @@ import {
   HttpCode,
   Param,
   Post,
+  Query,
   Req,
 } from "@nestjs/common";
 import {
   CreateEvalRunRequestSchema,
+  type EvalCompareResponse,
   type EvalRunListItem,
   type EvalRunListResponse,
   type EvalRunReport,
@@ -35,6 +37,18 @@ export class EvalRunsController {
     const parsed = CreateEvalRunRequestSchema.safeParse(raw);
     if (!parsed.success) throw new BadRequestException(parsed.error.issues);
     return this.service.create(parsed.data, req.user.email);
+  }
+
+  /**
+   * F8 屏4 版本对比。**必须声明在 `@Get(":id")` 之前**——否则 "compare" 被吞成 id
+   * （Nest 按声明序匹配）。
+   */
+  @Get("compare") compare(
+    @Query("a") a: string,
+    @Query("b") b: string,
+  ): Promise<EvalCompareResponse> {
+    if (!a || !b) throw new BadRequestException("compare requires both a and b run ids");
+    return this.service.compare(a, b);
   }
 
   /** 进度反馈用轮询（018 已知取舍 8）：前端仅在 queued/running 时 3s 拉一次本端点。 */

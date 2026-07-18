@@ -130,6 +130,24 @@ export class EvalRunsRepository {
     return rows[0];
   }
 
+  /**
+   * F6：存在 queued/running 的 run 引用该应用 → 拦其删除（保护正在跑/排队的评测）。
+   * 终态 run 引用不拦（历史报告优雅降级，见 eval-runs.service UNRESOLVED_VERSION_LABEL）。
+   */
+  async existsActiveRunByApplicationId(applicationId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ one: sql`1` })
+      .from(evalRuns)
+      .where(
+        and(
+          eq(evalRuns.applicationId, applicationId),
+          inArray(evalRuns.status, [...ACTIVE_STATUSES]),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   /** 全局串行：任一 queued/running 的 run 都挡住新发起（原型 §6）。 */
   async findActiveRun(): Promise<EvalRunRow | undefined> {
     const rows = await this.db
