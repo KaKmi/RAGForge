@@ -28,6 +28,7 @@ import type {
   EvalVerdict,
 } from "@codecrush/contracts";
 import { ApiError, getEvalRunReport, stopEvalRun } from "../../api/client";
+import { formatHitRate5, formatNdcg5 } from "./evalShared";
 import ReplayModal, { type ReplaySource } from "./ReplayModal";
 
 const { Title, Text } = Typography;
@@ -76,14 +77,6 @@ const METRIC_LABEL: Record<EvalMetricKey, string> = {
   contextPrecision: "精确率",
   citation: "引用",
 };
-
-/** 检索层 gold 指标的两位小数 / 百分比格式化（原型 §7：`NDCG@5 0.81` / `命中率@5 92%`）。 */
-function formatNdcg5(value: number): string {
-  return (value / 100).toFixed(2);
-}
-function formatHitRate5(value: number): string {
-  return `${value}%`;
-}
 
 function formatDateTime(iso: string): string {
   const d = new Date(iso);
@@ -664,12 +657,13 @@ function RetrievalMetricCell({
   noGold: boolean;
   format?: (value: number) => string;
 }) {
-  const dash = noGold || aggregate.value === null;
+  const value = aggregate.value;
+  const dash = noGold || value === null;
   return (
     <Flex vertical gap={2} style={{ flex: "1 1 130px", padding: "4px 8px" }}>
       <Text style={{ fontSize: 12 }}>{label}</Text>
-      <b data-testid={testId} style={{ fontSize: 18, color: dash ? "rgba(0,0,0,.25)" : scoreColor(aggregate.value) }}>
-        {dash ? "—" : format ? format(aggregate.value as number) : aggregate.value}
+      <b data-testid={testId} style={{ fontSize: 18, color: dash ? "rgba(0,0,0,.25)" : scoreColor(value) }}>
+        {value === null || dash ? "—" : format ? format(value) : value}
       </b>
     </Flex>
   );

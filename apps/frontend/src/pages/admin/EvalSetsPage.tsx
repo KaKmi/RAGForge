@@ -48,6 +48,7 @@ import {
 } from "../../api/client";
 import { downloadCsv as downloadCsvFile } from "../../utils/csv";
 import { GoldRefSelector } from "./GoldRefSelector";
+import { GOLD_DOC_MAX } from "./evalShared";
 
 const { Title, Text } = Typography;
 
@@ -57,7 +58,6 @@ const { Title, Text } = Typography;
 const NAME_MAX = 50;
 const QUESTION_MAX = 500;
 const GOLD_POINT_MAX = 200;
-const GOLD_DOC_MAX = 10;
 const TAG_MAX = 5;
 const TAG_LEN_MAX = 12;
 const IMPORT_ROW_MAX = 1000;

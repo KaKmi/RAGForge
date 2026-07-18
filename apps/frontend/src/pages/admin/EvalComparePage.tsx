@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Alert,
@@ -22,6 +22,12 @@ import type {
 } from "@codecrush/contracts";
 import { EvalCompareIncomparableError, getEvalCompare, getEvalRuns } from "../../api/client";
 import { downloadCsv, type CsvValue } from "../../utils/csv";
+import {
+  COMPARABLE_RUN_STATUSES,
+  SIGNIFICANT_DELTA,
+  formatHitRate5,
+  formatNdcg5,
+} from "./evalShared";
 import { SideBySidePanel, type ReplayScores } from "./ReplayModal";
 
 const { Title, Text } = Typography;
@@ -40,8 +46,8 @@ const METRIC_LABEL: Record<CompareMetricKey, string> = {
 /** F8：NDCG 显示两位小数、命中率显示 %、其余整数（与屏3 记分卡同口径）。 */
 function fmtMetric(key: CompareMetricKey, v: number | null): string {
   if (v === null) return "—";
-  if (key === "ndcg5") return (v / 100).toFixed(2);
-  if (key === "hitRate5") return `${v}%`;
+  if (key === "ndcg5") return formatNdcg5(v);
+  if (key === "hitRate5") return formatHitRate5(v);
   return String(v);
 }
 
@@ -50,8 +56,8 @@ function DeltaCell({ delta, significant }: { delta: number | null; significant: 
   if (!significant) {
     return <Text type="secondary">— 无显著差异</Text>;
   }
-  if (delta >= 3) return <Text style={{ color: "#52c41a" }}>▲ +{delta}</Text>;
-  if (delta <= -3) return <Text style={{ color: "#ff4d4f" }}>▼ {delta}</Text>;
+  if (delta >= SIGNIFICANT_DELTA) return <Text style={{ color: "#52c41a" }}>▲ +{delta}</Text>;
+  if (delta <= -SIGNIFICANT_DELTA) return <Text style={{ color: "#ff4d4f" }}>▼ {delta}</Text>;
   return <Text type="secondary">—</Text>;
 }
 
@@ -64,8 +70,8 @@ interface BannerTier {
 function bannerTier(res: EvalCompareResponse): BannerTier {
   const d = res.summary.overallDelta;
   if (d === null) return { type: "info", text: "综合分不可比（一侧未出分）" };
-  if (d <= -3) return { type: "error", text: `综合 ${d} · 不建议上线` };
-  if (d >= 3) {
+  if (d <= -SIGNIFICANT_DELTA) return { type: "error", text: `综合 ${d} · 不建议上线` };
+  if (d >= SIGNIFICANT_DELTA) {
     return res.summary.regressedCount > 0
       ? { type: "warning", text: `综合 +${d} · 可上线，但注意 ${res.summary.regressedCount} 条用例回退` }
       : { type: "success", text: `综合 +${d} · 建议上线` };
@@ -122,11 +128,8 @@ export default function EvalComparePage() {
     void load();
   }, [load]);
 
-  const metricRows: MetricRow[] = useMemo(() => data?.metrics ?? [], [data]);
-
   // 选择器：同评测集的终态 run。
-  const TERMINAL: EvalRunListItem["status"][] = ["done", "partial", "budget_stop"];
-  const comparableRuns = runs.filter((r) => TERMINAL.includes(r.status));
+  const comparableRuns = runs.filter((r) => COMPARABLE_RUN_STATUSES.includes(r.status));
   const selectedA = comparableRuns.find((r) => r.id === a);
   const selectedB = comparableRuns.find((r) => r.id === b);
   const runOptions = (counterpart: EvalRunListItem | undefined) =>
@@ -189,6 +192,7 @@ export default function EvalComparePage() {
   }
 
   const tier = bannerTier(data);
+  const metricRows: MetricRow[] = data.metrics;
   const scoresOf = (side: EvalCompareResponse["cases"][number]["a"]): ReplayScores => ({
     faithfulness: side.scores.faithfulness ?? null,
     answerRelevancy: side.scores.answerRelevancy ?? null,

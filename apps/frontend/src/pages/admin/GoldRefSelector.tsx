@@ -2,11 +2,9 @@ import { useEffect, useState } from "react";
 import { Button, Checkbox, Empty, Input, List, Modal, Select, Space, Typography } from "antd";
 import type { GoldDocRef, KnowledgeBase, RetrievalHit } from "@codecrush/contracts";
 import { getKnowledgeBases, testRetrieval } from "../../api/client";
+import { GOLD_DOC_MAX } from "./evalShared";
 
 const { Text } = Typography;
-
-/** §19.1：gold 文档最多 10 个引用（同 EvalSetsPage 的 GOLD_DOC_MAX）。 */
-const GOLD_DOC_MAX = 10;
 /** 候选片段正文摘要长度（原型 §5「text 前 80 字」）。 */
 const TEXT_PREVIEW = 80;
 
