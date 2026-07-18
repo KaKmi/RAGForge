@@ -13,6 +13,7 @@ import { EvaluationSpanEmitter } from "./evaluation-span.emitter";
 import { EvaluationWorkerProcessor } from "./evaluation-worker.processor";
 import { EvaluationsRepository } from "./evaluations.repository";
 import { FaithfulnessEvaluator } from "./faithfulness.evaluator";
+import { ManualScoreProcessor } from "./manual-score.processor";
 import { EvaluationsController } from "./evaluations.controller";
 import { EvaluationsService } from "./evaluations.service";
 
@@ -31,6 +32,7 @@ import { EvaluationsService } from "./evaluations.service";
     EvaluationJudgeService,
     EvaluationSpanEmitter,
     EvaluationWorkerProcessor,
+    ManualScoreProcessor, // B1/F3：人工「立即评测」消费者（api 角色队列）
     EvaluationsService,
   ],
   // 018 决策 A：只导出 EvaluationJudgeService 一个服务给 eval-runs——**不导出 4 个 evaluator**。

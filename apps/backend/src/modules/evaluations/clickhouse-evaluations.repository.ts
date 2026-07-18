@@ -152,6 +152,54 @@ function parseRetrievalChunks(payloads: string[]): EvaluationCandidate["retrieva
   return chunks;
 }
 
+/**
+ * 候选 trace 的取数口径（列 + 关联 span 聚合）。
+ * listCandidates（周期 worker）与 findCandidateByTraceId（人工立即评测）共用这一段，
+ * 只在 WHERE 上分叉——两处各写一份 SELECT 就等于让两条路径评不同的东西。
+ */
+/** CandidateRow → EvaluationCandidate。两个取数入口共用，保证判分输入口径一致。 */
+function toCandidate(row: CandidateRow): EvaluationCandidate {
+  return {
+    traceId: row.trace_id,
+    startTime: new Date(toIsoUtc(row.start_time)),
+    agentId: row.agent_id ?? "",
+    generationModel: row.generation_model ?? "",
+    status: row.status,
+    noCitations: truthy(row.no_citations),
+    confidence: row.confidence === null || row.confidence === "" ? null : Number(row.confidence),
+    retrievalChunks: parseRetrievalChunks(row.chunk_score_payloads),
+  };
+}
+
+const CANDIDATE_SELECT = `
+        SELECT
+          t.trace_id,
+          t.start_time,
+          t.agent_id,
+          t.status,
+          t.no_citations,
+          spans.generation_model,
+          nullIf(spans.confidence_text, '') AS confidence,
+          spans.chunk_score_payloads
+        FROM codecrush_traces AS t
+        LEFT JOIN (
+          SELECT
+            trace_id,
+            argMaxIf(
+              attributes['gen_ai.request.model'],
+              start_time,
+              kind = 'llm' AND attributes['rag.node.name'] IN ('reply', 'fallback')
+            ) AS generation_model,
+            argMaxIf(attributes['rag.quality.confidence'], start_time, kind = 'chain') AS confidence_text,
+            groupArrayIf(
+              attributes['rag.chunk.scores'],
+              attributes['rag.chunk.scores'] != ''
+            ) AS chunk_score_payloads
+          FROM codecrush_trace_spans
+          GROUP BY trace_id
+        ) AS spans ON spans.trace_id = t.trace_id
+`;
+
 @Injectable()
 export class ClickHouseEvaluationsRepository {
   private traceViewsReady = false;
@@ -199,32 +247,7 @@ export class ClickHouseEvaluationsRepository {
     if (!(await this.ensureCandidateViews())) return [];
     const result = await this.clickhouse.query({
       query: `
-        SELECT
-          t.trace_id,
-          t.start_time,
-          t.agent_id,
-          t.status,
-          t.no_citations,
-          spans.generation_model,
-          nullIf(spans.confidence_text, '') AS confidence,
-          spans.chunk_score_payloads
-        FROM codecrush_traces AS t
-        LEFT JOIN (
-          SELECT
-            trace_id,
-            argMaxIf(
-              attributes['gen_ai.request.model'],
-              start_time,
-              kind = 'llm' AND attributes['rag.node.name'] IN ('reply', 'fallback')
-            ) AS generation_model,
-            argMaxIf(attributes['rag.quality.confidence'], start_time, kind = 'chain') AS confidence_text,
-            groupArrayIf(
-              attributes['rag.chunk.scores'],
-              attributes['rag.chunk.scores'] != ''
-            ) AS chunk_score_payloads
-          FROM codecrush_trace_spans
-          GROUP BY trace_id
-        ) AS spans ON spans.trace_id = t.trace_id
+        ${CANDIDATE_SELECT}
         WHERE t.preview = 0
           AND (t.start_time, t.trace_id) > ({lastTs:DateTime64(9)}, {lastTraceId:String})
           AND t.start_time <= {upperBound:DateTime64(9)}
@@ -240,16 +263,31 @@ export class ClickHouseEvaluationsRepository {
       format: "JSONEachRow",
     });
     const rows = await result.json<CandidateRow>();
-    return rows.map((row) => ({
-      traceId: row.trace_id,
-      startTime: new Date(toIsoUtc(row.start_time)),
-      agentId: row.agent_id ?? "",
-      generationModel: row.generation_model ?? "",
-      status: row.status,
-      noCitations: truthy(row.no_citations),
-      confidence: row.confidence === null || row.confidence === "" ? null : Number(row.confidence),
-      retrievalChunks: parseRetrievalChunks(row.chunk_score_payloads),
-    }));
+    return rows.map(toCandidate);
+  }
+
+  /**
+   * B1/F3：按 traceId 单条取候选（人工「立即评测」用）。
+   *
+   * **刻意与 listCandidates 共用同一段 SELECT 与同一个映射函数**：判分的输入口径
+   * 若在两处各写一遍，人工评分与 worker 评分就会悄悄评的不是同一个东西。
+   * 唯一的差别是 WHERE——这里按 traceId 取，不走游标；`preview = 0` 必须保留
+   * （重放产生的 preview trace 不进线上质量统计）。
+   */
+  async findCandidateByTraceId(traceId: string): Promise<EvaluationCandidate | undefined> {
+    if (!(await this.ensureCandidateViews())) return undefined;
+    const result = await this.clickhouse.query({
+      query: `
+        ${CANDIDATE_SELECT}
+        WHERE t.preview = 0
+          AND t.trace_id = {traceId:String}
+        LIMIT 1
+      `,
+      query_params: { traceId },
+      format: "JSONEachRow",
+    });
+    const rows = await result.json<CandidateRow>();
+    return rows[0] ? toCandidate(rows[0]) : undefined;
   }
 
   async findExisting(

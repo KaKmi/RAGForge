@@ -4,8 +4,10 @@ import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
 import {
   evalCandidateLedger,
+  evalManualScoreJobs,
   evalWatermarks,
   onlineEvalSettings,
+  type EvalManualScoreJobRow,
   type EvalWatermarkRow,
   type OnlineEvalSettingsRow,
 } from "./schema";
@@ -304,4 +306,66 @@ export class EvaluationsRepository {
       })
       .where(eq(evalWatermarks.workerName, workerName));
   }
+
+  // —— B1/F3：人工「立即评测」作业表 ——
+  //
+  // ⚠️ 这三个方法**只碰 eval_manual_score_jobs**。绝不写 eval_candidate_ledger，
+  // 也绝不写 eval_watermarks 任一列（含 daily_count）——人工触发不推进游标，
+  // 记进账本会把「人工点了一下」伪装成一次 worker 扫描，屏1 的 missed/scoresNotPersisted
+  // 当场失真；吃 dailyCap 则会让一次排查把当天的自动抽样饿死。
+
+  /** 入队前置位。已存在（含 failed）则重置为 queued —— 这就是「重试」。 */
+  async upsertManualJob(
+    targetTraceId: string,
+    judgeVersion: string,
+    requestedBy: string,
+  ): Promise<void> {
+    const now = new Date();
+    await this.db
+      .insert(evalManualScoreJobs)
+      .values({ targetTraceId, judgeVersion, status: "queued", attempts: 0, requestedBy })
+      .onConflictDoUpdate({
+        target: [evalManualScoreJobs.targetTraceId, evalManualScoreJobs.judgeVersion],
+        set: { status: "queued", attempts: 0, lastError: null, requestedBy, updatedAt: now },
+      });
+  }
+
+  async findManualJob(
+    targetTraceId: string,
+    judgeVersion: string,
+  ): Promise<EvalManualScoreJobRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(evalManualScoreJobs)
+      .where(
+        and(
+          eq(evalManualScoreJobs.targetTraceId, targetTraceId),
+          eq(evalManualScoreJobs.judgeVersion, judgeVersion),
+        ),
+      )
+      .limit(1);
+    return rows[0];
+  }
+
+  async markManualJob(
+    targetTraceId: string,
+    judgeVersion: string,
+    patch: { status: "running" | "scored" | "failed"; lastError?: string | null; bumpAttempt?: boolean },
+  ): Promise<void> {
+    await this.db
+      .update(evalManualScoreJobs)
+      .set({
+        status: patch.status,
+        lastError: patch.lastError ?? null,
+        updatedAt: new Date(),
+        ...(patch.bumpAttempt ? { attempts: sql`${evalManualScoreJobs.attempts} + 1` } : {}),
+      })
+      .where(
+        and(
+          eq(evalManualScoreJobs.targetTraceId, targetTraceId),
+          eq(evalManualScoreJobs.judgeVersion, judgeVersion),
+        ),
+      );
+  }
+
 }

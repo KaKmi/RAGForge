@@ -27,6 +27,7 @@ describe("otel conventions", () => {
     expect(RAG.EVAL_VERSION).toBe("rag.eval.version");
     expect(RAG.EVAL_DEDUPE_KEY).toBe("rag.eval.dedupe_key");
     expect(RAG.EVAL_STATUS).toBe("rag.eval.status");
+    expect(RAG.EVAL_TRIGGER).toBe("rag.eval.trigger");
   });
 
   it("reserves -1 for an unscored evaluation metric", () => {

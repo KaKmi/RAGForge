@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  HttpException,
+  Inject,
+  Injectable,
+  UnprocessableEntityException,
+} from "@nestjs/common";
 import type {
   EvalModelOption,
   OnlineEvalSettings,
@@ -9,10 +15,16 @@ import type {
   QualityOverviewResponse,
   QualityScores,
   QualityThresholds,
+  ManualScoreResponse,
   TraceQualityDetail,
   UpdateOnlineEvalSettingsRequest,
 } from "@codecrush/contracts";
-import { ONLINE_EVALUATION_WORKER } from "../../platform/queue/queue.constants";
+import {
+  MANUAL_SCORE_JOB,
+  MANUAL_SCORE_QUEUE,
+  ONLINE_EVALUATION_WORKER,
+} from "../../platform/queue/queue.constants";
+import type { Queue } from "../../platform/queue/queue.port";
 import { ModelsService } from "../models/models.service";
 import {
   ClickHouseEvaluationsRepository,
@@ -36,7 +48,19 @@ export class EvaluationsService {
     private readonly controlRepo: EvaluationsRepository,
     private readonly clickhouseRepo: ClickHouseEvaluationsRepository,
     private readonly models: ModelsService,
+    @Inject(MANUAL_SCORE_QUEUE) private readonly manualQueue: Queue,
   ) {}
+
+  /**
+   * B1/F3 限频：同一 traceId 60s 内只受理一次。
+   *
+   * 单副本前提与 replay.service.ts:16 一致（019 Boundary 5）——多副本下各自计数，
+   * 一致处理，不新增债。用它而**不是** dailyCap：dailyCap 是 worker 自动抽样的预算，
+   * 人工点击若吃这个额度，一次排查就能把当天的自动抽样饿死；且 dailyCount 由
+   * finishCycle 在租约内写，端点侧并发写会破坏租约不变量。
+   */
+  private static readonly MANUAL_SCORE_RATE_LIMIT_MS = 60_000;
+  private readonly lastManualScoreAt = new Map<string, number>();
 
   async getOverview(
     query: QualityOverviewQuery,
@@ -218,7 +242,52 @@ export class EvaluationsService {
         currentVersion: failure.judgeVersion === settings.judgeVersion,
       };
     }
+    // B1/F3：ClickHouse 三态都没命中时，才看有没有在跑的人工作业。
+    // 顺序不可颠倒——已有分数必须立即可见，不能被一条陈旧的 job 行盖住。
+    const job = await this.controlRepo.findManualJob(targetTraceId, settings.judgeVersion);
+    if (job && (job.status === "queued" || job.status === "running")) {
+      // startedAt 取作业创建时间：表里没有独立的 started_at 列，
+      // created_at 就是「用户点下立即评测」的时刻，正是面板要显示的起点。
+      return { status: "scoring", startedAt: job.createdAt.toISOString() };
+    }
     return { status: "unscored" };
+  }
+
+  /**
+   * B1/F3：手动触发单条评测（原型 §12.3 `POST /eval/quality/traces/:traceId/score`）。
+   *
+   * 步骤顺序**不可调换**：先校验可用性与限频，再查「是否已评」，最后才入队。
+   * 把 findExisting 放在限频之后是有意的——已评过的 trace 直接返回 scored，
+   * 不入队、不调裁判、不计费。
+   */
+  async requestManualScore(targetTraceId: string, actor: string): Promise<ManualScoreResponse> {
+    const settings = await this.controlRepo.getSettings();
+    if (!settings.enabled) {
+      throw new UnprocessableEntityException("在线评测未启用");
+    }
+    await this.requireModel(settings.judgeModelId, "llm", "judgeModelId");
+    await this.requireModel(settings.embeddingModelId, "embedding", "embeddingModelId");
+
+    const now = Date.now();
+    const last = this.lastManualScoreAt.get(targetTraceId);
+    if (last !== undefined && now - last < EvaluationsService.MANUAL_SCORE_RATE_LIMIT_MS) {
+      throw new HttpException("操作过于频繁，请 1 分钟后再试", 429);
+    }
+
+    // 已评过 → 直接返回，绝不重复计费（worker 侧的 already_scored 是同一道守卫）。
+    if (await this.clickhouseRepo.findExisting(targetTraceId, settings.judgeVersion)) {
+      return { status: "scored" };
+    }
+
+    // 置位限频只在真正受理之后——上面的早退路径不该占用配额。
+    this.lastManualScoreAt.set(targetTraceId, now);
+    await this.controlRepo.upsertManualJob(targetTraceId, settings.judgeVersion, actor);
+    await this.manualQueue.publish(
+      MANUAL_SCORE_JOB,
+      { targetTraceId, judgeVersion: settings.judgeVersion },
+      { singletonKey: `${targetTraceId}:${settings.judgeVersion}` },
+    );
+    return { status: "scoring" };
   }
 
   async getSettings(): Promise<OnlineEvalSettingsResponse> {
