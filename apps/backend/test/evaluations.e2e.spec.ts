@@ -3,6 +3,7 @@ import { BadRequestException, type INestApplication } from "@nestjs/common";
 import { APP_PIPE } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
 import type { TraceQualityDetail } from "@codecrush/contracts";
+import { EVALUATION_UNSCORED_SCORE } from "@codecrush/otel-conventions";
 import { ZodValidationPipe } from "nestjs-zod";
 import request from "supertest";
 import { applyGlobalConfig } from "../src/app/app-bootstrap";
@@ -440,6 +441,7 @@ describeInfra("E-W1 infrastructure flow", () => {
   let traces: TracesService;
 
   const fixedNow = new Date("2026-07-15T02:00:00.000Z");
+  const onlineJudgeVersion = "online-v2";
   const targetTraceId = randomUUID().replaceAll("-", "");
   const previewTraceId = randomUUID().replaceAll("-", "");
   const evaluationTraceId = randomUUID().replaceAll("-", "");
@@ -496,12 +498,12 @@ describeInfra("E-W1 infrastructure flow", () => {
     dailyCap: 500,
   };
 
-  const evalAttributes = (traceId: string, version: string, score: number) => ({
+  const evalAttributes = (traceId: string, version: string, score: number | null) => ({
     "rag.eval.status": "success",
     "rag.eval.target_trace_id": traceId,
     "rag.eval.dedupe_key": evalDedupeKey(traceId, version),
     "rag.eval.version": version,
-    "rag.eval.faithfulness": String(score),
+    "rag.eval.faithfulness": String(score ?? EVALUATION_UNSCORED_SCORE),
     "rag.eval.answer_relevancy": String(score),
     "rag.eval.context_precision": String(score),
     "rag.eval.judge_model": "judge-1",
@@ -534,7 +536,7 @@ describeInfra("E-W1 infrastructure flow", () => {
           input: { targetTraceId: string };
           settings: { judgeModelId: string; judgeVersion: string };
           result: {
-            faithfulness: number;
+            faithfulness: number | null;
             answerRelevancy: number;
             contextPrecision: number;
             evidence: unknown;
@@ -653,9 +655,9 @@ describeInfra("E-W1 infrastructure flow", () => {
     }
     expect(detail).toMatchObject({
       status: "scored",
-      judgeVersion: "online-v1",
+      judgeVersion: onlineJudgeVersion,
       currentVersion: true,
-      scores: { faithfulness: 100, answerRelevancy: 100, contextPrecision: 0 },
+      scores: { faithfulness: null, answerRelevancy: 100, contextPrecision: 0 },
       thresholds: { faithfulness: 85, answerRelevancy: 80, contextPrecision: 80 },
     });
     const overview = await service.getOverview({ from, to, agentId });
@@ -667,7 +669,7 @@ describeInfra("E-W1 infrastructure flow", () => {
     });
     expect(overview.meta.evaluatedCount).toBe(1);
     expect(overview.metrics).toMatchObject({
-      faithfulness: { value: 100, threshold: 85, low: false },
+      faithfulness: { value: null, threshold: 85, low: false, sampleCount: 0 },
       answerRelevancy: { value: 100, threshold: 80, low: false },
       contextPrecision: { value: 0, threshold: 80, low: true },
     });
@@ -676,10 +678,10 @@ describeInfra("E-W1 infrastructure flow", () => {
       traceId: targetTraceId,
       evaluation: {
         status: "scored",
-        scores: { faithfulness: 100, answerRelevancy: 100, contextPrecision: 0 },
+        scores: { faithfulness: null, answerRelevancy: 100, contextPrecision: 0 },
         minMetric: "contextPrecision",
         minScore: 0,
-        judgeVersion: "online-v1",
+        judgeVersion: onlineJudgeVersion,
       },
     });
 
@@ -695,8 +697,8 @@ describeInfra("E-W1 infrastructure flow", () => {
         expect(response.body).toMatchObject({
           status: "scored",
           currentVersion: true,
-          judgeVersion: "online-v1",
-          scores: { faithfulness: 100, answerRelevancy: 100, contextPrecision: 0 },
+          judgeVersion: onlineJudgeVersion,
+          scores: { faithfulness: null, answerRelevancy: 100, contextPrecision: 0 },
           thresholds: { faithfulness: 85, answerRelevancy: 80, contextPrecision: 80 },
         }),
       );
@@ -726,7 +728,7 @@ describeInfra("E-W1 infrastructure flow", () => {
             traceId: targetTraceId,
             evaluation: expect.objectContaining({
               status: "scored",
-              scores: { faithfulness: 100, answerRelevancy: 100, contextPrecision: 0 },
+              scores: { faithfulness: null, answerRelevancy: 100, contextPrecision: 0 },
               minMetric: "contextPrecision",
               minScore: 0,
             }),
@@ -734,7 +736,7 @@ describeInfra("E-W1 infrastructure flow", () => {
         ]),
       );
     await expect(
-      clickhouseEvaluations.findExisting(previewTraceId, "online-v1"),
+      clickhouseEvaluations.findExisting(previewTraceId, onlineJudgeVersion),
     ).resolves.toBeUndefined();
   });
 
@@ -746,14 +748,14 @@ describeInfra("E-W1 infrastructure flow", () => {
       spanId: "4".repeat(16),
       at: "2026-07-15T01:59:59.000Z",
       name: "rag.eval",
-      attributes: evalAttributes(targetTraceId, "online-v1", 40),
+      attributes: evalAttributes(targetTraceId, onlineJudgeVersion, 40),
     });
     await harness.insertSpan({
       traceId: evaluationTraceId,
       spanId: "5".repeat(16),
       at: "2026-07-15T02:00:01.000Z",
       name: "rag.eval",
-      attributes: evalAttributes(targetTraceId, "online-v1", 90),
+      attributes: evalAttributes(targetTraceId, onlineJudgeVersion, 90),
     });
     const overview = await service.getOverview({ from, to, agentId });
     expect(overview.meta.evaluatedCount).toBe(1);
