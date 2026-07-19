@@ -43,8 +43,10 @@ const BASELINES = {
   // db：B2a 加 test/gaps.db.spec.ts（8 条）后**实测** 12 suites / 90 tests。
   // 断言是 `>=`，所以基线必须写**实测值**而不是估算：写低 1 就等于给「第一条用例悄悄消失」放行
   // ——本波初版正是估成 87（实测 88），被 peer review 抓出，随后又因补两条跨簇/跨来源用例变 90。
-  db: { suites: 12, tests: 90, script: "test:db" },
-  infra: { suites: 7, tests: 91, script: "test:infra" },
+  // Task 5 又加 1 条（last_ts 纳秒往返，钉死迁移 0027）⇒ 12/91。
+  db: { suites: 12, tests: 91, script: "test:db" },
+  // infra：B2a Task 5 加 test/gap-pool-isolation.spec.ts（5 条）后 8 suites / 96 tests。
+  infra: { suites: 8, tests: 96, script: "test:infra" },
 };
 
 const [suiteKey, resultFile] = process.argv.slice(2);

@@ -143,7 +143,15 @@ export const gapItems = pgTable(
  */
 export const gapWatermarks = pgTable("gap_watermarks", {
   workerName: varchar("worker_name", { length: 100 }).primaryKey(),
-  lastTs: timestamp("last_ts", { withTimezone: true }).notNull(),
+  /**
+   * 游标的时间分量，**存原样 ClickHouse 时间串**（`YYYY-MM-DD HH:MM:SS.fffffffff`），不是时间戳类型。
+   *
+   * 排序键 `codecrush_traces.start_time` 是 `DateTime64(9)`；经 timestamptz 往返会被截断到微秒，
+   * 而 node-postgres 更是直接还原成 JS `Date`（毫秒）⇒ 元组比较 `(ns, id) > (截断后, id)` 恒成立
+   * ⇒ 最后一行每轮重取、游标永远推不过它。同 `GapPoolCursor.lastTs` 的取舍，见迁移 0027。
+   * 定宽格式 ⇒ 字典序即时间序，`ORDER BY last_ts` 仍然有意义。
+   */
+  lastTs: varchar("last_ts", { length: 40 }).notNull(),
   lastTraceId: varchar("last_trace_id", { length: 32 }).notNull().default(""),
   leaseOwner: varchar("lease_owner", { length: 200 }),
   leaseUntil: timestamp("lease_until", { withTimezone: true }),

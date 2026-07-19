@@ -85,6 +85,11 @@ export interface PoolCandidate {
   cursorTs: string;
   sessionId: string;
   isFirstTurnInSession: boolean;
+  /**
+   * **百分制（0–100）**，已在本 repository 换算过——遥测里它是 0–1。
+   * 域内其余一切（`POOL_CONFIDENCE_MAX`、`shouldEnterPool`、`triageItem`、
+   * `gap_items.confidence` 的 0–100 CHECK）都是百分制，量纲的接缝只此一处。
+   */
   confidence: number | null;
   fallbackUsed: boolean;
   noCitations: boolean;
@@ -141,6 +146,18 @@ function toTelemetryConfidenceScale(percentThreshold: number): number {
   return percentThreshold / 100;
 }
 
+/**
+ * 同一条接缝的另一端：**读出来的值**也要从 0–1 换回百分制再交给域内。
+ *
+ * 只换阈值、不换取值是半个修复，而且是危险的那半：`shouldEnterPool` / `triageItem` 拿
+ * 0–1 的值去比 `POOL_CONFIDENCE_MAX = 60`，**每一条都判「可信度低」**——TS 侧的入池复判
+ * 与根因分诊双双失效（复判恒放行，分诊恒往 `missing` 那一档偏）。且 `gap_items.confidence`
+ * 的 `BETWEEN 0 AND 100` CHECK 拦不住它：0.3 也在区间里，只会静默存成一个假的低分。
+ */
+function toPercentConfidence(value: number | null): number | null {
+  return value === null ? null : Math.round(value * 100);
+}
+
 function toCandidate(row: CandidateRow): PoolCandidate {
   const rewritten = (row.rewritten_question ?? "").trim();
   const hasEval = truthy(row.has_eval);
@@ -154,7 +171,7 @@ function toCandidate(row: CandidateRow): PoolCandidate {
     cursorTs: row.start_time,
     sessionId: row.session_id ?? "",
     isFirstTurnInSession: truthy(row.is_first_turn),
-    confidence: nullableNumber(row.confidence),
+    confidence: toPercentConfidence(nullableNumber(row.confidence)),
     fallbackUsed: truthy(row.is_fallback),
     noCitations: truthy(row.no_citations),
     // 没评过分就一律 null，绝不把 0 当成「0 分」往下游传（Global Constraint 6 的读侧同源要求）。

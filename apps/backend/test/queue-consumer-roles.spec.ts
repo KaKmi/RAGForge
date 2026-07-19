@@ -13,12 +13,14 @@ describe("QUEUE_CONSUMER_ROLES（019 Boundary 1：消费角色的唯一登记处
     expect(consumedByApi).toEqual(["ingestion", "manualScore", "releaseCheck"]);
   });
 
-  it("worker 只消费 evaluation + evalRun", () => {
+  // B2a：新增 gapCollect（问题池收集器）。它是 cron 驱动的周期后台任务、没有前端在等结果，
+  // 故与 evaluation/evalRun 同属 worker 侧；挂到 api 会让只起 worker 的部署永远收不到它。
+  it("worker 只消费 evaluation + evalRun + gapCollect", () => {
     const consumedByWorker = Object.entries(QUEUE_CONSUMER_ROLES)
       .filter(([, roles]) => (roles as readonly string[]).includes("worker"))
       .map(([key]) => key)
       .sort();
-    expect(consumedByWorker).toEqual(["evalRun", "evaluation"]);
+    expect(consumedByWorker).toEqual(["evalRun", "evaluation", "gapCollect"]);
   });
 
   it("all 出现在每一个登记项里（all = 现行为的兜底）", () => {
@@ -27,10 +29,11 @@ describe("QUEUE_CONSUMER_ROLES（019 Boundary 1：消费角色的唯一登记处
     }
   });
 
-  it("登记项恰是 5 个消费者域，且角色值全部合法", () => {
+  it("登记项恰是 6 个消费者域，且角色值全部合法", () => {
     expect(Object.keys(QUEUE_CONSUMER_ROLES).sort()).toEqual([
       "evalRun",
       "evaluation",
+      "gapCollect",
       "ingestion",
       "manualScore",
       "releaseCheck",

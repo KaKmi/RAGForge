@@ -207,4 +207,31 @@ describeDb("0026 gap pool（RUN_DB_TESTS=1）", () => {
 
     await dropClusters(pool, [near, far]);
   });
+
+  /**
+   * 迁移 0027 的立论钉死在这里：`gap_watermarks.last_ts` 必须原样往返**纳秒**。
+   *
+   * 0026 曾把它建成 `timestamptz`，而游标比较的排序键是 ClickHouse 的 `DateTime64(9)`。
+   * 经时间戳往返会被截断（列只到微秒，node-postgres 更是还原成 JS `Date` 只剩毫秒）：
+   * `…123456789` 写回读出成 `…123000000` ⇒ 元组比较 `(123456789, id) > (123000000, id)`
+   * 仍然成立 ⇒ **末行每轮被重新取出、游标永远推不过它**，收集器永久卡死在同一条 trace。
+   *
+   * ⚠️ 小数部分**必须非零且到第 9 位**：全零的小数（如隔离 spec 播种用的 `…00.000000000`）
+   * 经 timestamptz 往返照样原样还原，**在原理上区分不出 0027 改没改**。
+   * 有人 revert 0027 或把 schema 的 `lastTs` 改回 `timestamp`，本条会红。
+   */
+  it("last_ts 原样往返纳秒串（0027：游标绝不能经时间戳类型截断）", async () => {
+    const raw = "2026-07-16 02:00:00.123456789";
+    await pool.query(
+      `INSERT INTO gap_watermarks (worker_name, last_ts, last_trace_id) VALUES ($1, $2, '')`,
+      ["nanos-roundtrip", raw],
+    );
+    const { rows } = await pool.query<{ last_ts: string }>(
+      `SELECT last_ts FROM gap_watermarks WHERE worker_name = $1`,
+      ["nanos-roundtrip"],
+    );
+    expect(rows[0].last_ts).toBe(raw); // 逐字符相等，不是「约等于」
+    // 按主键精确删自己的夹具（红线：禁止裸 delete/truncate 整表）。
+    await pool.query(`DELETE FROM gap_watermarks WHERE worker_name = $1`, ["nanos-roundtrip"]);
+  });
 });

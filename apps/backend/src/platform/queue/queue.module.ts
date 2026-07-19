@@ -7,6 +7,7 @@ import { RoleGatedQueueAdapter } from "./role-gated-queue.adapter";
 import {
   EVAL_RUN_QUEUE,
   EVALUATION_QUEUE,
+  GAP_COLLECT_QUEUE,
   INGESTION_QUEUE,
   MANUAL_SCORE_QUEUE,
   QUEUE_CONSUMER_ROLES,
@@ -69,6 +70,12 @@ function gatedQueue(
       inject: [PG_BOSS_INSTANCE, AppConfigService],
       useFactory: (boss: PgBoss, config: AppConfigService) => gatedQueue(boss, config, "evalRun"),
     },
+    {
+      // B2a：问题池收集器（021 决策 C）。周期任务 → worker 角色，同 evaluation/evalRun。
+      provide: GAP_COLLECT_QUEUE,
+      inject: [PG_BOSS_INSTANCE, AppConfigService],
+      useFactory: (boss: PgBoss, config: AppConfigService) => gatedQueue(boss, config, "gapCollect"),
+    },
   ],
   exports: [
     INGESTION_QUEUE,
@@ -76,6 +83,7 @@ function gatedQueue(
     EVALUATION_QUEUE,
     MANUAL_SCORE_QUEUE,
     EVAL_RUN_QUEUE,
+    GAP_COLLECT_QUEUE,
   ],
 })
 export class QueueModule implements OnModuleInit, OnModuleDestroy {

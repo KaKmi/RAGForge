@@ -184,6 +184,39 @@ describe("LEFT JOIN 落空不得被读成 0 分（否则整条流量灌进池子
     expect(c.answerRelevancy).toBeNull();
     expect(c.contextPrecision).toBeNull();
   });
+
+  /**
+   * 量纲接缝的**另一端**（Task 5 补）：只换阈值不换取值是危险的半个修复。
+   * 0–1 的 confidence 流进域内后，`shouldEnterPool` / `triageItem` 拿它比 60 会**恒判低**
+   * ——TS 侧的入池复判形同虚设、根因分诊整体往 `missing` 偏；而 `gap_items.confidence`
+   * 的 `BETWEEN 0 AND 100` CHECK 拦不住 0.3，只会静默存下一个假低分。
+   */
+  it("读出来的 confidence 也换回百分制（阈值与取值必须同尺）", async () => {
+    const { repo } = makeRepo([
+      {
+        trace_id: "t1",
+        question: "q",
+        rewritten_question: null,
+        start_time: "2026-07-19 10:00:00.000000000",
+        session_id: "",
+        is_first_turn: 1,
+        confidence: 0.32,
+        is_fallback: 0,
+        no_citations: 0,
+        has_eval: 0,
+        faithfulness: null,
+        answer_relevancy: null,
+        context_precision: null,
+      },
+    ]);
+    const [c] = await repo.listPoolCandidates(
+      { lastTs: "2026-07-01 00:00:00.000000000", lastTraceId: "t" },
+      new Date("2026-07-19T00:00:00.000Z"),
+      "online-v2",
+      100,
+    );
+    expect(c.confidence).toBe(32);
+  });
 });
 
 describe("游标必须保住纳秒精度（否则末行每页重复、游标永不前进）", () => {

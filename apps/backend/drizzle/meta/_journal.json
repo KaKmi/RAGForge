@@ -190,6 +190,13 @@
       "when": 1784700101000,
       "tag": "0026_gap_pool",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1784700102000,
+      "tag": "0027_gap_watermark_cursor_text",
+      "breakpoints": true
     }
   ]
 }

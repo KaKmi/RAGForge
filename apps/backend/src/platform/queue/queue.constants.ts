@@ -17,6 +17,12 @@ export const MANUAL_SCORE_JOB = "manual-trace-score";
 export const EVAL_RUN_QUEUE = Symbol("EVAL_RUN_QUEUE");
 export const EVAL_RUN_JOB = "offline-eval-run";
 export const EVAL_RUN_WORKER = "offline-run-worker";
+// B2a：问题池坏样本收集。**周期后台任务**（cron 驱动、无人等结果）⇒ worker 角色，
+// 同 evaluation/evalRun，而不是 releaseCheck/manualScore 那种「POST 201 + 前端轮询」形态。
+// worker 名不在这里定义——它是 gaps 域的资产（`gap.constants.ts:GAP_COLLECT_WORKER_NAME`，
+// 同时是 `gap_watermarks` 的主键），platform 不该持有域内标识的第二个副本。
+export const GAP_COLLECT_QUEUE = Symbol("GAP_COLLECT_QUEUE");
+export const GAP_COLLECT_JOB = "gap-pool-collect";
 
 /**
  * 019 Boundary 1：token → 消费角色 的唯一登记处（QueueModule 工厂据此包 RoleGatedQueueAdapter）。
@@ -29,4 +35,5 @@ export const QUEUE_CONSUMER_ROLES = {
   evaluation: ["worker", "all"],
   manualScore: ["api", "all"],
   evalRun: ["worker", "all"],
+  gapCollect: ["worker", "all"],
 } as const satisfies Record<string, readonly ProcessRole[]>;

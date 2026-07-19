@@ -53,3 +53,20 @@ export type GapItemSource = (typeof GAP_ITEM_SOURCES)[number];
 
 /** 收集器 worker 名（`gap_watermarks` 主键）。 */
 export const GAP_COLLECT_WORKER_NAME = "gap-collect-v1";
+
+/** 收集器租约时长。取值同 `EVALUATION_LEASE_MS`：够一轮跑完，又短到崩溃后很快能被接管。 */
+export const GAP_COLLECT_LEASE_MS = 10 * 60 * 1000;
+
+/** 单轮最多处理多少条候选。每条要发一次 embedding + 一次最近邻，故比在线评测的批小一档。 */
+export const GAP_COLLECT_CANDIDATE_LIMIT = 200;
+
+/**
+ * 取数上界的滞后缓冲：只看 `now - 缓冲` 之前的 trace。
+ * 在线评测 span 是 trace 结束后异步补写的，紧贴 now 取会读到**还没被评分**的 trace，
+ * 它们只凭 confidence/fallback 入池，分数列恒 NULL ⇒ 分诊只能兜底判 `missing`，
+ * 而游标已经越过、永不回头重看。宁可晚 15 分钟拿到完整信号。
+ */
+export const GAP_COLLECT_LAG_BUFFER_MS = 15 * 60 * 1000;
+
+/** 收集节奏。比在线评测（*\/15）慢一档——问题池是趋势看板，不需要准实时。 */
+export const GAP_COLLECT_CRON = "*/30 * * * *";
