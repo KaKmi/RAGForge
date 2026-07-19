@@ -67,3 +67,24 @@ describe("meanVector", () => {
     ).toEqual([2, 20]);
   });
 });
+
+describe("维度不一致必须抛错，不得静默产出 NaN/截断向量", () => {
+  it("meanVector: ragged 输入抛错（否则 [2, NaN] 会流进 centroid）", () => {
+    expect(() => meanVector([[1, 2], [3]])).toThrow(/维度不一致/);
+  });
+
+  it("updateCentroid: v 比 centroid 短时抛错（否则末位变 NaN）", () => {
+    expect(() => updateCentroid([1, 2], 1, [1])).toThrow(/维度不一致/);
+  });
+
+  it("updateCentroid: v 比 centroid 长时抛错（否则多出的维度被静默丢弃）", () => {
+    expect(() => updateCentroid([1], 1, [1, 2])).toThrow(/维度不一致/);
+  });
+
+  it("cosineSimilarity 对 NaN 入参也返回 0，兑现「绝不返回 NaN」的承诺", () => {
+    // 零向量守卫 `na === 0` 对 NaN 无效（NaN === 0 为 false）。若不额外做有限性检查，
+    // 这里会返回 NaN ⇒ `sim >= 阈值` 恒 false ⇒ 每条样本都建新簇、簇数无界增长且不报错。
+    expect(cosineSimilarity([2, Number.NaN], [1, 2])).toBe(0);
+    expect(cosineSimilarity([Number.POSITIVE_INFINITY, 1], [1, 2])).toBe(0);
+  });
+});
