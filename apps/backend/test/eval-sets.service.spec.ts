@@ -1,4 +1,4 @@
-import { ConflictException, UnprocessableEntityException } from "@nestjs/common";
+import { ConflictException, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { EvalSetsService } from "../src/modules/eval-runs/eval-sets.service";
 import type {
   EvalCaseVersionContent,
@@ -6,7 +6,12 @@ import type {
   NewEvalCaseInput,
   NewEvalSetInput,
 } from "../src/modules/eval-runs/eval-sets.repository";
-import type { EvalCaseRow, EvalCaseVersionRow, EvalSetRow } from "../src/modules/eval-runs/schema";
+import type {
+  EvalCaseRow,
+  EvalCaseVersionRow,
+  EvalSetRow,
+  GoldDocRefRow,
+} from "../src/modules/eval-runs/schema";
 
 // 仓库既有 spec 的 fake-repo 风格：手写内存实现，不引 DB。
 // 参照 apps/backend/test/applications.service.spec.ts:61 的 `function service(overrides = {})` 工厂。
@@ -19,7 +24,13 @@ interface CaseFixture {
   version?: number;
   question?: string;
   goldPoints?: string[];
-  goldDocIds?: string[];
+  /**
+   * ⚠️ 真实列是 `gold_doc_refs`（jsonb，schema.ts:99），此前本 fixture 写的是
+   * `goldDocIds` —— 一个**不存在的列**。之所以从没报错，是 backend test/ 不做类型检查
+   * （tsconfig include 只有 src，jest 用 @swc/jest 剥类型）。F4 要按 docId 匹配，
+   * 必须用真字段，否则匹配逻辑在单测里根本验不了。
+   */
+  goldDocRefs?: GoldDocRefRow[];
   tags?: string[];
   goldStale?: boolean;
   sourceTraceId?: string;
@@ -64,7 +75,7 @@ function setup(opts: { existingNames?: string[]; cases?: CaseFixture[] } = {}) {
       version,
       question: fixture.question ?? "原问题",
       goldPoints: fixture.goldPoints ?? ["原要点"],
-      goldDocIds: fixture.goldDocIds ?? [],
+      goldDocRefs: fixture.goldDocRefs ?? [],
       tags: fixture.tags ?? [],
       createdAt: now,
     });
@@ -98,7 +109,9 @@ function setup(opts: { existingNames?: string[]; cases?: CaseFixture[] } = {}) {
           ...s,
           caseCount: live(s.id).length,
           reviewedCaseCount: live(s.id).filter((c) => c.status === "reviewed").length,
-          withGoldDocs: live(s.id).filter((c) => (currentVersionOf(c)?.goldDocIds ?? []).length > 0)
+          withGoldDocs: live(s.id).filter(
+            (c) => (currentVersionOf(c)?.goldDocRefs ?? []).length > 0,
+          )
             .length,
           lastRunScore: null,
         }));
@@ -191,6 +204,25 @@ function setup(opts: { existingNames?: string[]; cases?: CaseFixture[] } = {}) {
       row.deletedAt = now;
       return true;
     },
+    // —— B1/F4：gold 过期检测与人工确认 ——
+    async markGoldStaleByDocId(docId: string): Promise<number> {
+      let n = 0;
+      for (const c of cases) {
+        if (c.deletedAt !== null) continue;
+        const v = currentVersionOf(c);
+        if (v?.goldDocRefs?.some((r) => r.docId === docId)) {
+          c.goldStale = true;
+          n += 1;
+        }
+      }
+      return n;
+    },
+    async clearGoldStale(setId: string, caseId: string): Promise<EvalCaseRow | null> {
+      const row = cases.find((c) => c.id === caseId && c.setId === setId && c.deletedAt === null);
+      if (!row) return null;
+      row.goldStale = false;
+      return row;
+    },
     async listReviewedCaseVersions(setId: string) {
       // 集软删不级联到用例行 → 必须也校验集存活，否则「删了还能跑」（真仓库靠 join eval_sets）。
       if (!sets.find((s) => s.id === setId && !s.deletedAt)) return [];
@@ -224,7 +256,7 @@ describe("EvalSetsService", () => {
     const { service } = setup();
     const created = await service.createCase(
       "s1",
-      { question: "退款吗", goldPoints: [], goldDocIds: [], tags: [] },
+      { question: "退款吗", goldPoints: [], goldDocRefs: [], tags: [] },
       "admin",
     );
     expect(created.status).toBe("draft");
@@ -264,12 +296,19 @@ describe("EvalSetsService", () => {
     // 原型 §5「高频 Badcase 集」：用例=34 且全待审，gold docs 仍显示 0/34（不是 0/0）。
     const { service } = setup({
       cases: [
-        { id: "c1", setId: "s1", status: "draft", goldDocIds: [] },
+        { id: "c1", setId: "s1", status: "draft", goldDocRefs: [] },
         {
           id: "c2",
           setId: "s1",
           status: "draft",
-          goldDocIds: ["b1a7f0de-0000-4000-8000-000000000001"],
+          goldDocRefs: [
+            {
+              docId: "b1a7f0de-0000-4000-8000-000000000001",
+              chunkId: null,
+              docName: "退款政策",
+              section: null,
+            },
+          ],
         },
       ],
     });
@@ -455,5 +494,102 @@ describe("findCaseRefsBySourceTrace", () => {
       { setId: "s1", setName: "默认集", caseId: "c1" },
       { setId: "s2", setName: "第二个集", caseId: "c2" },
     ]);
+  });
+});
+
+// —— B1/F4：gold_stale 检测与「确认仍有效」（原型 §18.B「态不变 + gold-stale 标志」）——
+
+describe("gold_stale 检测与确认", () => {
+  const REF: GoldDocRefRow = {
+    docId: "d1",
+    chunkId: null,
+    docName: "退款政策",
+    section: "§2",
+  };
+
+  it("文档变更后，引用该 docId 的用例被标 stale，且 status/currentVersion 不变（原型：态不变）", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          version: 3,
+          goldStale: false,
+          goldDocRefs: [REF],
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(true);
+    expect(cases[0].status).toBe("reviewed");
+    expect(cases[0].currentVersion).toBe(3);
+  });
+
+  it("不引用该文档的用例不受影响", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          goldStale: false,
+          goldDocRefs: [{ docId: "other", chunkId: null, docName: "x", section: null }],
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(false);
+  });
+
+  /** 原型 §7「不自动改 gold，人工确认」——检测器只动标志位，绝不碰 gold 内容。 */
+  it("不自动修改 gold 内容", async () => {
+    const { service, versions } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          goldPoints: ["7 天无理由退款"],
+          goldDocRefs: [REF],
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(versions[0].goldPoints).toEqual(["7 天无理由退款"]);
+    expect(versions[0].goldDocRefs).toEqual([REF]);
+  });
+
+  it("已软删的用例不被标记", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          goldStale: false,
+          goldDocRefs: [REF],
+          deletedAt: now,
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(false);
+  });
+
+  it("「确认仍有效」清标志且不产生新版本", async () => {
+    const { service, cases, versions } = setup({
+      cases: [{ id: "c1", setId: "s1", status: "reviewed", version: 3, goldStale: true }],
+    });
+    const before = versions.length;
+    const updated = await service.confirmGold("s1", "c1");
+    expect(updated.goldStale).toBe(false);
+    expect(cases[0].currentVersion).toBe(3); // 不升版本
+    expect(versions).toHaveLength(before); // 不产生新版本行
+  });
+
+  it("「确认仍有效」用例不存在 → NotFound", async () => {
+    const { service } = setup();
+    await expect(service.confirmGold("s1", "missing")).rejects.toBeInstanceOf(NotFoundException);
   });
 });

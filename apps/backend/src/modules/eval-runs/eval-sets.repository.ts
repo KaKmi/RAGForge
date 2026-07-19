@@ -296,6 +296,52 @@ export class EvalSetsRepository {
     });
   }
 
+  /**
+   * B1/F4：把引用了该 docId 的**当前版本**用例标为「gold 可能过期」。
+   *
+   * 原型 §18.B：「态不变 + gold-stale 标志」——只动标志位，**不动** status / currentVersion，
+   * 更**绝不**改 gold 内容（原型 §7：「不自动改 gold，人工确认」）。文档变了不代表 gold 就错了，
+   * 自动改写会把人工审过的标准答案悄悄换掉，那比过期更糟。
+   *
+   * 匹配走 jsonb 包含 `@>`：`gold_doc_refs` 是 `[{docId, chunkId, docName, section}]`，
+   * `@> '[{"docId": "..."}]'` 只比对 docId 一个键，chunkId/docName/section 任意。
+   * 子查询钉 `v.version = c.current_version`：历史版本引用过该文档不算数——
+   * 用例早就改到别的文档了，不该因为一份它已经不引用的文档变更而被标过期。
+   */
+  async markGoldStaleByDocId(docId: string): Promise<number> {
+    const result = await this.db
+      .update(evalCases)
+      .set({ goldStale: true })
+      .where(
+        and(
+          isNull(evalCases.deletedAt),
+          sql`EXISTS (
+            SELECT 1 FROM ${evalCaseVersions} v
+             WHERE v.case_id = ${evalCases.id}
+               AND v.version = ${evalCases.currentVersion}
+               AND v.gold_doc_refs @> ${JSON.stringify([{ docId }])}::jsonb
+          )`,
+        ),
+      );
+    return result.rowCount ?? 0;
+  }
+
+  /** B1/F4：人工「确认仍有效」——只清标志，不产生新版本（内容根本没变）。 */
+  async clearGoldStale(setId: string, caseId: string): Promise<EvalCaseRow | null> {
+    const [row] = await this.db
+      .update(evalCases)
+      .set({ goldStale: false })
+      .where(
+        and(
+          eq(evalCases.id, caseId),
+          eq(evalCases.setId, setId),
+          isNull(evalCases.deletedAt),
+        ),
+      )
+      .returning();
+    return row ?? null;
+  }
+
   async updateCase(caseId: string, patch: Partial<EvalCaseRow>): Promise<EvalCaseRow> {
     const rows = await this.db
       .update(evalCases)

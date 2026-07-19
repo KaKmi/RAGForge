@@ -96,6 +96,17 @@ export class EvalSetsController {
     return this.service.removeCase(id, caseId);
   }
 
+  /**
+   * B1/F4：原型 §18.B「人工『确认仍有效』清标志」。不产生新版本（内容根本没变）。
+   * 200 而非 201：这是对既有用例的状态变更，没有创建任何资源。
+   */
+  @Post(":id/cases/:caseId/confirm-gold") @HttpCode(200) confirmGold(
+    @Param("id") id: string,
+    @Param("caseId") caseId: string,
+  ): Promise<EvalCase> {
+    return this.service.confirmGold(id, caseId);
+  }
+
   /** CSV 在前端解析（018 决策 D13），这里只收行数组。§19.1：>1000 行整体拒（Zod `.max(1000)`）。 */
   @Post(":id/import") @HttpCode(200) importCases(
     @Param("id") id: string,

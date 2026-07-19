@@ -209,6 +209,28 @@ export class EvalSetsService {
   }
 
   /**
+   * B1/F4：文档变更 → 把引用它的用例标「gold 可能过期」。
+   *
+   * 由 `GoldStaleNotifier` 经 documents 侧的注册表回调进来（documents 不认识 eval 域）。
+   * 返回受影响行数，仅供调用方记日志——通知失败不影响文档主流程。
+   */
+  async markGoldStaleByDocId(docId: string): Promise<number> {
+    return await this.repo.markGoldStaleByDocId(docId);
+  }
+
+  /**
+   * B1/F4：人工「确认仍有效」（原型 §18.B）。只清标志位，**不产生新版本**——
+   * gold 内容一个字都没改，凭空升一个版本会污染版本史，也会让历史 run 的引用变得难读。
+   */
+  async confirmGold(setId: string, caseId: string): Promise<EvalCase> {
+    const cleared = await this.repo.clearGoldStale(setId, caseId);
+    if (!cleared) throw new NotFoundException("用例不存在");
+    const found = await this.repo.findCase(setId, caseId);
+    if (!found) throw new NotFoundException("用例不存在");
+    return toEvalCase(found);
+  }
+
+  /**
    * 逐行校验 → 合法行建 draft 用例，非法行进回执（原型 §17.2：「逐行校验：缺 question/
    * gold_answer 该行拒」—— 是**该行**拒，不是整批拒）。
    * 逐条插入（每行一事务）：≤1000 行（§19.1）下可接受，且与「错误行不阻断其余行」的

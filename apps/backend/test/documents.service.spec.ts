@@ -477,3 +477,67 @@ describe("DocumentsService M4.1 Profile 覆盖 / magic bytes / Run 历史", () =
     await expect(makeService(deps).listRuns("gone")).rejects.toThrow(NotFoundException);
   });
 });
+
+// —— B1/F4：gold 过期通知的注册表反转（原型 §18.B）——
+
+describe("gold-stale 通知（B1/F4）", () => {
+  function serviceWithDoc() {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue({
+      id: "d1",
+      kbId: "kb1",
+      name: "退款政策.pdf",
+      type: "pdf",
+      size: 1024,
+      blobKey: "kb/kb1/d1/original.pdf",
+      chunkVersion: null,
+      status: "ready",
+      metadata: {},
+      lifecycle: [],
+      profileOverrideId: null,
+      profileOverrideVersion: null,
+      error: null,
+      uploadedAt: new Date("2026-07-16T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+    });
+    return { deps, service: makeService(deps) };
+  }
+
+  it("triggerParse 通知注册方，带上 docId", async () => {
+    const { service } = serviceWithDoc();
+    const notify = jest.fn(async () => undefined);
+    service.registerGoldStaleNotifier(notify);
+
+    await service.triggerParse("d1");
+    expect(notify).toHaveBeenCalledWith("d1");
+  });
+
+  it("remove 通知注册方", async () => {
+    const { service } = serviceWithDoc();
+    const notify = jest.fn(async () => undefined);
+    service.registerGoldStaleNotifier(notify);
+
+    await service.remove("d1");
+    expect(notify).toHaveBeenCalledWith("d1");
+  });
+
+  /**
+   * 【fail-open 不变量】评测集标不上「可能过期」是体验问题；
+   * 因为它把一次文档解析/删除打回失败，是事故。通知抛错**绝不**能冒泡。
+   */
+  it("通知抛错不影响文档主流程", async () => {
+    const { deps, service } = serviceWithDoc();
+    service.registerGoldStaleNotifier(async () => {
+      throw new Error("eval domain down");
+    });
+
+    await expect(service.triggerParse("d1")).resolves.toBeDefined();
+    await expect(service.remove("d1")).resolves.toBeUndefined();
+    expect(deps.repo.delete).toHaveBeenCalledWith("d1"); // 删除确实发生了
+  });
+
+  it("没有注册方时不报错（documents 可独立运行）", async () => {
+    const { service } = serviceWithDoc();
+    await expect(service.triggerParse("d1")).resolves.toBeDefined();
+  });
+});

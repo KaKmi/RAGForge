@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { extname } from "node:path";
 import type {
@@ -90,6 +90,33 @@ export class DocumentsService {
     private readonly runsRepo: ProcessingRunsRepository,
     @Inject(PROFILE_REGISTRY) private readonly registry: ProfileRegistry,
   ) {}
+
+  private readonly logger = new Logger(DocumentsService.name);
+
+  /**
+   * B1/F4：gold 过期通知。由 eval-runs 侧的 `GoldStaleNotifier` 在 `onModuleInit` 注册——
+   * **documents 不认识 eval 域**，依赖方向保持 `eval-runs → documents` 单向
+   * （范式同 `applications.service.ts:538-546` 的注册表反转）。
+   */
+  private goldStaleNotifiers: Array<(docId: string) => Promise<void>> = [];
+
+  registerGoldStaleNotifier(fn: (docId: string) => Promise<void>): void {
+    this.goldStaleNotifiers.push(fn);
+  }
+
+  /**
+   * 通知失败**绝不**影响文档主流程——只记日志。
+   * 评测集标不上「可能过期」是个体验问题；因为它把一次文档解析/删除打回失败，是事故。
+   */
+  private async notifyGoldStale(docId: string): Promise<void> {
+    for (const fn of this.goldStaleNotifiers) {
+      try {
+        await fn(docId);
+      } catch (err) {
+        this.logger.warn(`gold-stale notify failed doc=${docId}: ${String(err)}`);
+      }
+    }
+  }
 
   // M4.1 入库分流：开启 Profile 特性走新 Run 路径（建冻结快照 Run + 入队），否则 legacy chunkTemplate 入队。
   private async startIngestion(documentId: string, targetVersion: number): Promise<void> {
@@ -192,6 +219,8 @@ export class DocumentsService {
     } else {
       await this.ingestion.enqueue(id, targetVersion);
     }
+    // B1/F4：重解析会换掉切片内容 ⇒ 引用该文档的 gold 可能已经对不上了。
+    await this.notifyGoldStale(id);
     return this.withCount(await this.mustFind(id));
   }
 
@@ -250,6 +279,8 @@ export class DocumentsService {
       // 孤儿 blob 是可接受的轻量代价（spec.md 决策）：不让对象存储瞬时故障阻塞文档删除
     }
     await this.repo.delete(id);
+    // B1/F4：文档没了，引用它的 gold 一定要人工复核（绝不自动改 gold —— 原型 §7）。
+    await this.notifyGoldStale(id);
   }
 
   private async mustFind(id: string): Promise<DocumentRow> {

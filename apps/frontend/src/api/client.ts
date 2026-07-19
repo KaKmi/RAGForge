@@ -949,6 +949,17 @@ export const updateEvalCase = (
 export const deleteEvalCase = (setId: string, caseId: string): Promise<void> =>
   deleteVoid(`${setPath(setId)}/cases/${encodeURIComponent(caseId)}`, "删除失败");
 
+/**
+ * B1/F4：人工「确认仍有效」（原型 §18.B）——只清 gold-stale 标志，不产生新版本。
+ * 无请求体，故不走 postJson（它要求 reqSchema）。
+ */
+export const confirmEvalCaseGold = (setId: string, caseId: string): Promise<EvalCase> =>
+  applicationActionJson(
+    `${setPath(setId)}/cases/${encodeURIComponent(caseId)}/confirm-gold`,
+    { method: "POST" },
+    (d) => EvalCaseSchema.parse(d),
+  );
+
 /** CSV 在前端解析（018 决策 D13）→ 这里只 POST 行数组，后端逐行校验并回执。 */
 export const importEvalCases = (
   setId: string,
