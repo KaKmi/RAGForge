@@ -56,6 +56,12 @@ describeInfra("B1/F3 立即评测（真 PG + 真 ClickHouse）", () => {
   const WORKER = "online-quality-v1";
   const publishedJobs: Array<{ targetTraceId: string; judgeVersion: string }> = [];
 
+  /**
+   * `chat`/`embedTexts` **必须有**：judge 是真的 `EvaluationJudgeService`（judgeSpy 只是
+   * spyOn 透传），三个 evaluator 会真的打模型端口。只给 `get`/`list` 的话 judge.score 必抛
+   * `models.chat is not a function` → 走 emitFailure → 永远没有 `rag.eval` success span。
+   * 桩实现与 evaluations.e2e.spec.ts:628 同形，保证人工/worker 两条路径评的是同一个东西。
+   */
   const fakeModels = {
     get: jest.fn(async (id: string) => ({
       id,
@@ -67,6 +73,32 @@ describeInfra("B1/F3 立即评测（真 PG + 真 ClickHouse）", () => {
       params: {},
     })),
     list: jest.fn(async () => []),
+    chat: jest.fn(async (_id: string, messages: Array<{ role: string; content: string }>) => {
+      const system = messages[0]?.content ?? "";
+      if (system.includes("factual claim")) {
+        return {
+          content: JSON.stringify({
+            claims: [{ claim: "七天内可以退款", supported: true, reason: "知识片段明确支持" }],
+          }),
+        };
+      }
+      if (system.includes("one to three concise questions")) {
+        return { content: JSON.stringify({ questions: ["退款期限多久"] }) };
+      }
+      const parsed = JSON.parse(messages[1]?.content ?? "{}") as {
+        contexts?: Array<{ chunkId: string }>;
+      };
+      return {
+        content: JSON.stringify({
+          judgments: (parsed.contexts ?? []).map((context) => ({
+            chunkId: context.chunkId,
+            relevant: true,
+            reason: "测试夹具标记为相关",
+          })),
+        }),
+      };
+    }),
+    embedTexts: jest.fn(async (_id: string, texts: string[]) => texts.map(() => [1, 0, 0])),
   };
 
   /** 队列桩：只记录 publish，消费由测试显式触发（drainManualQueue）。 */
@@ -85,19 +117,42 @@ describeInfra("B1/F3 立即评测（真 PG + 真 ClickHouse）", () => {
     }
   }
 
+  /**
+   * ⚠️ 根 span **必须**带 `codecrush.span.kind: "chain"`：`codecrush_traces` 视图的
+   * WHERE 就是这一条（`infra/clickhouse/views/001-trace-views.sql`，注释写明「chain 才是
+   * RAG 一轮的语义根」，不能用 ParentSpanId='' 认根）。少了它 trace 根本不进视图，
+   * `findCandidateByTraceId` 返回 undefined，作业直接落 failed「trace 不存在或不可评」，
+   * 裁判一次都不会被调到——本文件三条用例最初就是这样红的。
+   *
+   * 再补一条 retrieval span 带 `rag.chunk.scores`：否则 contexts 为空，
+   * context_precision 评的是空集，这条链路等于没被真正走过。
+   */
   async function seedTrace(traceId: string): Promise<void> {
-    await harness.seedPgInput(traceId, agentId);
+    const { chunkId } = await harness.seedPgInput(traceId, agentId);
     await harness.insertSpan({
       traceId,
       spanId: traceId.slice(0, 16),
       at: "2026-07-15T01:30:00.000Z",
-      name: "rag.chain",
+      name: "rag.pipeline",
       attributes: {
+        "codecrush.span.kind": "chain",
+        "rag.preview": "false",
         "rag.node.name": "reply",
         "gen_ai.agent.id": agentId,
         "gen_ai.request.model": "generation-1",
         "codecrush.io.input": "怎么退款",
         "codecrush.io.output": "7 天内无理由",
+      },
+    });
+    await harness.insertSpan({
+      traceId,
+      spanId: `${traceId.slice(0, 15)}a`,
+      parentSpanId: traceId.slice(0, 16),
+      at: "2026-07-15T01:30:01.000Z",
+      name: "rag.retrieve",
+      attributes: {
+        "codecrush.span.kind": "retrieval",
+        "rag.chunk.scores": JSON.stringify([{ chunkId, final: 0.9 }]),
       },
     });
   }
