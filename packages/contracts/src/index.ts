@@ -22,3 +22,4 @@ export * from "./eval-sets";
 export * from "./eval-runs";
 export * from "./eval-compare";
 export * from "./pagination";
+export * from "./gaps";

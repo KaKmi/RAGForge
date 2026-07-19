@@ -142,11 +142,20 @@ export default tseslint.config(
   //
   // 作用范围是**整个 apps/backend/src**，不是只有 modules/：`gaps → platform/{clickhouse,persistence,queue}`
   // 是允许边，所以 `platform → gaps` 同样成环，而 platform 恰好不在 modules/ 下。
-  // 两个必需的豁免：① gaps 域自身；② 组装根 app.module.ts —— 它必须 import GapsModule 才能注册，
-  // 「任何文件都不许 import gaps」写成规则是不可满足的。
+  //
+  // 三处豁免，都是**聚合根**——按定义就要引用每一个模块，不是域代码在建依赖：
+  //   ① gaps 域自身；
+  //   ② `app.module.ts`：必须 import GapsModule 才能注册；
+  //   ③ `db/schema.ts`：Drizzle 查询侧的类型聚合点，迁移流程（drizzle/README.md 第 3 步）
+  //      明令新表要同步到这里。
+  // 「任何文件都不许 import gaps」写成规则是**不可满足**的，这三处就是原因。
   {
     files: ["apps/backend/src/**/*.ts"],
-    ignores: ["apps/backend/src/modules/gaps/**/*.ts", "apps/backend/src/app.module.ts"],
+    ignores: [
+      "apps/backend/src/modules/gaps/**/*.ts",
+      "apps/backend/src/app.module.ts",
+      "apps/backend/src/db/schema.ts",
+    ],
     rules: {
       "no-restricted-imports": [
         "error",

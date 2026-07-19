@@ -52,7 +52,7 @@ infra/                   docker-compose（postgres+pgvector / clickhouse / otel-
 > | Boundary ② | `packages/contracts/**` | `@codecrush/backend`、`@codecrush/frontend`、`@opentelemetry/*` |
 > | Boundary ③ | `packages/otel-conventions/**` | `@opentelemetry/*`、`@codecrush/*`、`node:*` |
 > | Boundary ④ | `packages/otel/**` | `@codecrush/contracts`(`/*`)、`@clickhouse/client`(`/*`)、`@codecrush/backend`(`/*`)、`@codecrush/frontend` |
-> | Boundary ⑤ | `apps/backend/src/**`（`modules/gaps/**` 与组装根 `app.module.ts` 除外） | `**/gaps`、`**/gaps/**` |
+> | Boundary ⑤ | `apps/backend/src/**`（三个聚合根除外：`modules/gaps/**`、`app.module.ts`、`db/schema.ts`） | `**/gaps`、`**/gaps/**` |
 >
 > 表外的一切都**没有** lint 兜底。几个会咬人的具体例子：
 > `packages/contracts` 里 `import { Pool } from "pg"` 或 `import fs from "node:fs"` —— **绿的**（第 3 条明文禁它们）；
@@ -63,7 +63,7 @@ infra/                   docker-compose（postgres+pgvector / clickhouse / otel-
 > 判断合规请对照 `docs/design/003` 的精确依赖边表与「依赖规则的真实强制力」。
 
 1. **依赖方向朝下、无环**：`gaps`(顶点，E-W4 B2a) → `eval-runs`(E-W2a) → `chat`(问答顶点) → … → `platform` → `contracts` / `otel-conventions`(基座)。详见 `docs/design/021` 与 `018`。
-   **除 `gaps` 域自身与组装根 `app.module.ts` 外，`apps/backend/src` 下任何文件不得 import `gaps`**
+   **除三个聚合根（`gaps` 域自身、`app.module.ts`、`db/schema.ts`）外，`apps/backend/src` 下任何文件不得 import `gaps`**
    （Boundary ⑤ 机械强制；`eval-runs → gaps` 与 `platform → gaps` 都会成环）。
 2. `apps/frontend` 只能 import `@codecrush/contracts` 与 `@codecrush/otel-conventions`（纯常量）；**不得** import `apps/backend` 或 `@codecrush/otel`（Node-only，进前端打包炸）。
 3. `packages/contracts` / `@codecrush/otel-conventions` 是地基，**只能依赖 `zod`**（或零依赖）；严禁 Node-only（`pg`/`fs`/`@opentelemetry/*`）或浏览器-only 依赖，否则前端打包会炸。

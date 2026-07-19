@@ -40,7 +40,7 @@ import { readFileSync } from "node:fs";
  * 别把它当作覆盖率的证据。
  */
 const BASELINES = {
-  db: { suites: 11, tests: 82, script: "test:db" },
+  db: { suites: 12, tests: 87, script: "test:db" },
   infra: { suites: 7, tests: 91, script: "test:infra" },
 };
 

@@ -165,7 +165,7 @@ rag-service/
 ```
 
 精确依赖边:
-- `gaps` → `eval-runs`(进评测集：批量建 draft 用例)、`evaluations`(阈值/judge 版本/embeddingModelId)、`models`(`ModelProviderPort`：聚类 embedding 与 gold 草拟)、`platform/{clickhouse,persistence,queue}`——E-W4 B2a 新顶点，见 021 决策 A；**除 `gaps` 域自身与组装根 `app.module.ts` 外，`apps/backend/src` 下任何文件不得 import `gaps`**（`eslint.config.mjs` 的 Boundary ⑤ 机械强制）。**无** `gaps → traces`（自持 CH 只读 repository，同 evaluations 先例）、**无** `gaps → chunks/retrieval/applications`
+- `gaps` → `eval-runs`(进评测集：批量建 draft 用例)、`evaluations`(阈值/judge 版本/embeddingModelId)、`models`(`ModelProviderPort`：聚类 embedding 与 gold 草拟)、`platform/{clickhouse,persistence,queue}`——E-W4 B2a 新顶点，见 021 决策 A；**除三个聚合根（`gaps` 域自身、`app.module.ts`、`db/schema.ts`）外，`apps/backend/src` 下任何文件不得 import `gaps`**（`eslint.config.mjs` 的 Boundary ⑤ 机械强制）。**无** `gaps → traces`（自持 CH 只读 repository，同 evaluations 先例）、**无** `gaps → chunks/retrieval/applications`
 - `eval-runs` → `chat`(编排 `OrchestrationService`)、`evaluations`(判分 `EvaluationJudgeService`)、`applications`(`resolveForTest` 版本解析)——E-W2a，见 018 决策 A；反向依赖一律禁止（`chat`/`evaluations` 不感知 `eval-runs`）
 - `chat` → `applications`、`retrieval`、`prompts`、`node-runtime`、`conversations`、`observability`（配置只经 `ApplicationConfigResolver`，LLM 调用经 node-runtime）
 - `evaluations` → `conversations`、`chunks`、`models` + ClickHouse 读客户端（E-W1，见下方「E-W1 evaluations 域边界」；与 `traces` 互不 import，写侧经 OTLP `rag.eval` 解耦）
@@ -207,7 +207,7 @@ lint 实际禁掉的**就是下面这些，仅此而已**：
 | Boundary ② | `packages/contracts/**` | `@codecrush/backend`、`@codecrush/frontend`、`@opentelemetry/*` |
 | Boundary ③ | `packages/otel-conventions/**` | `@opentelemetry/*`、`@codecrush/*`、`node:*` |
 | Boundary ④ | `packages/otel/**` | `@codecrush/contracts`(`/*`)、`@clickhouse/client`(`/*`)、`@codecrush/backend`(`/*`)、`@codecrush/frontend` |
-| Boundary ⑤ | `apps/backend/src/**`（`modules/gaps/**` 与组装根 `app.module.ts` 除外） | `**/gaps`、`**/gaps/**` |
+| Boundary ⑤ | `apps/backend/src/**`（三个聚合根除外：`modules/gaps/**`、`app.module.ts`、`db/schema.ts`） | `**/gaps`、`**/gaps/**` |
 
 **表外的一切都没有 lint 兜底。** 几个会咬人的具体例子（均已实测为绿）：
 

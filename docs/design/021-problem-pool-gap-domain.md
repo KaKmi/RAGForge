@@ -283,7 +283,7 @@ ignored          ──[恢复]──►        pending
    **实测 `eslint-plugin-boundaries` / `eslint-plugin-import` 根本没安装**（`package.json`），
    `eslint.config.mjs` 只有 4 个包级 `no-restricted-imports` 块（前端 / contracts / otel-conventions / otel），
    且**全是黑名单**——只列了几个禁止项，**不等于**对应的不变量。
-   本波新增 **Boundary ⑤**（ESLint 核心规则、零新依赖）机械强制**「`apps/backend/src` 下除 gaps 域自身与组装根 `app.module.ts` 外，无人 import `gaps`」**，
+   本波新增 **Boundary ⑤**（ESLint 核心规则、零新依赖）机械强制**「`apps/backend/src` 下除三个聚合根（gaps 域自身、`app.module.ts`、`db/schema.ts`）外，无人 import `gaps`」**，
    并订正上述失实表述。**它不是通用模块 DAG 强制器**（那需要 `eslint-plugin-boundaries`）；
    尤其注意「跨域只走 barrel、禁止直接 import `adapters/`」**完全没有** lint 兜底，
    而「共享包只依赖 zod」也只是部分兜底（`packages/contracts` 里 `import "pg"` 当前是绿的）。
