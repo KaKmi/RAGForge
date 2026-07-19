@@ -37,6 +37,24 @@ Claude Code 专用指引。**先读 [`AGENTS.md`](AGENTS.md)**（环境、命令
 - Commit 用 Conventional Commits，结尾加：
   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
 
+## ⛔ 危险动作红线（用户拍板 2026-07-19，事故后追加）
+
+**绝不允许清空、重置、drop、truncate 开发库 `codecrush`（docker `codecrush-postgres-1`）。**
+
+该库里有用户**手工搭建、无法脚本重建**的数据：模型接入（含加密密钥）、知识库、已上传并解析完成的文档与切片、应用与已上线配置版本。**WAL 归档 `off`、无备份、无卷快照 ⇒ 删了就是永久丢失。**
+
+- 需要干净状态：一律用专用库 **`codecrush_mig_test`**（`MIGRATION_TEST_DATABASE_URL` 指向它，那些 spec 本就 `DROP SCHEMA`，随便删）。
+- 清理自己造的夹具：**按 id 精确删**，不要整表 `delete` / `truncate`。
+- 在真库上跑任何测试/QA 前，**先备份**：`docker exec codecrush-postgres-1 pg_dump -U codecrush codecrush > <scratchpad>/codecrush-<ts>.sql`，并在报告里说明备份位置。
+- **派 subagent 做 QA/dev 时，必须把这条红线写进它的任务书**——agent 从零搭环境时最容易伸手重置数据库。
+- 写「服务在不在跑」这类环境状态前**先实测**（`Get-NetTCPConnection -LocalPort 3000,5173`），不要凭上文记忆断言。给错环境信息会逼 agent 自行搭环境，正是事故起点。
+
+> 事故留档（2026-07-19）：B1 运行时 QA 中，我派的 QA agent 在开发库上重置了数据，用户的应用/知识库/模型接入全部丢失、不可恢复。当时任务书保护了 docker infra（「别 down」）、端口与 dev 服务，**唯独没保护库里的数据**；且我断言「:3000/:5173 已在运行」而实际没有，agent 因此从零搭环境。两处都是我的失职。
+
+同类红线（同源：先看现状再动手）：
+- 不擅自启停 Windows 服务 / 不按端口批量 kill 进程（会误杀用户常驻的 dev 服务）。
+- 改 `.env` 前先读现值，非占位符就别覆盖（曾误转密钥致数据不可解密）。
+
 ## 高频提醒
 
 - 改动后必跑 `pnpm test` 与 `pnpm lint`（边界规则必须 0）。
