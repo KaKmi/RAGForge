@@ -9,6 +9,7 @@ import { KnowledgeBasesRepository } from "../knowledge-bases/knowledge-bases.rep
 import { DocumentsRepository } from "../documents/documents.repository";
 import { ChunksRepository } from "../chunks/chunks.repository";
 import { AppConfigService } from "../../platform/config/config.service";
+import { DocumentChangeNotifier } from "../../platform/events/document-change.notifier";
 import { IngestionService, type DocumentTerminalListener } from "./ingestion.service";
 
 // 重建范围：'all' 重建全库；'inherited' 只重建继承 KB 默认方案（无文档级 override）的文档——
@@ -36,6 +37,7 @@ export class KbRebuildService implements DocumentTerminalListener {
     private readonly chunksRepo: ChunksRepository,
     private readonly ingestion: IngestionService,
     private readonly config: AppConfigService,
+    private readonly changes: DocumentChangeNotifier,
   ) {}
 
   // 全库重建触发（chunkTemplate/默认 Profile 变更、或显式 rebuild 端点）：building_version =
@@ -82,6 +84,9 @@ export class KbRebuildService implements DocumentTerminalListener {
         } else {
           await this.ingestion.enqueue(doc.id, buildingVersion);
         }
+        // B1/F4：整库重建会重切**每一篇**文档 ⇒ 引用它们的 gold 可能全都对不上了。
+        // 这是系统里量最大的一次性过期事件；广播失败只记日志，绝不影响重建本身。
+        await this.changes.notifyChanged(doc.id);
       } catch (err) {
         if (
           err instanceof ConflictException ||

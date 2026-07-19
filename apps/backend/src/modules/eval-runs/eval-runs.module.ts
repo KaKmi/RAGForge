@@ -1,7 +1,7 @@
+import { EventsModule } from "../../platform/events/events.module";
 import { Module } from "@nestjs/common";
 import { ApplicationsModule } from "../applications/applications.module";
 import { ChatModule } from "../chat/chat.module";
-import { DocumentsModule } from "../documents/documents.module";
 import { EvaluationsModule } from "../evaluations/evaluations.module";
 import { EvalGateProviderRegistrar } from "./eval-gate.provider";
 import { EvalRunDeletionGuard } from "./eval-run-deletion.guard";
@@ -22,12 +22,12 @@ import { ReplayService } from "./replay.service";
  *  · ChatModule 提供 `OrchestrationService.runForEvaluation`（与线上同一编排路径）；
  *  · EvaluationsModule 只导出 `EvaluationJudgeService`（怎么判分是它的域知识）；
  *  · ApplicationsModule 提供 `resolveForTest`（preview=true 的显式版本解析）；
- *  · DocumentsModule 提供 `registerGoldStaleNotifier`（B1/F4：文档变更 → 标 gold 可能过期。
- *    仍是单向——documents 不认识 eval 域，只暴露一个「有人想被通知」的注册点）。
+ * B1/F4 的 gold 过期检测器（`GoldStaleNotifier`）注册在 @Global 的 `DocumentChangeNotifier`
+ * 上，**不需要 import 任何业务模块**——故这里没有新增 documents/ingestion 的边。
  * `EVAL_RUN_QUEUE` 来自 @Global 的 QueueModule，无需在此 import（同 ingestion/release-check）。
  */
 @Module({
-  imports: [ChatModule, EvaluationsModule, ApplicationsModule, DocumentsModule],
+  imports: [ChatModule, EvaluationsModule, ApplicationsModule, EventsModule],
   controllers: [EvalSetsController, EvalRunsController, ReplayController],
   providers: [
     EvalSetsRepository,

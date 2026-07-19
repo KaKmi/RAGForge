@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { extname } from "node:path";
 import type {
@@ -11,6 +11,7 @@ import type {
 import { BLOB_STORE } from "../../platform/storage/blob-store.constants";
 import type { BlobStore } from "../../platform/storage/blob-store.port";
 import { AppConfigService } from "../../platform/config/config.service";
+import { DocumentChangeNotifier } from "../../platform/events/document-change.notifier";
 import { DocumentsRepository } from "./documents.repository";
 import { KnowledgeBasesRepository } from "../knowledge-bases/knowledge-bases.repository";
 import { ChunksRepository } from "../chunks/chunks.repository";
@@ -89,33 +90,22 @@ export class DocumentsService {
     private readonly config: AppConfigService,
     private readonly runsRepo: ProcessingRunsRepository,
     @Inject(PROFILE_REGISTRY) private readonly registry: ProfileRegistry,
+    private readonly changes: DocumentChangeNotifier,
   ) {}
 
-  private readonly logger = new Logger(DocumentsService.name);
-
   /**
-   * B1/F4：gold 过期通知。由 eval-runs 侧的 `GoldStaleNotifier` 在 `onModuleInit` 注册——
-   * **documents 不认识 eval 域**，依赖方向保持 `eval-runs → documents` 单向
-   * （范式同 `applications.service.ts:538-546` 的注册表反转）。
+   * B1/F4：文档变更广播。注册表住在**平台层** `DocumentChangeNotifier` 而不是本服务上——
+   * 整库重建（`KbRebuildService`）绕过本服务直接调 ingestion，是量最大的一次过期事件；
+   * 注册表挂在这里就会漏掉它。详见 `platform/events/document-change.notifier.ts`。
+   *
+   * 保留这两个方法是为了让调用方仍读得懂「文档域会通知谁」，实现只是转发。
    */
-  private goldStaleNotifiers: Array<(docId: string) => Promise<void>> = [];
-
   registerGoldStaleNotifier(fn: (docId: string) => Promise<void>): void {
-    this.goldStaleNotifiers.push(fn);
+    this.changes.register(fn);
   }
 
-  /**
-   * 通知失败**绝不**影响文档主流程——只记日志。
-   * 评测集标不上「可能过期」是个体验问题；因为它把一次文档解析/删除打回失败，是事故。
-   */
   private async notifyGoldStale(docId: string): Promise<void> {
-    for (const fn of this.goldStaleNotifiers) {
-      try {
-        await fn(docId);
-      } catch (err) {
-        this.logger.warn(`gold-stale notify failed doc=${docId}: ${String(err)}`);
-      }
-    }
+    await this.changes.notifyChanged(docId);
   }
 
   // M4.1 入库分流：开启 Profile 特性走新 Run 路径（建冻结快照 Run + 入队），否则 legacy chunkTemplate 入队。

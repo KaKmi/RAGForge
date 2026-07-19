@@ -1,3 +1,4 @@
+import { EventsModule } from "../../platform/events/events.module";
 import { Module } from "@nestjs/common";
 import { ModelsModule } from "../models/models.module";
 import { ModelsService } from "../models/models.service";
@@ -33,7 +34,7 @@ import { PROCESSING_PROFILES, ProfileRegistry } from "./profiles/profile-registr
 //   整个业务模块——避免 T19 DocumentsModule 反向 import IngestionModule（enqueue）时的循环依赖。
 // - ModelsService 只能经 ModelsModule 导出的端口拿到，故 import ModelsModule。
 @Module({
-  imports: [ModelsModule, QueueModule, StorageModule],
+  imports: [ModelsModule, QueueModule, StorageModule, EventsModule],
   controllers: [ProcessingProfilesController],
   providers: [
     IngestionService,

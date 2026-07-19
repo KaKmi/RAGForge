@@ -64,7 +64,9 @@ describeDb("EvalSetsRepository.listAggregates —— 上次得分的两列口径
   async function makeResult(setId: string, runId: string, scores: number | null): Promise<void> {
     const { version } = await repo.insertCaseWithVersion({
       setId,
-      content: { question: "q", goldPoints: ["p"], goldDocIds: [], tags: [] },
+      // 真实字段是 goldDocRefs（gold_doc_refs jsonb）；此前写的 goldDocIds 是个**不存在的键**，
+      // drizzle 会静默丢掉它、列走 DEFAULT '[]'::jsonb —— backend test/ 不做类型检查故一直没人发现。
+      content: { question: "q", goldPoints: ["p"], goldDocRefs: [], tags: [] },
     });
     await pool.query(
       `INSERT INTO eval_run_results (run_id, case_version_id, seq, verdict, faithfulness,

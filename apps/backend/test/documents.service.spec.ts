@@ -11,6 +11,7 @@ import {
   ProfileRegistry,
 } from "../src/modules/ingestion/profiles/profile-registry";
 import type { AppConfigService } from "../src/platform/config/config.service";
+import { DocumentChangeNotifier } from "../src/platform/events/document-change.notifier";
 
 // 合法 magic bytes 的测试文件头（pdf=%PDF-、docx=PK zip）；markdown/text 任意文本。
 const PDF_BYTES = Buffer.from("%PDF-1.4\n%test");
@@ -54,7 +55,9 @@ function makeDeps(processingProfilesEnabled = false) {
   const registry = new ProfileRegistry(structuredClone(PROCESSING_PROFILES));
   // 默认 flag=false（legacy enqueue 路径）；flag=true 的 createRun 分流由专门用例覆盖。
   const config = { processingProfilesEnabled } as unknown as AppConfigService;
-  return { repo, kbRepo, blobStore, ingestion, chunksRepo, runsRepo, registry, config };
+  // B1/F4：文档变更广播点（平台层，@Global）。真实实现——fail-open 语义正是被测对象之一。
+  const changes = new DocumentChangeNotifier();
+  return { repo, kbRepo, blobStore, ingestion, chunksRepo, runsRepo, registry, config, changes };
 }
 
 function makeService(deps: ReturnType<typeof makeDeps>): DocumentsService {
@@ -67,6 +70,7 @@ function makeService(deps: ReturnType<typeof makeDeps>): DocumentsService {
     deps.config,
     deps.runsRepo as unknown as ProcessingRunsRepository,
     deps.registry,
+    deps.changes,
   );
 }
 

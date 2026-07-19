@@ -31,6 +31,12 @@ interface CaseFixture {
    * 必须用真字段，否则匹配逻辑在单测里根本验不了。
    */
   goldDocRefs?: GoldDocRefRow[];
+  /**
+   * 历史（非当前）版本行。默认不建——只有需要区分「当前版本引用」与「历史版本引用过」
+   * 的用例才用得上（F4 检测器的核心判据 `v.version = c.current_version`）。
+   * 此前 setup 每个用例只建一行、且恒等于 currentVersion，那条判据在单测里根本无法证伪。
+   */
+  historyVersions?: Array<{ version: number; goldDocRefs?: GoldDocRefRow[] }>;
   tags?: string[];
   goldStale?: boolean;
   sourceTraceId?: string;
@@ -69,6 +75,18 @@ function setup(opts: { existingNames?: string[]; cases?: CaseFixture[] } = {}) {
       createdAt: now,
       deletedAt: fixture.deletedAt ?? null,
     });
+    for (const history of fixture.historyVersions ?? []) {
+      versions.push({
+        id: `${fixture.id}-v${history.version}`,
+        caseId: fixture.id,
+        version: history.version,
+        question: fixture.question ?? "原问题",
+        goldPoints: fixture.goldPoints ?? ["原要点"],
+        goldDocRefs: history.goldDocRefs ?? [],
+        tags: fixture.tags ?? [],
+        createdAt: now,
+      });
+    }
     versions.push({
       id: `${fixture.id}-v${version}`,
       caseId: fixture.id,
@@ -558,6 +576,49 @@ describe("gold_stale 检测与确认", () => {
     await service.markGoldStaleByDocId("d1");
     expect(versions[0].goldPoints).toEqual(["7 天无理由退款"]);
     expect(versions[0].goldDocRefs).toEqual([REF]);
+  });
+
+  /**
+   * 【本条是 F4 的核心判据】只看**当前版本**的引用。
+   * 用例 v1 引用过 d1、v2（当前）已经改到别的文档 —— 它早就不依赖 d1 了，
+   * 不该因为一份它已不引用的文档变更而被标过期，否则每次文档变动都会误伤一批
+   * 早已迁走的用例，「gold 可能过期」这个标志很快就没人信了。
+   */
+  it("只有当前版本的引用算数：历史版本引用过该文档不标记", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          version: 2,
+          goldStale: false,
+          goldDocRefs: [{ docId: "d2", chunkId: null, docName: "新文档", section: null }],
+          historyVersions: [{ version: 1, goldDocRefs: [REF] }], // v1 引用过 d1
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(false);
+  });
+
+  /** 反向：当前版本确实引用时必须标——证明上一条不是因为「压根没匹配上」而假绿。 */
+  it("当前版本引用该文档时仍会标记（历史版本不引用）", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          version: 2,
+          goldStale: false,
+          goldDocRefs: [REF],
+          historyVersions: [{ version: 1, goldDocRefs: [] }],
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(true);
   });
 
   it("已软删的用例不被标记", async () => {

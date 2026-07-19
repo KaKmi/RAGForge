@@ -5,6 +5,7 @@ import type { DocumentsRepository } from "../src/modules/documents/documents.rep
 import type { ChunksRepository } from "../src/modules/chunks/chunks.repository";
 import type { IngestionService } from "../src/modules/ingestion/ingestion.service";
 import type { AppConfigService } from "../src/platform/config/config.service";
+import { DocumentChangeNotifier } from "../src/platform/events/document-change.notifier";
 
 function makeDeps(processingProfilesEnabled = true) {
   const kbRepo = { findById: jest.fn(), updateVersions: jest.fn() };
@@ -12,7 +13,9 @@ function makeDeps(processingProfilesEnabled = true) {
   const chunksRepo = { deleteByVersion: jest.fn(async () => 0), carryForwardVersion: jest.fn() };
   const ingestion = { enqueue: jest.fn(), createRun: jest.fn() };
   const config = { processingProfilesEnabled } as unknown as AppConfigService;
-  return { kbRepo, docsRepo, chunksRepo, ingestion, config };
+  // B1/F4：整库重建也要广播「这篇文档被重切了」——真实实现，fail-open 由其自身保证。
+  const changes = new DocumentChangeNotifier();
+  return { kbRepo, docsRepo, chunksRepo, ingestion, config, changes };
 }
 
 function makeService(deps: ReturnType<typeof makeDeps>): KbRebuildService {
@@ -22,6 +25,7 @@ function makeService(deps: ReturnType<typeof makeDeps>): KbRebuildService {
     deps.chunksRepo as unknown as ChunksRepository,
     deps.ingestion as unknown as IngestionService,
     deps.config,
+    deps.changes,
   );
 }
 
@@ -361,5 +365,46 @@ describe("KbRebuildService.onDocumentTerminal", () => {
       buildingVersion: null,
       status: "ready",
     });
+  });
+});
+
+// —— B1/F4：整库重建必须广播文档变更（peer review P2）——
+
+describe("KbRebuildService 的 gold 过期广播", () => {
+  /**
+   * 重建会重切 KB 下**每一篇**文档，是系统里量最大的一次性 gold 过期事件。
+   * 最初的实现把注册表挂在 DocumentsService 上，而本服务**绕过它**直接调 ingestion，
+   * 于是整整一类过期完全没人知道。这条用例就是钉住那个洞。
+   */
+  it("为每个入队的文档广播一次 notifyChanged", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: null });
+    deps.docsRepo.findByKb.mockResolvedValue([
+      { id: "d1", profileOverrideId: null },
+      { id: "d2", profileOverrideId: null },
+    ]);
+    const seen: string[] = [];
+    deps.changes.register(async (docId) => {
+      seen.push(docId);
+    });
+
+    await makeService(deps).startRebuild("kb1");
+    expect(seen).toEqual(["d1", "d2"]);
+  });
+
+  /** 监听方抛错绝不能中断重建——重建是主流程，标记是附带效果。 */
+  it("监听方抛错不影响重建（其余文档照常入队）", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: null });
+    deps.docsRepo.findByKb.mockResolvedValue([
+      { id: "d1", profileOverrideId: null },
+      { id: "d2", profileOverrideId: null },
+    ]);
+    deps.changes.register(async () => {
+      throw new Error("eval domain down");
+    });
+
+    await expect(makeService(deps).startRebuild("kb1")).resolves.toBeUndefined();
+    expect(deps.ingestion.createRun).toHaveBeenCalledTimes(2);
   });
 });

@@ -225,6 +225,10 @@ export class EvalSetsService {
   async confirmGold(setId: string, caseId: string): Promise<EvalCase> {
     const cleared = await this.repo.clearGoldStale(setId, caseId);
     if (!cleared) throw new NotFoundException("用例不存在");
+    // 再查一次不是多余：clearGoldStale 只 returning 身份行（eval_cases），
+    // 而 EvalCase 响应还需要**当前版本行**的内容（question/goldPoints/goldDocRefs/tags）。
+    // 第二个 404 分支实际只在「清完标志的同一瞬间被软删」这一交错下命中——
+    // 那时标志位已清但行正在消失，返回 404 是对的。
     const found = await this.repo.findCase(setId, caseId);
     if (!found) throw new NotFoundException("用例不存在");
     return toEvalCase(found);
