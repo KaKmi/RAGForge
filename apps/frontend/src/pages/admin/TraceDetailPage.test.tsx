@@ -338,7 +338,7 @@ it("轮询中拿到 scored → 停表并显示分数", async () => {
       judgeVersion: "online-v2",
       scoredAt: "2026-07-18T00:00:00.000Z",
       currentVersion: true,
-      evidence: {},
+      evidence: { answerRelevancy: ["relevant"], contextPrecision: ["rank 1"] },
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
@@ -381,7 +381,7 @@ it("已评态不显示「立即评测」", async () => {
     judgeVersion: "online-v2",
     scoredAt: "2026-07-18T00:00:00.000Z",
     currentVersion: true,
-    evidence: {},
+    evidence: { answerRelevancy: ["relevant"], contextPrecision: ["rank 1"] },
   });
   renderAt(TID);
   await screen.findByTestId("quality-score-faithfulness");

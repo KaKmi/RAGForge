@@ -6,7 +6,7 @@ number: "018"
 status: draft
 services: [backend, frontend]
 related: ["design/002", "design/003", "design/013", "design/017", "design/019"]
-last_modified: "2026-07-18"
+last_modified: "2026-07-19"
 ---
 
 # 018 — 离线评测 run 与评测集（E-W2a）
