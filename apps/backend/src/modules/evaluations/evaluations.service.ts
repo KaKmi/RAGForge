@@ -52,7 +52,15 @@ export class EvaluationsService {
   ) {}
 
   /**
-   * B1/F3 限频：同一 traceId 60s 内只受理一次。
+   * B1/F3 限频：同一 traceId 60s 内只受理一次**新的裁判调用**。
+   *
+   * ⚠️ 它**只守 requestManualScore 的最后一步**（真要新调一次裁判时），不再守整个端点——
+   * 见该方法的「四步顺序」注释。原来它排在最前面，于是与前端的轮询窗口（5s×6 = 30s，
+   * `TraceDetailPage.tsx` 的 QUALITY_POLL_INTERVAL_MS/QUALITY_POLL_LIMIT）直接冲突：
+   * 通往「重试」按钮的**每一条**路径（轮询到顶 30s、裁判快速失败 ~10s）都落在 60s 窗口内，
+   * 重试第一次点击 100% 撞 429，原型 §18.D 逐字的 `failed --[重试]--> scoring` 走不通。
+   * 原型给本端点**没有**定义任何限频态（1 次/分钟是「重放」端点的规格，§20/§21），
+   * 所以正确的解法不是把窗口调到 30s（那只是把冲突挪窄），而是让限频退到它真正的职责上。
    *
    * 单副本前提与 replay.service.ts:16 一致（019 Boundary 5）——多副本下各自计数，
    * 一致处理，不新增债。用它而**不是** dailyCap：dailyCap 是 worker 自动抽样的预算，
@@ -265,9 +273,24 @@ export class EvaluationsService {
   /**
    * B1/F3：手动触发单条评测（原型 §12.3 `POST /eval/quality/traces/:traceId/score`）。
    *
-   * 步骤顺序**不可调换**：先校验可用性与限频，再查「是否已评」，最后才入队。
-   * 把 findExisting 放在限频之后是有意的——已评过的 trace 直接返回 scored，
-   * 不入队、不调裁判、不计费。
+   * 四步顺序**不可调换**，判据是「本次调用能不能给出一个权威答案而**不新增一次裁判调用**」：
+   *
+   *  1. 已评过（ClickHouse 里有 span）→ `scored`。权威、零计费。
+   *     必须排在限频**之前**：否则「其实早就评好了、只是前端轮询漏看」也会被报成 429。
+   *  2. 已有 `queued`/`running` 的同名作业 → `scoring`。同样权威、零计费：作业正在跑，
+   *     再入队也会被 `claimManualJob` 挡掉。这一跳正是「轮询到顶（30s）→ 点重试」这条
+   *     路径的落点——它拿到的是「仍在评分中」，不是 429，与原型 §18.D 的
+   *     `failed --[重试]--> scoring` 一致。
+   *  3. 到这里才是真的要**新调一次裁判**（作业不存在、或处于 `scored`/`failed` 终态）。
+   *     限频只守这一步，且对**失败后重试**放行——上一次尝试已经确定性地结束了，
+   *     用户点重试要的就是再调一次；而 `failed` 之外的终态（`scored` 但 span 因
+   *     ClickHouse 写入延迟还查不到）仍受限频保护，这正是限频剩下的唯一实职：
+   *     堵住「刚评完、span 还没可见」那个窗口里的重复计费。
+   *  4. 原子占位 + 入队。
+   *
+   * 双重计费的真正守卫始终是 `claimManualJob` 的 `ON CONFLICT … DO UPDATE … WHERE`
+   * （跨副本成立），限频只是进程内的省钱兜底——放宽第 3 步不会把那个 P1 放回来：
+   * 失败态重试连点时，第一次把行改成 `queued`，其后每一次都在第 2 步早退。
    */
   async requestManualScore(targetTraceId: string, actor: string): Promise<ManualScoreResponse> {
     const settings = await this.controlRepo.getSettings();
@@ -277,21 +300,33 @@ export class EvaluationsService {
     await this.requireModel(settings.judgeModelId, "llm", "judgeModelId");
     await this.requireModel(settings.embeddingModelId, "embedding", "embeddingModelId");
 
-    const now = Date.now();
-    const last = this.lastManualScoreAt.get(targetTraceId);
-    if (last !== undefined && now - last < EvaluationsService.MANUAL_SCORE_RATE_LIMIT_MS) {
-      throw new HttpException("操作过于频繁，请 1 分钟后再试", 429);
-    }
-
-    // 已评过 → 直接返回，绝不重复计费（worker 侧的 already_scored 是同一道守卫）。
+    // ① 已评过 → 直接返回，绝不重复计费（worker 侧的 already_scored 是同一道守卫）。
     if (await this.clickhouseRepo.findExisting(targetTraceId, settings.judgeVersion)) {
       return { status: "scored" };
+    }
+
+    // ② 作业还在跑 → 权威回 scoring，不入队、不计费、不报 429。
+    const job = await this.controlRepo.findManualJob(targetTraceId, settings.judgeVersion);
+    if (job && (job.status === "queued" || job.status === "running")) {
+      return { status: "scoring" };
+    }
+
+    // ③ 限频：只挡「会新增一次裁判调用」的请求，且失败态重试放行。
+    const now = Date.now();
+    const last = this.lastManualScoreAt.get(targetTraceId);
+    const retryAfterFailure = job?.status === "failed";
+    if (
+      !retryAfterFailure &&
+      last !== undefined &&
+      now - last < EvaluationsService.MANUAL_SCORE_RATE_LIMIT_MS
+    ) {
+      throw new HttpException("操作过于频繁，请 1 分钟后再试", 429);
     }
 
     // 置位限频只在真正受理之后——上面的早退路径不该占用配额。
     this.lastManualScoreAt.set(targetTraceId, now);
 
-    // 原子占位：抢不到说明已有同名作业 queued/running，直接回 scoring 而**不再入队**。
+    // ④ 原子占位：抢不到说明已有同名作业 queued/running，直接回 scoring 而**不再入队**。
     // 进程内限频挡不住多副本，`singletonKey` 在 standard 策略下又是惰性的，
     // 这一跳是「一次点击只调一次裁判」在跨副本下唯一成立的守卫（详见 claimManualJob 注释）。
     const claimed = await this.controlRepo.claimManualJob(

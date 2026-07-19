@@ -31,7 +31,14 @@ const STATUS_TAG: Record<TraceStatus, { label: string; bg: string; c: string; bd
 };
 const fmtMs = (ms: number): string =>
   ms >= 1000 ? (ms / 1000).toFixed(2) + "s" : Math.round(ms) + "ms";
-/** 原型 §18.D：「面板『评分中』；轮询 5s×6」——两个数字都来自原型，不要随手调。 */
+/**
+ * 原型 §18.D：「面板『评分中』；轮询 5s×6」——两个数字都来自原型，不要随手调。
+ *
+ * ⚠️ 跨层契约：5s×6 = 30s 是「轮询到顶 → 显示重试按钮」的时刻。后端
+ * `evaluations.service.ts` 的手动评测限频窗口（60s）曾整段盖住这里，导致重试第一次
+ * 点击必撞 429；现已改为「限频只挡会新增裁判调用的请求」。若要动这两个常数或那个窗口，
+ * 请一并核对两侧——它们是同一条时序契约的两端。
+ */
 const QUALITY_POLL_INTERVAL_MS = 5000;
 const QUALITY_POLL_LIMIT = 6;
 

@@ -290,9 +290,49 @@ describeInfra("B1/F3 立即评测（真 PG + 真 ClickHouse）", () => {
     expect(again.body).toEqual({ status: "scored" });
   });
 
-  it("同一 trace 60s 内第二次 POST → 429", async () => {
+  /**
+   * 【跨层时序契约】作业还在跑时再次 POST（连点、或前端轮询到顶 30s 后点「重试」）
+   * → 权威回 `scoring`，**不是** 429。
+   *
+   * 原来这里断言 429，与前端 5s×6=30s 的轮询窗口正面冲突：通往「重试」按钮的每一条
+   * 路径都落在 60s 限频窗口内，原型 §18.D 的 `failed --[重试]--> scoring` 结构上走不通。
+   * 放宽的同时这条用例把**不重复计费**这个真不变量钉死：不重复入队、不二次调裁判。
+   */
+  it("作业进行中再次 POST → scoring，且不重复入队/不重复调裁判", async () => {
     await post(targetTraceId).expect(201);
-    await post(targetTraceId).expect(429);
+    expect(publishedJobs).toHaveLength(1);
+    judgeSpy.mockClear();
+
+    const res = await post(targetTraceId).expect(201);
+    expect(res.body).toEqual({ status: "scoring" });
+    expect(publishedJobs).toHaveLength(1);
+    expect(judgeSpy).not.toHaveBeenCalled();
+
+    const { rows } = await harness.pool.query(
+      `SELECT count(*)::int AS n FROM eval_manual_score_jobs WHERE target_trace_id = $1`,
+      [targetTraceId],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  /** 失败后重试必须当场受理（原型 §18.D `failed --[重试]--> scoring`），不被限频挡下。 */
+  it("作业为 failed 时重试 → 立即重新入队（限频不生效）", async () => {
+    await post(targetTraceId).expect(201);
+    expect(publishedJobs).toHaveLength(1);
+    // 模拟裁判失败：作业落 failed 终态；限频 Map 里 t=0 的记录**故意保留**。
+    await harness.pool.query(
+      `UPDATE eval_manual_score_jobs SET status = 'failed', last_error = 'JudgeUnavailable' WHERE target_trace_id = $1`,
+      [targetTraceId],
+    );
+
+    const res = await post(targetTraceId).expect(201);
+    expect(res.body).toEqual({ status: "scoring" });
+    expect(publishedJobs).toHaveLength(2);
+    const { rows } = await harness.pool.query(
+      `SELECT status FROM eval_manual_score_jobs WHERE target_trace_id = $1`,
+      [targetTraceId],
+    );
+    expect(rows[0].status).toBe("queued");
   });
 
   it("评分中时 GET 质量详情返回 scoring 态（面板轮询的数据源）", async () => {

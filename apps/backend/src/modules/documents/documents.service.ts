@@ -99,6 +99,10 @@ export class DocumentsService {
    * 注册表挂在这里就会漏掉它。详见 `platform/events/document-change.notifier.ts`。
    *
    * 保留这两个方法是为了让调用方仍读得懂「文档域会通知谁」，实现只是转发。
+   *
+   * 【时机】本服务只在 `remove` 广播——删除是**同步的终态**，文档当场就没了。
+   * 「重解析/重建」这类异步路径的广播挂在 `IngestionService` 的 ready 终态上
+   * （spec §4.2「二者完成后需通知 eval 域」），不在入队时发。
    */
   registerGoldStaleNotifier(fn: (docId: string) => Promise<void>): void {
     this.changes.register(fn);
@@ -209,8 +213,10 @@ export class DocumentsService {
     } else {
       await this.ingestion.enqueue(id, targetVersion);
     }
-    // B1/F4：重解析会换掉切片内容 ⇒ 引用该文档的 gold 可能已经对不上了。
-    await this.notifyGoldStale(id);
+    // B1/F4：这里**不广播**。重解析只是入队，此刻切片内容一个字都没变；
+    // 广播挂在 `IngestionService` 的 ready 终态上（spec §4.2「完成后」）。
+    // 曾在此处广播，留下的窗口是：用户在解析期间点「确认仍有效」清掉标志 →
+    // 解析随后完成、内容真换了 → 不会再有第二次广播 → 该用例静默失去过期提示。
     return this.withCount(await this.mustFind(id));
   }
 

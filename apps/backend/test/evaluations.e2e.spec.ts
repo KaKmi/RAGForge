@@ -218,6 +218,91 @@ describe("EvaluationsService", () => {
     expect(manualQueue.publish).toHaveBeenCalledTimes(1);
   });
 
+  // —— 限频 vs 轮询窗口的跨层时序契约（review P2）——
+
+  function enabledSetup() {
+    const ctx = setup();
+    ctx.control.getSettings.mockResolvedValue({
+      ...settings,
+      enabled: true,
+      judgeModelId: "m1",
+      embeddingModelId: "m2",
+    });
+    ctx.models.get.mockImplementation(async (id: string) => ({
+      id,
+      type: id === "m2" ? "embedding" : "llm",
+      enabled: true,
+    }));
+    return ctx;
+  }
+
+  /**
+   * 前端轮询窗口是 5s×6 = 30s（TraceDetailPage 的 QUALITY_POLL_*），到顶就渲染「重试」。
+   * 若限频（60s）整段盖住它，重试第一次点击必撞 429，原型 §18.D 的
+   * `failed --[重试]--> scoring` 结构上不可达。此处钉住：失败态重试不受限频约束。
+   */
+  it("失败态重试不被限频挡下：60s 内连续两次都受理", async () => {
+    const { service, control, manualQueue } = enabledSetup();
+    const traceId = "c".repeat(32);
+
+    await expect(service.requestManualScore(traceId, "t@example.com")).resolves.toEqual({
+      status: "scoring",
+    });
+    // 裁判失败 → 作业落 failed；紧接着（远不到 60s）点重试。
+    control.findManualJob.mockResolvedValue({ status: "failed" });
+
+    await expect(service.requestManualScore(traceId, "t@example.com")).resolves.toEqual({
+      status: "scoring",
+    });
+    expect(manualQueue.publish).toHaveBeenCalledTimes(2);
+  });
+
+  /** 轮询到顶但作业其实还在跑：回权威的 scoring，既不 429 也不重复入队。 */
+  it("作业 queued/running 时再次请求 → scoring 且不入队", async () => {
+    const { service, control, manualQueue } = enabledSetup();
+    const traceId = "d".repeat(32);
+
+    await service.requestManualScore(traceId, "t@example.com");
+    control.findManualJob.mockResolvedValue({ status: "running" });
+
+    await expect(service.requestManualScore(traceId, "t@example.com")).resolves.toEqual({
+      status: "scoring",
+    });
+    expect(manualQueue.publish).toHaveBeenCalledTimes(1);
+    expect(control.claimManualJob).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 限频剩下的唯一实职：作业已 `scored`、但 rag.eval span 因 ClickHouse 写入延迟还查不到的
+   * 那个窗口——此时放行就是实打实的重复计费。放宽第 ③ 步**不能**把这道门也拆了。
+   */
+  it("作业已 scored 但 span 尚不可见时，60s 内二次请求仍 429", async () => {
+    const { service, control } = enabledSetup();
+    const traceId = "e".repeat(32);
+
+    await service.requestManualScore(traceId, "t@example.com");
+    control.findManualJob.mockResolvedValue({ status: "scored" });
+
+    await expect(service.requestManualScore(traceId, "t@example.com")).rejects.toMatchObject({
+      status: 429,
+    });
+  });
+
+  /** 已评过的 trace：限频**之前**就早退成 scored——不能把一个现成的分数报成 429。 */
+  it("已评过 → scored，且不占用限频配额", async () => {
+    const { service, clickhouse, manualQueue } = enabledSetup();
+    const traceId = "f".repeat(32);
+    clickhouse.findExisting.mockResolvedValue(true);
+
+    await expect(service.requestManualScore(traceId, "t@example.com")).resolves.toEqual({
+      status: "scored",
+    });
+    await expect(service.requestManualScore(traceId, "t@example.com")).resolves.toEqual({
+      status: "scored",
+    });
+    expect(manualQueue.publish).not.toHaveBeenCalled();
+  });
+
   it("suppresses previous deltas below twenty samples", async () => {
     const { service, clickhouse } = setup();
     clickhouse.getOverview

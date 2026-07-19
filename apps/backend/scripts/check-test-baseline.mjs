@@ -22,16 +22,29 @@
 import { readFileSync } from "node:fs";
 
 /**
- * 实测值（2026-07-18，docker infra 全绿）。新增用例后请上调。
+ * db 的 11/82 是**实测值**（2026-07-18，docker infra 全绿）。新增用例后请上调。
  *
- * ⚠️ infra 的 7/82 是**推算值**（2026-07-19，B1/F3）：`test:infra` 新挂了
- * `test/manual-score.e2e.spec.ts`（7 个 suite）、该 spec 有 9 条用例 ⇒ 73 + 9 = 82。
- * 写这一版时本机 docker daemon 不可达，未能跑一轮实测确认。
- * **下一次 infra 全绿后请以实测值覆盖本行**（基线是下限，推算偏高会让 CI 红，偏低会放过静默跳过）。
+ * ⚠️⚠️ infra 的 7/91 是**推算值，未经任何一次实测**（2026-07-19，B1/F3 + review 修复轮）。
+ * 本机 docker daemon 至今不可达，两轮都没能跑一次真实的 `test:infra`。推算过程逐项列明，
+ * 以便下一个人能复核而不是沿用一个来路不明的数字：
+ *
+ *   - 起点：改动前 infra 基线 **71**（实测）。
+ *     ——历史上这里一度写成「73 + 9 = 82」，73 是 **db** 的旧基线，起点取错了整整 2，
+ *       又漏掉了本波在既有 spec 里新增的 6 条，合计把这道下限守卫放松了约 9 条。
+ *   - 七个 infra spec 在 `origin/main` 上的 plain `it(` 计数 = 62，与实测 71 差 9，
+ *     来自两处 `it.each`：`evaluations.clickhouse.spec.ts` 6 行 + `evaluations.e2e.spec.ts` 3 行
+ *     （两处本波均未改动，故这 9 是常量）。
+ *   - 当前 plain `it(` 计数 = **82**（12 + 4 + 28 + 11 + 15 + 2 + 10，逐 spec 核对）。
+ *   - ⇒ 推算总数 = 82 + 9 = **91**；suite 数 7（新挂 manual-score.e2e.spec.ts 后不变）。
+ *
+ * **下一次 infra 全绿后请以实测值覆盖本行并把本段标注改为「实测」**。
+ * 基线是下限：推算偏高会让 CI 红（会被立刻发现并订正），偏低则静默放过删用例——
+ * 所以宁可精确推算也不要留余量，更不要把推算值写成实测值。
  */
 const BASELINES = {
   db: { suites: 11, tests: 82, script: "test:db" },
-  infra: { suites: 7, tests: 82, script: "test:infra" },
+  // ⚠️ 未实测（推算，见上）。
+  infra: { suites: 7, tests: 91, script: "test:infra" },
 };
 
 const [suiteKey, resultFile] = process.argv.slice(2);

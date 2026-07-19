@@ -507,13 +507,19 @@ describe("gold-stale 通知（B1/F4）", () => {
     return { deps, service: makeService(deps) };
   }
 
-  it("triggerParse 通知注册方，带上 docId", async () => {
+  /**
+   * 【时机】triggerParse 只是入队，切片内容此刻一个字都没变 ⇒ **不广播**。
+   * 提前置位会留下这个洞：用户在解析窗口内点「确认仍有效」清掉标志，解析随后完成、
+   * 内容真换了，而不会再有第二次广播——该用例从此静默失去过期提示（spec §4.2「完成后」）。
+   * 广播出口在 `IngestionService` 的 ready 终态上，由 ingestion.service.spec.ts 钉住。
+   */
+  it("triggerParse（仅入队）不广播——广播挂在解析完成态", async () => {
     const { service } = serviceWithDoc();
     const notify = jest.fn(async () => undefined);
     service.registerGoldStaleNotifier(notify);
 
     await service.triggerParse("d1");
-    expect(notify).toHaveBeenCalledWith("d1");
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("remove 通知注册方", async () => {
@@ -527,7 +533,7 @@ describe("gold-stale 通知（B1/F4）", () => {
 
   /**
    * 【fail-open 不变量】评测集标不上「可能过期」是体验问题；
-   * 因为它把一次文档解析/删除打回失败，是事故。通知抛错**绝不**能冒泡。
+   * 因为它把一次文档删除打回失败，是事故。通知抛错**绝不**能冒泡。
    */
   it("通知抛错不影响文档主流程", async () => {
     const { deps, service } = serviceWithDoc();
@@ -535,7 +541,6 @@ describe("gold-stale 通知（B1/F4）", () => {
       throw new Error("eval domain down");
     });
 
-    await expect(service.triggerParse("d1")).resolves.toBeDefined();
     await expect(service.remove("d1")).resolves.toBeUndefined();
     expect(deps.repo.delete).toHaveBeenCalledWith("d1"); // 删除确实发生了
   });

@@ -564,7 +564,7 @@ it("可按「gold 可能过期」筛选，只留 stale 用例", async () => {
 });
 
 /**
- * 「确认仍有效」按钮**存在且只在 stale 时出现**由上下两条用例钉住；
+ * 「确认仍有效」按钮**存在且只在 stale 时出现**由下面两条用例钉住（stale 时在场 / 非 stale 时不在场）；
  * 「点开 Popconfirm → 点确定 → 调 confirm-gold」这一段**在本 harness 里跑不了**：
  * 在 antd `expandedRowRender` 的嵌套子表里打开任何 popover，jsdom 下会挂死
  * （rc-trigger 的对齐依赖 `getComputedStyle` 伪元素，jsdom 未实现 ⇒ 测试 30s 超时）。
@@ -576,6 +576,24 @@ it("可按「gold 可能过期」筛选，只留 stale 用例", async () => {
  * 故该段交由 **运行时 QA（/ship:qa，真浏览器）**覆盖，并已记入 concerns.md。
  * 组件侧不为可测性改 UX —— Popconfirm 是原型 §18.B 与相邻「删除」动作的一致做法。
  */
+
+/**
+ * stale 用例**必须**渲染出这个按钮——F4 唯一的人工清除入口。
+ *
+ * 之前这里只有「非 stale 不显示」一条（断言不存在），于是把 `EvalSetsPage.tsx` 里
+ * `{row.goldStale && <Popconfirm …>}` 整块删掉，全量前端用例仍然全绿——入口静默消失而无人知晓。
+ * 这条是纯静态渲染断言，不需要点开 popover。
+ *
+ * ⚠️ 用 `findByText` 而**不是** `findByRole("button", …)`：role 查询要对全树算可访问名，
+ * 在 Popconfirm 已渲染的展开行里会踩到同一处 rc-trigger/jsdom 挂死（实测 30s 超时）。
+ * 文案查询绕开它，且照样能钉住「按钮渲染了」——删掉 `{row.goldStale && <Popconfirm …>}` 即红。
+ */
+it("stale 用例显示「确认仍有效」按钮", async () => {
+  vi.mocked(api.getEvalCases).mockResolvedValue([evalCase({ id: "case-1", goldStale: true })]);
+  renderPage();
+  await expandFirstSet();
+  expect(await screen.findByText("确认仍有效")).toBeInTheDocument();
+});
 
 /** 非 stale 用例不该出现这个按钮——没什么可确认的。 */
 it("非 stale 用例不显示「确认仍有效」", async () => {
