@@ -67,7 +67,7 @@ gaps ──► eval-runs      （[进评测集]：批量创建 draft 用例）
 且 `evaluations` 已有 `ModelsModule` 能做 embedding。
 
 **否决理由**：[进评测集] 需要**服务端**批量创建 gold 用例（一次 N 条、要做重复检测、要写 `source_trace_id`）。
-`evaluations → eval-runs` 是**反向边**，直接违反 `003:335`「`evaluations` 与 `chat` 均不反向依赖 `eval-runs`」。
+`evaluations → eval-runs` 是**反向边**，直接违反 `003`「E-W2a eval-runs 域边界」一节的「`evaluations` 与 `chat` 均不反向依赖 `eval-runs`」。
 绕开只有两条路，都更差：① 前端逐条 POST（N 个请求、无事务、失败一半没法回滚，且重复检测要在前端跑 embedding，不可行）；
 ② 让 `eval-runs` 反过来 import gap 表——成环。
 
@@ -77,7 +77,7 @@ gaps ──► eval-runs      （[进评测集]：批量创建 draft 用例）
 ### 为什么不加 `gaps → traces` 边
 
 `gaps` 自建 `ClickHouseGapsRepository`，直接注入 `platform/clickhouse` 的 client。
-**每个域持有自己的 CH read repository 是本仓既定模式**：`003:328` 明写「evaluations 与 traces 不直接 import；
+**每个域持有自己的 CH read repository 是本仓既定模式**：`003`「E-W1 evaluations 域边界」一节明写「evaluations 与 traces 不直接 import；
 写侧经 OTLP 解耦，读侧**分别查询** ClickHouse VIEW」，`clickhouse-evaluations.repository.ts` 即先例。
 
 约束：**只读现有 VIEW**，复用 `platform/clickhouse` 既有的 `loadSqlStatements` / `otelTracesTableExists`，不新建 SQL 文件。
@@ -279,7 +279,7 @@ ignored          ──[恢复]──►        pending
    与 `evaluations.service.ts:508-512` 同源。**此值为设计补充，非原型推导**。
 3. **手动入池的 item 不参与 `follow_up_ratio` 统计**（分母只算 `source='online'`）：
    手动入池是人主动挑的样本，本就不该参与「这簇是不是指代追问」的自动判定。
-4. **依赖方向的强制力有限，且文档此前失实**。`AGENTS.md:39` 与 `003:182/:240` 曾称模块边界由 ESLint 强制——
+4. **依赖方向的强制力有限，且文档此前失实**。`AGENTS.md`「依赖边界」与 `003` 旧的「依赖规则 = lint 规则」一节曾称模块边界由 ESLint 强制——
    **实测 `eslint-plugin-boundaries` / `eslint-plugin-import` 根本没安装**（`package.json`），
    `eslint.config.mjs` 只有 4 个包级 `no-restricted-imports` 块（前端 / contracts / otel-conventions / otel），
    且**全是黑名单**——只列了几个禁止项，**不等于**对应的不变量。

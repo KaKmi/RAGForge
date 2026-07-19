@@ -39,19 +39,28 @@ infra/                   docker-compose（postgres+pgvector / clickhouse / otel-
 ## 依赖边界（不可违反；**lint 只覆盖其中一部分**）
 
 > ⚠️ 2026-07-19 订正：此前标题写「ESLint 强制」，实测 **`eslint-plugin-boundaries` / `eslint-plugin-import` 并未安装**。
-> 现有规则**全是黑名单**（列举几个禁止的 import），**不等于**不变量本身。逐条实测：
 >
-> | 不变量 | lint 覆盖 | 漏什么 |
+> **唯一要记住的一句**：下面这些不变量是**白名单**语义（「只能依赖 X」），而 `eslint.config.mjs` 里的规则
+> **全是黑名单**（「不许 import 这几个」）。**没有任何一条规则完整覆盖它对应的不变量。**
+> ⇒ **绝不能以「`pnpm lint` 过了」推断任何一条边界合规。**
+>
+> lint 实际禁掉的**就是下面这些，仅此而已**（`eslint.config.mjs`，写清楚免得再靠印象推断）：
+>
+> | 规则 | 作用范围 | 禁掉的 import |
 > |---|---|---|
-> | 1 模块级 DAG | ⚠️ 仅一个点 | Boundary ⑤ 只拦「后端模块 import `gaps`」；其余方向全不拦 |
-> | 2 前端只碰 contracts | ⚠️ 部分 | 拦 `@codecrush/backend*` / `@codecrush/otel*`；**相对路径爬进 backend（`../../../backend/src/...`）不拦** |
-> | 3 共享包只依赖 zod | ⚠️ 部分 | contracts 只拦 `@codecrush/backend|frontend` 与 `@opentelemetry/*`；**`pg` / `fs` / `node:*` 不拦**（otel-conventions 额外拦了 `node:*`） |
-> | 4 `@codecrush/otel` 仅后端 | ✅ 拦 | — |
-> | 5 只走 barrel、禁 `adapters/` | ❌ **完全不拦** | 无任何相关规则 |
+> | Boundary ① | `apps/frontend/**` | `@codecrush/backend`(`/*`)、`@codecrush/otel`(`/*`) |
+> | Boundary ② | `packages/contracts/**` | `@codecrush/backend`、`@codecrush/frontend`、`@opentelemetry/*` |
+> | Boundary ③ | `packages/otel-conventions/**` | `@opentelemetry/*`、`@codecrush/*`、`node:*` |
+> | Boundary ④ | `packages/otel/**` | `@codecrush/contracts`(`/*`)、`@clickhouse/client`(`/*`)、`@codecrush/backend`(`/*`)、`@codecrush/frontend` |
+> | Boundary ⑤ | `apps/backend/src/modules/**`（gaps 域自身除外） | `**/gaps`、`**/gaps/**` |
 >
-> ⇒ **任何一条都不能以「`pnpm lint` 过了」推断合规。** 尤其：在 `packages/contracts` 里
-> `import { Pool } from "pg"` 当前是**绿的**，而第 3 条正是点名要禁它。
-> 逐条覆盖范围与已知缺口见 `docs/design/003`「依赖规则的真实强制力」。
+> 表外的一切都**没有** lint 兜底。几个会咬人的具体例子：
+> `packages/contracts` 里 `import { Pool } from "pg"` 或 `import fs from "node:fs"` —— **绿的**（第 3 条明文禁它们）；
+> `packages/otel` 里同样两句 —— **绿的**；前端用相对路径 `../../../backend/src/...` 爬进后端 —— **绿的**；
+> 直接 import 别的域的 `adapters/` —— **绿的**（第 5 条完全无规则）；
+> `chat → eval-runs` 这类模块级反向边 —— **绿的**（Boundary ⑤ 只管 `gaps` 一个域）。
+>
+> 判断合规请对照 `docs/design/003` 的精确依赖边表与「依赖规则的真实强制力」。
 
 1. **依赖方向朝下、无环**：`gaps`(顶点，E-W4 B2a) → `eval-runs`(E-W2a) → `chat`(问答顶点) → … → `platform` → `contracts` / `otel-conventions`(基座)。详见 `docs/design/021` 与 `018`。
    **任何模块不得 import `gaps`**（Boundary ⑤ 机械强制；`eval-runs → gaps` 会成环）。

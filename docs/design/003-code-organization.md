@@ -37,14 +37,10 @@ last_modified: "2026-07-19"
 4. **`chat` 与 `traces` 无直接代码依赖**:chat 写(OTLP→Collector→ClickHouse)、traces 读(ClickHouse),经存储解耦。
 5. **域内 `schema.ts` 是纯表定义**,零 service 引用(防循环 import)。
 6. **迁移是显式命令**,不在应用启动时静默执行。
-7. **lint 只覆盖上述不变量的一部分**(2026-07-19 逐条实测,勿凭印象):
-   - **第 2 条**(只走 barrel、禁止直接 import `adapters/`)—— **完全没有** lint 兜底。
-   - **第 1 条**(模块级 DAG)—— 只有 Boundary ⑤ 强制其中**一个点**「无人 import `gaps`」,其余方向不拦。
-   - **第 3、8 条**(前端白名单 / 共享包纯净)—— **部分**拦:现有规则都是**黑名单**,只列了几个禁止项,
-     不等于不变量本身。典型漏洞:`packages/contracts` 里 `import "pg"` 当前 lint 是绿的。
-   - **`eslint-plugin-boundaries` / `eslint-plugin-import` 均未安装**,勿据其存在做判断。
-
-   ⇒ **任何一条都不能以「`pnpm lint` 通过」推断合规**。逐条覆盖范围见下方「依赖规则的真实强制力」。
+7. **以上不变量都是白名单语义,而 lint 规则全是黑名单 ⇒ 没有一条被完整强制**(2026-07-19 实测)。
+   `eslint-plugin-boundaries` / `eslint-plugin-import` **均未安装**,勿据其存在做判断。
+   **绝不能以「`pnpm lint` 通过」推断任何一条边界合规**——lint 字面禁掉了什么,见下方
+   「依赖规则的真实强制力」的规则表(那里只陈述事实,不做覆盖度判定)。
 8. **共享包保持纯净**：`@codecrush/contracts`、`@codecrush/otel-conventions` 只可依赖 `zod`（或零依赖），严禁引入 Node-only（`pg`/`fs`/`@opentelemetry/*`）或浏览器-only 依赖——否则前端打包会拉入 Node 依赖而炸。（见 §「通用 Telemetry SDK 与包边界」）
 
 ## Context
@@ -194,19 +190,37 @@ rag-service/
 > ⚠️ **本节此前失实**，原文称 `eslint-plugin-boundaries` / `import/no-restricted-paths` 把 002 的 DAG「lint 期焊死」。
 > B2a 波实测：**这两个插件根本没有安装**（见根 `package.json` 的 devDependencies），仓库内也无架构测试。
 
-逐条对照「依赖不变量」清单，实际强制力如下。
-**注意每条规则都是黑名单（列举禁止的 import），不是白名单**——所以多数只覆盖不变量的一部分：
+**根本的不对称**：上面那些依赖不变量是**白名单**语义（「只能依赖 X」），
+而 `eslint.config.mjs` 里的规则**全是黑名单**（「不许 import 这几个」）。
+黑名单永远不可能等价于白名单 ⇒ **没有任何一条规则完整覆盖它对应的不变量**。
 
-| 不变量 | 实际覆盖 | 拦得住什么 / 漏什么 |
+> 本节此前两次试图用「✅ 拦 / ⚠️ 部分」给每条不变量打分，两次都写出了新的过度断言
+> （peer review 连抓四轮）。**结论：不要再写覆盖度判定**——那是错误的表达形式。
+> 下面只陈述规则**字面禁掉了什么**，不做任何覆盖度评价；要判断某个 import 合不合规，
+> 自己对照这张表 + 精确依赖边表。
+
+lint 实际禁掉的**就是下面这些，仅此而已**：
+
+| 规则 | 作用范围 | 禁掉的 import |
 |---|---|---|
-| 1. 模块级 DAG（方向朝下、无环） | ⚠️ **仅一个点** | Boundary ⑤ 只拦「任何后端模块 import `gaps`」。其余所有跨模块方向（如 `chat → eval-runs` 这种反向边）**一律不拦** |
-| 2. 只走 barrel、禁止直接 import `adapters/` | ❌ **完全不拦** | `eslint.config.mjs` 无任何 barrel / `adapters` 规则，纯靠 review |
-| 3. 前端只能 import contracts / otel-conventions | ⚠️ **部分** | Boundary ① 拦 `@codecrush/backend*` 与 `@codecrush/otel*`。但它是**黑名单**：用相对路径爬进 `apps/backend`（`../../../backend/src/...`）、或引入其它 Node-only 包，**都不拦** |
-| 8. 共享包纯净 | ⚠️ **部分** | Boundary ②（contracts）只拦 `@codecrush/backend`/`@codecrush/frontend`/`@opentelemetry/*`——**不拦 `pg`、`fs`、`node:*`**，而不变量 8 正是点名要禁它们。Boundary ③（otel-conventions）额外拦了 `node:*`、`@codecrush/*`，是四条里覆盖最全的。Boundary ④（otel）拦 contracts / ClickHouse client / apps |
+| Boundary ① | `apps/frontend/**` | `@codecrush/backend`(`/*`)、`@codecrush/otel`(`/*`) |
+| Boundary ② | `packages/contracts/**` | `@codecrush/backend`、`@codecrush/frontend`、`@opentelemetry/*` |
+| Boundary ③ | `packages/otel-conventions/**` | `@opentelemetry/*`、`@codecrush/*`、`node:*` |
+| Boundary ④ | `packages/otel/**` | `@codecrush/contracts`(`/*`)、`@clickhouse/client`(`/*`)、`@codecrush/backend`(`/*`)、`@codecrush/frontend` |
+| Boundary ⑤ | `apps/backend/src/modules/**`（`modules/gaps/**` 自身除外） | `**/gaps`、`**/gaps/**` |
 
-> **已知缺口（不在 B2a 范围内，留待专门一波收）**：在 `packages/contracts/**` 里写 `import { Pool } from "pg"`
-> 或 `import fs from "node:fs"` **当前 lint 是绿的**，而这正是不变量 8 明文要防、且一旦发生会让前端打包炸的情况。
-> 要补就照 Boundary ③ 的写法给 Boundary ② 加 `node:*` 与具体 Node-only 包的 group。本波只如实记录，不顺手扩范围。
+**表外的一切都没有 lint 兜底。** 几个会咬人的具体例子（均已实测为绿）：
+
+- `packages/contracts` 里 `import { Pool } from "pg"` / `import fs from "node:fs"` —— 绿。不变量 8 正是点名禁它们。
+- `packages/otel` 里同样两句 —— 绿。Boundary ④ 只列了那四个 group。
+- `@clickhouse/client-web`（`client-web` ≠ `client`，gitignore 按段精确匹配）—— 绿。
+- 前端用相对路径 `../../../backend/src/...` 爬进后端 —— 绿。Boundary ① 只拦包名。
+- 直接 import 别的域的 `adapters/` —— 绿。不变量 2 完全无规则。
+- `chat → eval-runs` 这类模块级反向边 —— 绿。Boundary ⑤ 只管 `gaps` 一个域。
+
+> **已知缺口（不在 B2a 范围内，留待专门一波收）**：上面头两条正是不变量 8 明文要防、
+> 且一旦发生会让前端打包炸的情况。要补就照 Boundary ③ 的写法给 Boundary ②/④ 加
+> `node:*` 与具体 Node-only 包的 group。本波只如实记录，不顺手扩范围。
 
 **Boundary ⑤ 的写法有个坑，记在这里免得重犯**：`no-restricted-imports` 的 `group` 走 gitignore 式匹配，
 `"../gaps/*"` 这种写法**只匹配深度恰为 1 的相对路径**，`../../gaps/x` 会漏；
@@ -259,7 +273,7 @@ Trace 相关能力分两层，不合成一个大包：
 
 ## Rollout & operations
 
-命令面:`pnpm dev`(turbo 起 infra + 前后端热更) · `pnpm db:migrate` / `db:generate` · `pnpm test` · `pnpm lint` · `docker compose --profile infra up`。**"在工作"信号**:`docker compose ps` 全 healthy + backend `/health` 200 + 迁移成功 + `pnpm lint` 零 boundary 违规。回滚(greenfield)= git revert。
+命令面:`pnpm dev`(turbo 起 infra + 前后端热更) · `pnpm db:migrate` / `db:generate` · `pnpm test` · `pnpm lint` · `docker compose --profile infra up`。**"在工作"信号**:`docker compose ps` 全 healthy + backend `/health` 200 + 迁移成功 + `pnpm lint` 零违规(**注意:lint 只覆盖「依赖规则的真实强制力」那张表列出的项,不等于边界全都成立**)。回滚(greenfield)= git revert。
 
 ## Security(M0 切面)
 
@@ -368,7 +382,7 @@ SDK **不以 RAG 阶段名（改写/意图/召回…）为基元**，而以 Open
 - `apps/backend/src/modules/eval-runs` 拥有评测集/用例/用例版本/run/逐用例结果，以及 run 引擎（发起、停止、预算熔断、全局串行租约）。**它是新的依赖顶点**（`AGENTS.md` 边界 1 已同步）：run 引擎须同时驱动 chat 编排与 evaluations 判分，放进任一方都会耦死；置于两者之上则图仍无环。完整论证见 `018` 决策 A。
 - 允许的依赖边**仅**：`eval-runs → chat`（`OrchestrationService.runForEvaluation`）、`eval-runs → evaluations`（`EvaluationJudgeService.scoreOffline`）、`eval-runs → applications`（`resolveForTest`，preview=true 的显式版本解析）。**`evaluations` 与 `chat` 均不反向依赖 `eval-runs`**——017 的 evaluations 域边界不变。
 - 导出面最小化：`EvaluationsModule` 只导出 `EvaluationJudgeService` + `EvaluationsRepository`（E-W2b 重放判分复用在线设置）；`ChatModule` 只新增导出 `OrchestrationService`。
-- **E-W2b 反向依赖解耦（缺口 5 收口）**：`applications` 暴露 `registerDeletionGuard(guard)` 注册端口，`eval-runs` 注册「活跃 run 引用检查器」——依赖方向仍 `eval-runs → applications`，applications 不知道 eval-runs（回调解耦，lint 边界 0）。重放端点 `POST /eval/replay` 归 `eval-runs`（它已依赖 chat/applications/evaluations，是唯一无新边的落点；原型 §12.3 的 `POST /traces/:id/replay` 是 API 草案，改此以守依赖图，UI 行为不变）。
+- **E-W2b 反向依赖解耦（缺口 5 收口）**：`applications` 暴露 `registerDeletionGuard(guard)` 注册端口，`eval-runs` 注册「活跃 run 引用检查器」——依赖方向仍 `eval-runs → applications`，applications 不知道 eval-runs（回调解耦；依赖方向由本文边表约束——**注意模块级方向没有 lint 兜底**，靠 review）。重放端点 `POST /eval/replay` 归 `eval-runs`（它已依赖 chat/applications/evaluations，是唯一无新边的落点；原型 §12.3 的 `POST /traces/:id/replay` 是 API 草案，改此以守依赖图，UI 行为不变）。
 - **离线 run 结果存 Postgres，绝不发 `rag.eval` span**：ClickHouse 的 `codecrush_eval_targets_mv` 只按 `SpanName='rag.eval'` 过滤、**不看 preview**，发 span 即污染屏1 在线总览。写侧隔离靠存储物理分离，不靠过滤条件。见 `018` 决策 B（附守护测试）。
 - run 产生的 preview trace 照常经 OTLP 进 ClickHouse（`rag.pipeline`，`preview=true` + `rag.eval.run_id`）——给编排 trace 打标 ≠ 发评测 span，前者不进 MV。
 - 队列 job 注册在 platform queue（`EVAL_RUN_QUEUE`），业务状态机留在 eval-runs；跨域引用（`application_id`/`config_version_id`/模型 id）只存 id、不建 FK。
