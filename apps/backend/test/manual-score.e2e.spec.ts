@@ -17,6 +17,7 @@ import { EvaluationJudgeService } from "../src/modules/evaluations/evaluation-ju
 import { EvaluationsController } from "../src/modules/evaluations/evaluations.controller";
 import { EvaluationsRepository } from "../src/modules/evaluations/evaluations.repository";
 import { EvaluationsService } from "../src/modules/evaluations/evaluations.service";
+import { EvaluationWorkerProcessor } from "../src/modules/evaluations/evaluation-worker.processor";
 import { FaithfulnessEvaluator } from "../src/modules/evaluations/faithfulness.evaluator";
 import { ManualScoreProcessor } from "../src/modules/evaluations/manual-score.processor";
 import {
@@ -44,6 +45,8 @@ describeInfra("B1/F3 立即评测（真 PG + 真 ClickHouse）", () => {
   let repo: EvaluationsRepository;
   let clickhouse: ClickHouseEvaluationsRepository;
   let processor: ManualScoreProcessor;
+  /** 只为 AC14 而存在：证明人工评分后周期 worker 走 already_scored。 */
+  let worker: EvaluationWorkerProcessor;
   let service: EvaluationsService;
   let judgeSpy: jest.SpyInstance;
 
@@ -157,6 +160,17 @@ describeInfra("B1/F3 立即评测（真 PG + 真 ClickHouse）", () => {
       input,
       judge,
       emitter as never,
+    );
+    // AC14 用：真 worker，只有队列/模型/配置是桩（与 evaluations.e2e.spec.ts:565 同形）。
+    worker = new EvaluationWorkerProcessor(
+      { subscribe: jest.fn(), schedule: jest.fn() } as never,
+      repo,
+      clickhouse,
+      input,
+      judge,
+      emitter as never,
+      fakeModels as never,
+      { onlineEvalBackfillWindowHours: 24 } as never,
     );
     service = new EvaluationsService(repo, clickhouse, fakeModels as never, queue as never);
 
@@ -298,5 +312,49 @@ describeInfra("B1/F3 立即评测（真 PG + 真 ClickHouse）", () => {
 
   it("非法 traceId → 400", async () => {
     await request(app.getHttpServer()).post(`/api/eval/quality/traces/not-hex/score`).expect(400);
+  });
+
+  /**
+   * AC 14：人工评分后，周期 worker 再扫到这条时必须走 already_scored——
+   * 不重复调裁判、不重复计费。
+   *
+   * 这条**不是**靠本波新代码保证的，是靠既有分支
+   * （evaluation-worker.processor.ts:182-185 的 findExisting → already_scored）。
+   * 正因为无新代码，更需要一条测试把它钉住：manual 路径若哪天改成不发
+   * `rag.eval` span（或 status 不写 success、version 写错），worker 的去重就会
+   * 静默失效——同一条 trace 被评两次、计费两次，而没有任何测试会变红。
+   */
+  it("人工评分后 worker 扫到该 trace → already_scored，不重复调裁判", async () => {
+    // sampleRate=1 + 充足 dailyCap：确保候选不会在抽样/配额分支提前出局，
+    // 从而真正走到 findExisting 那一跳（否则这条测试会假绿）。
+    await repo.updateSettings({
+      enabled: true,
+      sampleRate: 1,
+      dailyCap: 500,
+      judgeModelId: E2E_JUDGE_MODEL_ID,
+      embeddingModelId: E2E_EMBED_MODEL_ID,
+    });
+
+    await post(targetTraceId).expect(201);
+    await drainManualQueue();
+    expect(judgeSpy).toHaveBeenCalledTimes(1); // 人工这一次确实调了裁判
+    judgeSpy.mockClear();
+
+    // 把游标回拨到该 trace 之前，再跑一轮 worker（手法同 evaluations.e2e.spec.ts:345,512）。
+    await harness.pool.query(
+      "UPDATE eval_watermarks SET last_ts = $1, last_trace_id = '' WHERE worker_name = $2",
+      [new Date("2026-07-15T01:00:00.000Z"), WORKER],
+    );
+    const cycle = await worker.processCycle(WORKER, new Date("2026-07-15T02:00:00.000Z"));
+
+    const hit = cycle.outcomes.find((o) => o.traceId === targetTraceId);
+    expect(hit?.kind).toBe("already_scored");
+    expect(judgeSpy).not.toHaveBeenCalled();
+
+    const { rows } = await harness.pool.query(
+      `SELECT outcome FROM eval_candidate_ledger WHERE target_trace_id = $1`,
+      [targetTraceId],
+    );
+    expect(rows[0]?.outcome).toBe("already_scored");
   });
 });

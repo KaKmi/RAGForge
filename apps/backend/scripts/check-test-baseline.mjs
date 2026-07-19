@@ -21,10 +21,17 @@
  */
 import { readFileSync } from "node:fs";
 
-/** 实测值（2026-07-18，docker infra 全绿）。新增用例后请上调。 */
+/**
+ * 实测值（2026-07-18，docker infra 全绿）。新增用例后请上调。
+ *
+ * ⚠️ infra 的 7/82 是**推算值**（2026-07-19，B1/F3）：`test:infra` 新挂了
+ * `test/manual-score.e2e.spec.ts`（7 个 suite）、该 spec 有 9 条用例 ⇒ 73 + 9 = 82。
+ * 写这一版时本机 docker daemon 不可达，未能跑一轮实测确认。
+ * **下一次 infra 全绿后请以实测值覆盖本行**（基线是下限，推算偏高会让 CI 红，偏低会放过静默跳过）。
+ */
 const BASELINES = {
   db: { suites: 11, tests: 82, script: "test:db" },
-  infra: { suites: 6, tests: 73, script: "test:infra" },
+  infra: { suites: 7, tests: 82, script: "test:infra" },
 };
 
 const [suiteKey, resultFile] = process.argv.slice(2);
