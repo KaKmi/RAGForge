@@ -20,7 +20,7 @@ const versionRow = {
   },
 } as never;
 
-function make(overrides: Record<string, unknown> = {}) {
+function make(overrides: Record<string, unknown> = {}, samplingEnabled = true) {
   const repo = {
     findReleaseCheckById: jest.fn(async () => ({ id: "rc1", status: "queued", startedAt: null, configVersionId: "v1", applicationId: "a1" })),
     findVersionById: jest.fn(async () => versionRow),
@@ -41,12 +41,16 @@ function make(overrides: Record<string, unknown> = {}) {
   // B1/F5：门禁 provider 未注册时 collectEvalGateIssues 返回 []，
   // 故这里给一个「无门禁结论」的假 ApplicationsService——既有断言的 issue 数不受影响。
   const applications = { collectEvalGateIssues: jest.fn(async () => []) };
+  // 采样开关：既有用例默认 true——它们验的就是「真实冒烟」那段行为，不能因为线上
+  // 默认值改成 false 就悄悄失去覆盖。关闭路径由本文件末尾的专门用例覆盖。
+  const appConfig = { releaseCheckSamplingEnabled: samplingEnabled };
   const proc = new ReleaseCheckProcessor(
     queue as never,
     repo as never,
     nodeRuntime as never,
     prompts as never,
     applications as never,
+    appConfig as never,
   );
   return { proc, repo, nodeRuntime, prompts, applications };
 }
@@ -108,6 +112,7 @@ describe("ReleaseCheckProcessor", () => {
       nrFail as never,
       { getVersionExecutable: jest.fn(async () => ({ node: "reply", contractVersion: 1, body: "{query}" })) } as never,
       { collectEvalGateIssues: jest.fn(async () => []) } as never,
+      { releaseCheckSamplingEnabled: true } as never,
     );
     await proc2.process("rc1");
     const result = repo.markReleaseCheckResult.mock.calls[0][1];
@@ -162,6 +167,7 @@ describe("ReleaseCheckProcessor", () => {
           { code: "EVAL_GATE_REGRESSION", message: "存在 5 条回退用例", severity: "warning" },
         ]),
       } as never,
+      { releaseCheckSamplingEnabled: true } as never,
     );
     await proc2.process("rc1");
     const result = repo.markReleaseCheckResult.mock.calls[0][1];
@@ -187,5 +193,44 @@ describe("ReleaseCheckProcessor", () => {
     expect(result.status).toBe("failed");
     expect(result.issues[0]).toMatchObject({ code: "INTERNAL_ERROR", message: "db connection reset" });
     expect(result.expiresAt).toBeNull();
+  });
+
+  // —— RELEASE_CHECK_SAMPLING_ENABLED=false（线上默认值，2026-07-19）——
+  describe("采样关闭（第二段跳过）", () => {
+    it("一次模型都不调，但仍走到 passed 且下发 expiresAt", async () => {
+      const { proc, repo, nodeRuntime, prompts } = make({}, false);
+      await proc.process("rc1");
+      // 关键：21 次真实 LLM 调用一次都不能发生
+      expect(nodeRuntime.compileAndSample).not.toHaveBeenCalled();
+      // 连 Prompt 可执行体都不必取——跳过要跳得干净，不留半截 I/O
+      expect(prompts.getVersionExecutable).not.toHaveBeenCalled();
+      const result = repo.markReleaseCheckResult.mock.calls[0][1];
+      expect(result.status).toBe("passed");
+      expect(result.expiresAt).toBeInstanceOf(Date);
+      expect(result.sampleSummary).toEqual({});
+    });
+
+    it("留下 SAMPLING_SKIPPED warning——「passed」不得悄悄代表更弱的保证", async () => {
+      const { proc, repo } = make({}, false);
+      await proc.process("rc1");
+      const result = repo.markReleaseCheckResult.mock.calls[0][1];
+      const skipped = result.issues.find((i: { code: string }) => i.code === "SAMPLING_SKIPPED");
+      expect(skipped).toBeDefined();
+      // warning 级 ⇒ 不参与 hasBlockingIssue ⇒ 不影响放行
+      expect(skipped.severity).toBe("warning");
+    });
+
+    it("门禁 warning 仍照常产出——关的是采样，不是门禁", async () => {
+      const { proc, repo, applications } = make({}, false);
+      applications.collectEvalGateIssues.mockResolvedValueOnce([
+        { code: "EVAL_GATE_NO_RUN", message: "尚未对比", severity: "warning" },
+      ]);
+      await proc.process("rc1");
+      const result = repo.markReleaseCheckResult.mock.calls[0][1];
+      expect(result.issues.map((i: { code: string }) => i.code)).toEqual(
+        expect.arrayContaining(["SAMPLING_SKIPPED", "EVAL_GATE_NO_RUN"]),
+      );
+      expect(result.status).toBe("passed");
+    });
   });
 });

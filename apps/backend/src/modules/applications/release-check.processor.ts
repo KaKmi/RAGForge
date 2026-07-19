@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import type { PromptNode, ReleaseCheckIssue } from "@codecrush/contracts";
+import { AppConfigService } from "../../platform/config/config.service";
 import { RELEASE_CHECK_JOB, RELEASE_CHECK_QUEUE } from "../../platform/queue/queue.constants";
 import type { Queue } from "../../platform/queue/queue.port";
 import { NodeRuntimeService } from "../node-runtime/executor/node-runtime.service";
@@ -38,6 +39,7 @@ export class ReleaseCheckProcessor implements OnModuleInit {
     private readonly nodeRuntime: NodeRuntimeService,
     private readonly prompts: PromptsService,
     private readonly applications: ApplicationsService,
+    private readonly appConfig: AppConfigService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -93,7 +95,21 @@ export class ReleaseCheckProcessor implements OnModuleInit {
     const issues: ReleaseCheckIssue[] = [];
     const summary: Record<string, { ok: number; total: number }> = {};
 
-    for (const node of NODES) {
+    // 第二段（真实冒烟采样）默认关——用户 2026-07-19 决定，理由见 config.schema.ts
+    // 的 RELEASE_CHECK_SAMPLING_ENABLED。跳过时必须留下痕迹：否则「passed」会在
+    // 语义不变的外表下代表一个明显更弱的保证（少了 21 次真实节点预演），
+    // 调用方与人都无从分辨。故补一条 warning——warning 不参与 hasBlockingIssue，
+    // 不影响放行，只保证知情。
+    const samplingEnabled = this.appConfig.releaseCheckSamplingEnabled;
+    if (!samplingEnabled) {
+      issues.push({
+        code: "SAMPLING_SKIPPED",
+        message: "已跳过真实冒烟预演（仅完成静态校验）——内置样例待重设计",
+        severity: "warning",
+      });
+    }
+
+    for (const node of samplingEnabled ? NODES : []) {
       const promptVersionId = version[NODE_COLUMNS[node].prompt] as string;
       const modelId = version[MODEL_COLUMNS[node]] as string;
       const exec = await this.prompts.getVersionExecutable(promptVersionId);

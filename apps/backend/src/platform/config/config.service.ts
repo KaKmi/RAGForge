@@ -65,4 +65,8 @@ export class AppConfigService {
   get onlineEvalLedgerRetentionDays(): number {
     return this.config.get("ONLINE_EVAL_LEDGER_RETENTION_DAYS", { infer: true });
   }
+  /** ReleaseCheck 第二段（真实冒烟采样）是否启用，默认关——理由见 config.schema.ts。 */
+  get releaseCheckSamplingEnabled(): boolean {
+    return this.config.get("RELEASE_CHECK_SAMPLING_ENABLED", { infer: true });
+  }
 }

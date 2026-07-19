@@ -64,6 +64,25 @@ export const envSchema = z.object({
     .string()
     .default("true")
     .transform((v) => v !== "false"),
+  /**
+   * M7b ReleaseCheck 第二段（真实冒烟采样）开关：默认 **关**（用户 2026-07-19 决定）。
+   *
+   * 上线校验分两段：①静态门禁（同步，毫秒级，不通过直接 422）②真实冒烟采样（异步）。
+   * 第二段拿 `release-check.samples.ts` 的固定样例真调模型：rewrite/intent 各 10 条、
+   * reply 1 条 ⇒ **21 次真实 LLM 调用**，实测耗时 1:52～2:00。
+   *
+   * 关掉的理由不是「慢」而是「样例已失效」：那 10 条是电商客服问题（怎么退货/运费怎么算…），
+   * 源于 M7b 时期「无评测集、Postgres 不存真实用户问题」的权宜之计（见 samples.ts 头注释）。
+   * M11 评测集已交付（E-W2a），该前提不再成立——对非电商应用，这 21 次调用既慢又验证不到
+   * 真实的东西。样例该改成什么（取自评测集 / 应用自配 / 领域中性）是待定的产品决策。
+   *
+   * 置 "true" 恢复第二段。**关闭期间检查仍会产出一条 `SAMPLING_SKIPPED` warning**，
+   * 使「passed」不至于悄悄代表更弱的保证。
+   */
+  RELEASE_CHECK_SAMPLING_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   // 019：进程角色分流。校验逻辑完全委托 parseProcessRole（全仓唯一校验器，
   // main.ts/tracing.ts 在 DI 前也调它），本字段只是把结果带进 Env 供 AppConfigService 读。
   PROCESS_ROLE: z
