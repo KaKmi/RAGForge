@@ -125,6 +125,8 @@ const application = (over: Partial<Application> = {}): Application => ({
   name: "售后助手",
   description: "处理退换货咨询",
   enabled: true,
+  // B1/F5：门禁开关默认关（原型 §8「默认关(仅提示)」）；开关只影响前端按钮态，不影响后端放行。
+  evalGateEnabled: false,
   productionVersion: null,
   productionConfigVersionId: null,
   latestVersion: 1,

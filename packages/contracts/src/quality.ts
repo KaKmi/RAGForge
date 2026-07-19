@@ -32,6 +32,8 @@ export type QualityThresholds = z.infer<typeof QualityThresholdsSchema>;
 
 export const TraceQualityDetailSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("unscored") }),
+  /** B1/F3：人工「立即评测」已入队/运行中。原型 §18.D：面板「评分中」，轮询 5s×6。 */
+  z.object({ status: z.literal("scoring"), startedAt: isoString.nullable() }),
   z.object({
     status: z.literal("scored"),
     scores: QualityScoresSchema,
@@ -51,6 +53,16 @@ export const TraceQualityDetailSchema = z.discriminatedUnion("status", [
   }),
 ]);
 export type TraceQualityDetail = z.infer<typeof TraceQualityDetailSchema>;
+
+/**
+ * B1/F3：「立即评测」的受理结果。
+ * `scoring` = 已入队（前端转轮询）；`scored` = 该 trace 已有当前判分版本的分数，
+ * 直接可见，**不入队、不调裁判、不计费**。
+ */
+export const ManualScoreResponseSchema = z.strictObject({
+  status: z.enum(["scoring", "scored"]),
+});
+export type ManualScoreResponse = z.infer<typeof ManualScoreResponseSchema>;
 
 export const TraceEvaluationSummarySchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("unscored") }),

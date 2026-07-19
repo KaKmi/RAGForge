@@ -169,6 +169,20 @@
       "when": 1784600000000,
       "tag": "0023_eval_run_active_slot",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784700000000,
+      "tag": "0024_eval_gate_switch",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784700100000,
+      "tag": "0025_eval_manual_score_jobs",
+      "breakpoints": true
     }
   ]
 }

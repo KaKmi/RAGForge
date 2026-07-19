@@ -67,6 +67,12 @@ export const RAG = {
   EVAL_VERSION: "rag.eval.version",
   EVAL_DEDUPE_KEY: "rag.eval.dedupe_key",
   EVAL_STATUS: "rag.eval.status",
+  /**
+   * B1/F3：这条 rag.eval 是谁触发的。`worker`=周期抽样；`manual`=用户「立即评测」。
+   * **纯附加属性**：默认 `worker`，既有读路径（含 eval_1m MV）完全不感知，
+   * 故判分版本 online-v2 **不升号**。留着它是为了 B2 若要剔除人工样本时无需回溯补数据。
+   */
+  EVAL_TRIGGER: "rag.eval.trigger",
 } as const;
 
 export const OTEL_OPERATIONS = {

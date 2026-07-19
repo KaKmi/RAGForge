@@ -1,4 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
+import type { EvalCaseRef } from "@codecrush/contracts";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
@@ -140,7 +141,29 @@ export class EvalSetsRepository {
     return rows[0];
   }
 
-  /** 大小写不敏感查重（走 `eval_sets_name_unique` 的 `lower(name) WHERE deleted_at IS NULL` 部分索引）。 */
+  /**
+   * B1/F2：这条 trace 已进过哪些评测集（Trace 详情按钮的两态判据）。
+   * 软删的用例与软删的集都不算——按钮会因此显示「加入评测集」而不是「已在评测集」，
+   * 用户可以重新入集，这正是期望行为。
+   */
+  async findCaseRefsBySourceTrace(sourceTraceId: string): Promise<EvalCaseRef[]> {
+    return this.db
+      .select({ setId: evalCases.setId, setName: evalSets.name, caseId: evalCases.id })
+      .from(evalCases)
+      .innerJoin(evalSets, eq(evalSets.id, evalCases.setId))
+      .where(
+        and(
+          eq(evalCases.sourceTraceId, sourceTraceId),
+          isNull(evalCases.deletedAt),
+          isNull(evalSets.deletedAt),
+        ),
+      )
+      // 无 ORDER BY 时 PG 不保证顺序（计划变更/VACUUM 都会让它抖），
+      // 前端「已在：集A、集B」的顺序会在刷新之间乱跳。与同文件 listCases:223 同一约定。
+      .orderBy(asc(evalSets.name), asc(evalCases.createdAt), asc(evalCases.id));
+  }
+
+  /** 大小写不敏感查重（走 eval_sets_name_unique 的部分索引）。 */
   async findSetByName(name: string): Promise<EvalSetRow | undefined> {
     const rows = await this.db
       .select()
@@ -271,6 +294,52 @@ export class EvalSetsRepository {
       if (!rows[0]) throw new Error(`eval case ${caseId} missing`);
       return { case: rows[0], version: inserted };
     });
+  }
+
+  /**
+   * B1/F4：把引用了该 docId 的**当前版本**用例标为「gold 可能过期」。
+   *
+   * 原型 §18.B：「态不变 + gold-stale 标志」——只动标志位，**不动** status / currentVersion，
+   * 更**绝不**改 gold 内容（原型 §7：「不自动改 gold，人工确认」）。文档变了不代表 gold 就错了，
+   * 自动改写会把人工审过的标准答案悄悄换掉，那比过期更糟。
+   *
+   * 匹配走 jsonb 包含 `@>`：`gold_doc_refs` 是 `[{docId, chunkId, docName, section}]`，
+   * `@> '[{"docId": "..."}]'` 只比对 docId 一个键，chunkId/docName/section 任意。
+   * 子查询钉 `v.version = c.current_version`：历史版本引用过该文档不算数——
+   * 用例早就改到别的文档了，不该因为一份它已经不引用的文档变更而被标过期。
+   */
+  async markGoldStaleByDocId(docId: string): Promise<number> {
+    const result = await this.db
+      .update(evalCases)
+      .set({ goldStale: true })
+      .where(
+        and(
+          isNull(evalCases.deletedAt),
+          sql`EXISTS (
+            SELECT 1 FROM ${evalCaseVersions} v
+             WHERE v.case_id = ${evalCases.id}
+               AND v.version = ${evalCases.currentVersion}
+               AND v.gold_doc_refs @> ${JSON.stringify([{ docId }])}::jsonb
+          )`,
+        ),
+      );
+    return result.rowCount ?? 0;
+  }
+
+  /** B1/F4：人工「确认仍有效」——只清标志，不产生新版本（内容根本没变）。 */
+  async clearGoldStale(setId: string, caseId: string): Promise<EvalCaseRow | null> {
+    const [row] = await this.db
+      .update(evalCases)
+      .set({ goldStale: false })
+      .where(
+        and(
+          eq(evalCases.id, caseId),
+          eq(evalCases.setId, setId),
+          isNull(evalCases.deletedAt),
+        ),
+      )
+      .returning();
+    return row ?? null;
   }
 
   async updateCase(caseId: string, patch: Partial<EvalCaseRow>): Promise<EvalCaseRow> {

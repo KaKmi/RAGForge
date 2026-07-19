@@ -687,6 +687,9 @@ const inMemoryApplicationsRepo: Partial<ApplicationsRepository> = {
       id: `app${++applicationSeq}`,
       description: "",
       enabled: true,
+      // B1/F5：镜像 DB 的 `eval_gate_enabled boolean NOT NULL DEFAULT false`。
+      // 假 repo 漏了它 ⇒ 响应里是 undefined ⇒ ApplicationDetailSchema.parse 抛 ZodError。
+      evalGateEnabled: false,
       productionConfigVersionId: null,
       deletedAt: null,
       createdAt: new Date(),

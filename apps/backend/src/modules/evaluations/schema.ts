@@ -114,3 +114,34 @@ export const evalCandidateLedger = pgTable(
 export type OnlineEvalSettingsRow = typeof onlineEvalSettings.$inferSelect;
 export type EvalWatermarkRow = typeof evalWatermarks.$inferSelect;
 export type EvalCandidateLedgerRow = typeof evalCandidateLedger.$inferSelect;
+
+/**
+ * B1/F3：人工「立即评测」的作业表。**刻意与 eval_candidate_ledger 分开**——
+ * 见 0025 迁移注释：账本表达的是游标推进语义，人工旁路不推进游标。
+ * 主键与账本同形 (target_trace_id, judge_version)，正因如此更不能混用同一张表。
+ */
+export const evalManualScoreJobs = pgTable(
+  "eval_manual_score_jobs",
+  {
+    targetTraceId: varchar("target_trace_id", { length: 32 }).notNull(),
+    judgeVersion: varchar("judge_version", { length: 100 }).notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("queued"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    requestedBy: varchar("requested_by", { length: 200 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 显式命名：不给名字时 drizzle 生成的是
+    // `eval_manual_score_jobs_target_trace_id_judge_version_pk`（见 0020 里账本表的实例），
+    // 与手写迁移里的 `..._pk` 对不上 —— 名字漂移会让将来任何按名字 DROP CONSTRAINT 的迁移失败。
+    primaryKey({ name: "eval_manual_score_jobs_pk", columns: [t.targetTraceId, t.judgeVersion] }),
+    check(
+      "eval_manual_score_jobs_status_check",
+      sql`${t.status} IN ('queued','running','scored','failed')`,
+    ),
+    index("eval_manual_score_jobs_status_idx").on(t.status, t.updatedAt),
+  ],
+);
+export type EvalManualScoreJobRow = typeof evalManualScoreJobs.$inferSelect;

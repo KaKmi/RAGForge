@@ -25,6 +25,7 @@ import {
   type ApplicationChatResult,
   type ApplicationConfigVersion,
   type ApplicationDetail,
+  type EvalGateStatus,
   type ApplicationTag,
   type PromptUsageEntry,
   type ReleaseCheck,
@@ -68,6 +69,14 @@ export class ApplicationsController {
   }
   @Delete(":id") @HttpCode(204) delete(@Param("id") id: string): Promise<void> {
     return this.service.delete(id);
+  }
+  /** B1/F5：屏4「去上线」按钮态的数据来源。只读，不建 ReleaseCheck、不产生副作用。 */
+  @Get(":id/eval-gate") evalGate(
+    @Param("id") id: string,
+    @Query("configVersionId") configVersionId: string,
+  ): Promise<EvalGateStatus> {
+    if (!configVersionId) throw new BadRequestException("configVersionId 必填");
+    return this.service.getEvalGateStatus(id, configVersionId);
   }
   @Get(":id/config-versions") versions(
     @Param("id") id: string,

@@ -13,8 +13,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:backfill-prompts": "tsx src/db/backfill-prompt-contracts.ts",
     "db:backfill-applications": "tsx src/db/backfill-applications.ts",
-    "test:db": "cross-env RUN_DB_TESTS=1 jest --runInBand --json --outputFile=jest-results-db.json test/prompts.migration.spec.ts test/applications.migration.spec.ts test/judge-version.migration.spec.ts test/conversations.evaluation-turn.spec.ts test/evaluations.repository.spec.ts test/eval-runs.lease.db.spec.ts test/eval-sets.aggregate.db.spec.ts test/eval-w2b.migration.spec.ts test/eval-runs-active-slot.migration.spec.ts && node scripts/check-test-baseline.mjs db jest-results-db.json",
-    "test:infra": "cross-env RUN_DB_TESTS=1 RUN_CLICKHOUSE_TESTS=1 jest --runInBand --json --outputFile=jest-results-infra.json test/eval-runs.e2e.spec.ts test/eval-run-isolation.spec.ts test/evaluations.e2e.spec.ts test/eval-w2b.e2e.spec.ts test/evaluations.clickhouse.spec.ts test/traces.repository.quality.spec.ts && node scripts/check-test-baseline.mjs infra jest-results-infra.json",
+    "test:db": "cross-env RUN_DB_TESTS=1 jest --runInBand --json --outputFile=jest-results-db.json test/prompts.migration.spec.ts test/applications.migration.spec.ts test/judge-version.migration.spec.ts test/conversations.evaluation-turn.spec.ts test/evaluations.repository.spec.ts test/eval-runs.lease.db.spec.ts test/eval-sets.aggregate.db.spec.ts test/eval-w2b.migration.spec.ts test/eval-runs-active-slot.migration.spec.ts test/eval-gate.migration.spec.ts test/manual-score.db.spec.ts && node scripts/check-test-baseline.mjs db jest-results-db.json",
+    "test:infra": "cross-env RUN_DB_TESTS=1 RUN_CLICKHOUSE_TESTS=1 jest --runInBand --json --outputFile=jest-results-infra.json test/eval-runs.e2e.spec.ts test/eval-run-isolation.spec.ts test/evaluations.e2e.spec.ts test/eval-w2b.e2e.spec.ts test/evaluations.clickhouse.spec.ts test/traces.repository.quality.spec.ts test/manual-score.e2e.spec.ts && node scripts/check-test-baseline.mjs infra jest-results-infra.json",
     "db:seed": "tsx src/db/seed.ts",
     "observability:verify": "node scripts/verify-observability.mjs"
   },

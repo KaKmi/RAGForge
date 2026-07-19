@@ -11,6 +11,7 @@ import {
   ProfileRegistry,
 } from "../src/modules/ingestion/profiles/profile-registry";
 import type { AppConfigService } from "../src/platform/config/config.service";
+import { DocumentChangeNotifier } from "../src/platform/events/document-change.notifier";
 
 // 合法 magic bytes 的测试文件头（pdf=%PDF-、docx=PK zip）；markdown/text 任意文本。
 const PDF_BYTES = Buffer.from("%PDF-1.4\n%test");
@@ -54,7 +55,9 @@ function makeDeps(processingProfilesEnabled = false) {
   const registry = new ProfileRegistry(structuredClone(PROCESSING_PROFILES));
   // 默认 flag=false（legacy enqueue 路径）；flag=true 的 createRun 分流由专门用例覆盖。
   const config = { processingProfilesEnabled } as unknown as AppConfigService;
-  return { repo, kbRepo, blobStore, ingestion, chunksRepo, runsRepo, registry, config };
+  // B1/F4：文档变更广播点（平台层，@Global）。真实实现——fail-open 语义正是被测对象之一。
+  const changes = new DocumentChangeNotifier();
+  return { repo, kbRepo, blobStore, ingestion, chunksRepo, runsRepo, registry, config, changes };
 }
 
 function makeService(deps: ReturnType<typeof makeDeps>): DocumentsService {
@@ -67,6 +70,7 @@ function makeService(deps: ReturnType<typeof makeDeps>): DocumentsService {
     deps.config,
     deps.runsRepo as unknown as ProcessingRunsRepository,
     deps.registry,
+    deps.changes,
   );
 }
 
@@ -475,5 +479,74 @@ describe("DocumentsService M4.1 Profile 覆盖 / magic bytes / Run 历史", () =
     const deps = makeDeps();
     deps.repo.findById.mockResolvedValue(undefined);
     await expect(makeService(deps).listRuns("gone")).rejects.toThrow(NotFoundException);
+  });
+});
+
+// —— B1/F4：gold 过期通知的注册表反转（原型 §18.B）——
+
+describe("gold-stale 通知（B1/F4）", () => {
+  function serviceWithDoc() {
+    const deps = makeDeps();
+    deps.repo.findById.mockResolvedValue({
+      id: "d1",
+      kbId: "kb1",
+      name: "退款政策.pdf",
+      type: "pdf",
+      size: 1024,
+      blobKey: "kb/kb1/d1/original.pdf",
+      chunkVersion: null,
+      status: "ready",
+      metadata: {},
+      lifecycle: [],
+      profileOverrideId: null,
+      profileOverrideVersion: null,
+      error: null,
+      uploadedAt: new Date("2026-07-16T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+    });
+    return { deps, service: makeService(deps) };
+  }
+
+  /**
+   * 【时机】triggerParse 只是入队，切片内容此刻一个字都没变 ⇒ **不广播**。
+   * 提前置位会留下这个洞：用户在解析窗口内点「确认仍有效」清掉标志，解析随后完成、
+   * 内容真换了，而不会再有第二次广播——该用例从此静默失去过期提示（spec §4.2「完成后」）。
+   * 广播出口在 `IngestionService` 的 ready 终态上，由 ingestion.service.spec.ts 钉住。
+   */
+  it("triggerParse（仅入队）不广播——广播挂在解析完成态", async () => {
+    const { service } = serviceWithDoc();
+    const notify = jest.fn(async () => undefined);
+    service.registerGoldStaleNotifier(notify);
+
+    await service.triggerParse("d1");
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("remove 通知注册方", async () => {
+    const { service } = serviceWithDoc();
+    const notify = jest.fn(async () => undefined);
+    service.registerGoldStaleNotifier(notify);
+
+    await service.remove("d1");
+    expect(notify).toHaveBeenCalledWith("d1");
+  });
+
+  /**
+   * 【fail-open 不变量】评测集标不上「可能过期」是体验问题；
+   * 因为它把一次文档删除打回失败，是事故。通知抛错**绝不**能冒泡。
+   */
+  it("通知抛错不影响文档主流程", async () => {
+    const { deps, service } = serviceWithDoc();
+    service.registerGoldStaleNotifier(async () => {
+      throw new Error("eval domain down");
+    });
+
+    await expect(service.remove("d1")).resolves.toBeUndefined();
+    expect(deps.repo.delete).toHaveBeenCalledWith("d1"); // 删除确实发生了
+  });
+
+  it("没有注册方时不报错（documents 可独立运行）", async () => {
+    const { service } = serviceWithDoc();
+    await expect(service.triggerParse("d1")).resolves.toBeDefined();
   });
 });

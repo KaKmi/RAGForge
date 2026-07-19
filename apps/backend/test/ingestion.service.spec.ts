@@ -8,6 +8,7 @@ import type { KnowledgeBasesRepository } from "../src/modules/knowledge-bases/kn
 import type { ProcessingRunsRepository } from "../src/modules/ingestion/processing-runs.repository";
 import type { IngestionPipelinePort } from "../src/modules/ingestion/ports/ingestion-pipeline.port";
 import type { AppConfigService } from "../src/platform/config/config.service";
+import { DocumentChangeNotifier } from "../src/platform/events/document-change.notifier";
 import {
   PROCESSING_PROFILES,
   ProfileRegistry,
@@ -69,7 +70,11 @@ function makeDeps() {
   return { queue, blobStore, docsRepo, kbRepo, pipeline, runs, runsRepo, registry, config };
 }
 
-function makeService(deps: ReturnType<typeof makeDeps>, moduleRef?: ModuleRef): IngestionService {
+function makeService(
+  deps: ReturnType<typeof makeDeps>,
+  moduleRef?: ModuleRef,
+  changes?: DocumentChangeNotifier,
+): IngestionService {
   return new IngestionService(
     deps.queue,
     deps.blobStore,
@@ -80,6 +85,7 @@ function makeService(deps: ReturnType<typeof makeDeps>, moduleRef?: ModuleRef): 
     deps.registry,
     deps.config,
     moduleRef,
+    changes,
   );
 }
 
@@ -653,5 +659,120 @@ describe("IngestionService.processRun", () => {
     deps.pipeline.run.mockRejectedValue(new Error("boom"));
     await svc.processRun("r-bad");
     expect(onDocumentTerminal).toHaveBeenCalledTimes(2);
+  });
+});
+
+// —— B1/F4：gold 过期广播挂在**解析完成态**（review P3：原实现在入队时就广播）——
+
+describe("IngestionService 的 gold 过期广播时机", () => {
+  function readyDeps() {
+    const deps = makeDeps();
+    deps.docsRepo.findById.mockResolvedValue({
+      id: "d1",
+      kbId: "kb1",
+      type: "text",
+      blobKey: "kb/kb1/d1/original.txt",
+    });
+    deps.kbRepo.findById.mockResolvedValue({
+      id: "kb1",
+      chunkTemplate: "general",
+      embeddingModelId: "m1",
+    });
+    return deps;
+  }
+
+  /**
+   * 【时机不变量】切片内容真的换掉（ready）之后才广播——spec §4.2 逐字「二者完成后需通知 eval 域」。
+   * 入队时广播会留下这个窗口：用户在解析期间点「确认仍有效」清掉标志，解析随后完成、
+   * 内容真换了，而不会再有第二次广播 ⇒ 该用例从此静默失去过期提示。
+   */
+  it("processDocument 走到 ready → 广播一次，带上 docId", async () => {
+    const deps = readyDeps();
+    deps.pipeline.run.mockResolvedValue({ chunkCount: 3, parsedText: "hello" });
+    const changes = new DocumentChangeNotifier();
+    const seen: string[] = [];
+    changes.register(async (docId) => {
+      seen.push(docId);
+    });
+
+    await makeService(deps, undefined, changes).processDocument("d1", 1);
+    expect(seen).toEqual(["d1"]);
+  });
+
+  /** 解析失败时旧切片原封不动（chunkVersion 未前移）⇒ 内容没变，不该报过期。 */
+  it("processDocument 落 failed → 不广播", async () => {
+    const deps = readyDeps();
+    deps.pipeline.run.mockRejectedValue(new Error("boom"));
+    const changes = new DocumentChangeNotifier();
+    const seen: string[] = [];
+    changes.register(async (docId) => {
+      seen.push(docId);
+    });
+
+    await makeService(deps, undefined, changes).processDocument("d1", 1);
+    expect(seen).toEqual([]);
+  });
+
+  it("processRun 走到 ready → 广播一次；失败则不广播", async () => {
+    const deps = readyDeps();
+    const changes = new DocumentChangeNotifier();
+    const seen: string[] = [];
+    changes.register(async (docId) => {
+      seen.push(docId);
+    });
+    const svc = makeService(deps, undefined, changes);
+
+    deps.runs.set("r-ok", {
+      id: "r-ok",
+      documentId: "d1",
+      kbId: "kb1",
+      targetVersion: 2,
+      profileSnapshot: structuredClone(PROCESSING_PROFILES[0]),
+      status: "queued",
+      createdAt: new Date(),
+      startedAt: null,
+    });
+    deps.pipeline.run.mockResolvedValue(pipelineResult() as never);
+    await svc.processRun("r-ok");
+    expect(seen).toEqual(["d1"]);
+
+    deps.runs.set("r-bad", {
+      id: "r-bad",
+      documentId: "d1",
+      kbId: "kb1",
+      targetVersion: 2,
+      profileSnapshot: structuredClone(PROCESSING_PROFILES[0]),
+      status: "queued",
+      createdAt: new Date(),
+      startedAt: null,
+    });
+    deps.pipeline.run.mockRejectedValue(new Error("boom"));
+    await svc.processRun("r-bad");
+    expect(seen).toEqual(["d1"]); // 未新增
+  });
+
+  /**
+   * 【fail-open 不变量】评测集标不上「可能过期」是体验问题；
+   * 因为它把一次已经落地的文档终态打回失败，是事故。监听方抛错绝不能冒泡。
+   */
+  it("监听方抛错不影响文档终态写入", async () => {
+    const deps = readyDeps();
+    deps.pipeline.run.mockResolvedValue({ chunkCount: 3, parsedText: "hello" });
+    const changes = new DocumentChangeNotifier();
+    changes.register(async () => {
+      throw new Error("eval domain down");
+    });
+
+    await expect(
+      makeService(deps, undefined, changes).processDocument("d1", 1),
+    ).resolves.toBeUndefined();
+    expect(deps.docsRepo.update).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "ready" }));
+  });
+
+  /** 未注入广播点（单测里直接 new、或未来某个局部模块图）时静默跳过，不炸主流程。 */
+  it("未注入 DocumentChangeNotifier 时不报错", async () => {
+    const deps = readyDeps();
+    deps.pipeline.run.mockResolvedValue({ chunkCount: 3, parsedText: "hello" });
+    await expect(makeService(deps).processDocument("d1", 1)).resolves.toBeUndefined();
   });
 });

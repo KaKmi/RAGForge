@@ -363,3 +363,27 @@ describe("KbRebuildService.onDocumentTerminal", () => {
     });
   });
 });
+
+// —— B1/F4：整库重建的 gold 过期广播（review P3：时机从入队移到解析完成）——
+
+describe("KbRebuildService 的 gold 过期广播", () => {
+  /**
+   * 重建会重切 KB 下**每一篇**文档，是系统里量最大的一次性 gold 过期事件。
+   * 但广播**不在这里**发：入队时切片还没换，提前置位会留下「用户在重建窗口内点
+   * 『确认仍有效』→ 重建完成后不再补发 → 静默失去过期提示」的洞（spec §4.2「完成后」）。
+   * 出口统一在 `IngestionService` 的每篇文档 ready 终态上，由 ingestion.service.spec.ts 钉住。
+   *
+   * 这条用例钉的是本服务侧的**否定式**：重建不得依赖任何广播依赖，也不得在入队时广播。
+   */
+  it("入队阶段不广播（本服务不再持有广播依赖）", async () => {
+    const deps = makeDeps();
+    deps.kbRepo.findById.mockResolvedValue({ id: "kb1", activeVersion: 1, buildingVersion: null });
+    deps.docsRepo.findByKb.mockResolvedValue([
+      { id: "d1", profileOverrideId: null },
+      { id: "d2", profileOverrideId: null },
+    ]);
+
+    await expect(makeService(deps).startRebuild("kb1")).resolves.toBeUndefined();
+    expect(deps.ingestion.createRun).toHaveBeenCalledTimes(2);
+  });
+});

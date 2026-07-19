@@ -37,6 +37,9 @@ const APP_SELECT = {
   name: applications.name,
   description: applications.description,
   enabled: applications.enabled,
+  // B1/F5：APP_SELECT 是显式列清单——漏了这列 toApplication 会拿到 undefined，
+  // 契约 evalGateEnabled: z.boolean() 会在响应校验处炸，或（不校验时）前端读到 undefined。
+  evalGateEnabled: applications.evalGateEnabled,
   productionConfigVersionId: applications.productionConfigVersionId,
   createdBy: applications.createdBy,
   updatedBy: applications.updatedBy,
@@ -162,7 +165,9 @@ export class ApplicationsRepository {
   }
   async updateBase(
     id: string,
-    patch: Partial<Pick<NewApplication, "name" | "description" | "enabled" | "updatedBy">>,
+    patch: Partial<
+      Pick<NewApplication, "name" | "description" | "enabled" | "evalGateEnabled" | "updatedBy">
+    >,
   ) {
     return (
       await this.db

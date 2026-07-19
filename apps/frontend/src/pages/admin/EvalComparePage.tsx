@@ -11,6 +11,7 @@ import {
   Spin,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
   type TableColumnsType,
@@ -18,9 +19,15 @@ import {
 import type {
   CompareMetricKey,
   EvalCompareResponse,
+  EvalGateStatus,
   EvalRunListItem,
 } from "@codecrush/contracts";
-import { EvalCompareIncomparableError, getEvalCompare, getEvalRuns } from "../../api/client";
+import {
+  EvalCompareIncomparableError,
+  getEvalCompare,
+  getEvalGate,
+  getEvalRuns,
+} from "../../api/client";
 import { downloadCsv, type CsvValue } from "../../utils/csv";
 import {
   COMPARABLE_RUN_STATUSES,
@@ -98,6 +105,8 @@ export default function EvalComparePage() {
   const [loading, setLoading] = useState(false);
   const [incomparable, setIncomparable] = useState(false);
   const [sidePair, setSidePair] = useState<{ seq: number; question: string } | null>(null);
+  // B1/F5：上线门禁态。默认「关 + 无 issue」＝不拦（与后端 fail-open 同向）。
+  const [gate, setGate] = useState<EvalGateStatus>({ enabled: false, issues: [] });
 
   // 选择器态：列出终态 run（缺 a/b 时用）。
   useEffect(() => {
@@ -127,6 +136,32 @@ export default function EvalComparePage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * B1/F5：拉门禁结论。走只读端点 `GET :id/eval-gate`，**不建 ReleaseCheck**——
+   * 用户还没点上线，不该为看一个按钮态就产生一次预演副作用。
+   *
+   * 五种 code 全部由后端给出，前端**不复算任何门禁规则**，只判「有没有 issue」。
+   * 取不到就当没门禁（fail-open，与后端同向）：前端多拦一层不会更安全，
+   * 只会在基础设施抖动时把人挡在门外。
+   */
+  useEffect(() => {
+    if (!data) return;
+    let alive = true;
+    // 先清空再取：切换 run 对时，上一对的门禁结论会在新数据落地到新结论到手之间
+    // 多渲染一帧——那一帧会把 A 对的「可上线」结论盖在 B 对身上。
+    setGate({ enabled: false, issues: [] });
+    void getEvalGate(data.b.applicationId, data.b.configVersionId)
+      .then((s) => {
+        if (alive) setGate(s);
+      })
+      .catch(() => {
+        if (alive) setGate({ enabled: false, issues: [] });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [data]);
 
   // 选择器：同评测集的终态 run。
   const comparableRuns = runs.filter((r) => COMPARABLE_RUN_STATUSES.includes(r.status));
@@ -222,6 +257,21 @@ export default function EvalComparePage() {
     });
   };
 
+  // 门禁开启且存在任一门禁 issue ⇒ 禁用引导按钮，原因取第一条。
+  const gateBlocked = gate.enabled && gate.issues.length > 0;
+  const gateReason = gate.issues[0]?.message ?? "";
+
+  /**
+   * 原型 `:621`「跳应用发布页，**发布卡片显示评测摘要**」——
+   * 结论参数在**门禁开与关两态下都要携带**（关闭态的价值就在于「始终可点 + 带着结论过去」）。
+   * overallDelta 可能为 null（某侧无已评用例），此时传空串而不是 0——
+   * NULL 不退化为 0，0 会被读成「持平」。
+   */
+  const releaseUrl =
+    `/admin/applications/${data.b.applicationId}?fromCompare=${a}_${b}` +
+    `&regressed=${data.summary.regressedCount}` +
+    `&delta=${data.summary.overallDelta ?? ""}`;
+
   return (
     <div>
       <Title level={4}>版本对比</Title>
@@ -294,9 +344,26 @@ export default function EvalComparePage() {
 
       <Flex gap={12} style={{ marginTop: 24 }}>
         <Button onClick={exportCsv}>导出报告</Button>
-        <Button type="primary" onClick={() => navigate(`/admin/applications/${data.b.applicationId}`)}>
-          通过评测，去上线 {data.b.configVersionLabel} →
-        </Button>
+        {/*
+          原型 §17.4（`:621`）：「门禁关:始终可点(跳发布页携带结论);
+          门禁开:不满足条件 disabled + 原因(「存在 5 条回退用例」)」。
+          判据取最简一致规则——门禁开启且存在任一门禁 issue ⇒ disabled，
+          原因取第一条。这条规则自动覆盖 REGRESSION/OVERALL_DROP/NO_RUN/
+          STALE_RUN/UNAVAILABLE 五种（原型 §8 是三项合取，无 run / 过期同样不满足）。
+          注意：这是**引导层**的硬，后端始终软放行——用户仍可从应用详情页正常上线。
+        */}
+        <Tooltip title={gateBlocked ? gateReason : ""}>
+          {/* disabled 的 Button 不派发鼠标事件，需外包一层才能触发 Tooltip */}
+          <span>
+            <Button
+              type="primary"
+              disabled={gateBlocked}
+              onClick={() => navigate(releaseUrl)}
+            >
+              通过评测，去上线 {data.b.configVersionLabel} →
+            </Button>
+          </span>
+        </Tooltip>
       </Flex>
 
       <Modal

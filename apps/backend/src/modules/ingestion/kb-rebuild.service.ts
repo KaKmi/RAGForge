@@ -82,6 +82,10 @@ export class KbRebuildService implements DocumentTerminalListener {
         } else {
           await this.ingestion.enqueue(doc.id, buildingVersion);
         }
+        // B1/F4：这里**不广播**。入队时切片还没被换掉，提前置位会让用户在重建窗口内点
+        // 「确认仍有效」清掉标志，而重建完成后不会再补一次广播——整库重建逐篇重切，
+        // 这个窗口是分钟级的。广播改挂在 `IngestionService` 的每篇文档 ready 终态上
+        // （spec §4.2「完成后」），两条路径共用同一个出口。
       } catch (err) {
         if (
           err instanceof ConflictException ||

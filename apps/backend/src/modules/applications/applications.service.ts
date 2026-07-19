@@ -16,6 +16,7 @@ import type {
   ApplicationDetail,
   ApplicationTag,
   CreateApplicationConfigVersionRequest,
+  EvalGateStatus,
   CreateApplicationRequest,
   PromptUsageEntry,
   ReleaseCheck,
@@ -23,6 +24,7 @@ import type {
   ResolvedApplicationConfig,
   UpdateApplicationRequest,
 } from "@codecrush/contracts";
+import { EVAL_GATE_ISSUE_CODES } from "@codecrush/contracts";
 import { KnowledgeBasesService } from "../knowledge-bases/knowledge-bases.service";
 import { ModelsService } from "../models/models.service";
 import { NodeContractRegistry } from "../node-runtime/contracts/registry";
@@ -31,6 +33,7 @@ import { RELEASE_CHECK_JOB, RELEASE_CHECK_QUEUE } from "../../platform/queue/que
 import type { Queue } from "../../platform/queue/queue.port";
 import { ApplicationsRepository, type ApplicationListRow } from "./applications.repository";
 import { computeFingerprint, type FingerprintInput } from "./fingerprint";
+import { normalizeIssueSeverity } from "./release-check.severity";
 import type { ApplicationConfigVersionRow, ReleaseCheckRow } from "./schema";
 
 const APPLICATION_TAG_CAP = 20;
@@ -58,6 +61,36 @@ interface ReleaseContext {
 
 /** E-W2b F6：应用删除守卫——返回拒绝理由（string）或 null（放行）。 */
 export type ApplicationDeletionGuard = (applicationId: string) => Promise<string | null>;
+
+/**
+ * B1/F5：评测门禁 issue 提供方。由 eval-runs 侧注册（注册表反转，同 ApplicationDeletionGuard）——
+ * applications **不知道** eval-runs，依赖方向保持 eval-runs → applications 单向。
+ */
+/** B1/F5：门禁取数的超时上限。超时 → 与读取失败同路，产出 UNAVAILABLE warning（仍放行）。 */
+const EVAL_GATE_TIMEOUT_MS = 5000;
+
+/**
+ * 超时包装。注意 `clearTimeout` 必须在 finally 里——否则即便 provider 先返回，
+ * 悬着的定时器也会把 Node 进程多吊住 5 秒（jest 里表现为 suite 结束后卡住）。
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`eval gate 取数超时（>${ms}ms）`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export type EvalGateProvider = (
+  applicationId: string,
+  configVersionId: string,
+) => Promise<ReleaseCheckIssue[]>;
 
 @Injectable()
 export class ApplicationsService {
@@ -130,6 +163,7 @@ export class ApplicationsService {
     if (req.name !== undefined) patch.name = req.name;
     if (req.description !== undefined) patch.description = req.description;
     if (req.enabled !== undefined) patch.enabled = req.enabled;
+    if (req.evalGateEnabled !== undefined) patch.evalGateEnabled = req.evalGateEnabled;
     let updated;
     try {
       updated = await this.repo.updateBase(id, { ...patch, updatedBy: actor });
@@ -420,53 +454,53 @@ export class ApplicationsService {
   private staticGate(version: ApplicationConfigVersionRow, ctx: ReleaseContext): ReleaseCheckIssue[] {
     const issues: ReleaseCheckIssue[] = [];
     // 1. ≥1 KB 且 embedding 模型一致
-    if (ctx.kbIds.length === 0) issues.push({ code: "NO_KB", message: "至少需要一个知识库" });
+    if (ctx.kbIds.length === 0) issues.push({ code: "NO_KB", message: "至少需要一个知识库", severity: "error" });
     else if (new Set(ctx.kbRows.map((k) => k.embeddingModelId)).size > 1)
-      issues.push({ code: "KB_EMBEDDING_MISMATCH", message: "知识库 embedding 模型不一致" });
+      issues.push({ code: "KB_EMBEDDING_MISMATCH", message: "知识库 embedding 模型不一致", severity: "error" });
     // 2/3/7. 四 PromptVersion 存在 + 节点归属 + 编译无错 + NodeRuntime 支持 contract
     for (const node of nodes) {
       const promptVersionId = version[NODE_COLUMNS[node].prompt] as string;
       const meta = ctx.promptMetas.get(node);
       if (!meta) {
-        issues.push({ code: "PROMPT_VERSION_MISSING", node, promptVersionId, message: `${node} 的 PromptVersion 不存在` });
+        issues.push({ code: "PROMPT_VERSION_MISSING", node, promptVersionId, message: `${node} 的 PromptVersion 不存在`, severity: "error" });
         continue;
       }
       if (meta.node !== node)
-        issues.push({ code: "PROMPT_NODE_MISMATCH", node, promptVersionId, message: `PromptVersion 归属 ${meta.node}，与 ${node} 不匹配` });
+        issues.push({ code: "PROMPT_NODE_MISMATCH", node, promptVersionId, message: `PromptVersion 归属 ${meta.node}，与 ${node} 不匹配`, severity: "error" });
       if (meta.compileStatus === "has_errors")
-        issues.push({ code: "PROMPT_COMPILE_ERROR", node, promptVersionId, action: "OPEN_PROMPT_TRY_RUN", message: `${node} 的 Prompt 存在编译错误` });
+        issues.push({ code: "PROMPT_COMPILE_ERROR", node, promptVersionId, action: "OPEN_PROMPT_TRY_RUN", message: `${node} 的 Prompt 存在编译错误`, severity: "error" });
       try {
         NodeContractRegistry.resolve(node, meta.contractVersion);
       } catch {
-        issues.push({ code: "CONTRACT_UNSUPPORTED", node, promptVersionId, message: `NodeRuntime 不支持 ${node} 的 contractVersion ${meta.contractVersion}` });
+        issues.push({ code: "CONTRACT_UNSUPPORTED", node, promptVersionId, message: `NodeRuntime 不支持 ${node} 的 contractVersion ${meta.contractVersion}`, severity: "error" });
       }
     }
     // 4. 四 LLM 模型存在 + 启用 + 类型
     for (const node of nodes) {
       const model = ctx.modelMetas.get(node);
-      if (!model) issues.push({ code: "MODEL_MISSING", node, message: `${node} 模型不存在` });
+      if (!model) issues.push({ code: "MODEL_MISSING", node, message: `${node} 模型不存在`, severity: "error" });
       else if (model.type !== "llm" || !model.enabled)
-        issues.push({ code: "MODEL_INVALID", node, message: `${node} 模型必须是启用的 llm` });
+        issues.push({ code: "MODEL_INVALID", node, message: `${node} 模型必须是启用的 llm`, severity: "error" });
     }
     // 5. rerank 开启则模型合法
     if (version.rerankModelId) {
-      if (!ctx.rerank) issues.push({ code: "RERANK_MISSING", message: "rerank 模型不存在" });
+      if (!ctx.rerank) issues.push({ code: "RERANK_MISSING", message: "rerank 模型不存在", severity: "error" });
       else if (ctx.rerank.type !== "rerank" || !ctx.rerank.enabled)
-        issues.push({ code: "RERANK_INVALID", message: "rerank 模型必须是启用的 rerank" });
+        issues.push({ code: "RERANK_INVALID", message: "rerank 模型必须是启用的 rerank", severity: "error" });
     }
     // 6. 值域（对存量版本再查一遍，防旧版本越界）
     const r = version.retrievalParams;
-    if (r.topN > r.topK) issues.push({ code: "TOPN_GT_TOPK", message: "topN 不能大于 topK" });
+    if (r.topN > r.topK) issues.push({ code: "TOPN_GT_TOPK", message: "topN 不能大于 topK", severity: "error" });
     if (r.vectorWeight < 0 || r.vectorWeight > 1)
-      issues.push({ code: "VECTOR_WEIGHT_RANGE", message: "vectorWeight 越界 [0,1]" });
+      issues.push({ code: "VECTOR_WEIGHT_RANGE", message: "vectorWeight 越界 [0,1]", severity: "error" });
     if (r.rerankThreshold != null && (r.rerankThreshold < 0 || r.rerankThreshold > 1))
-      issues.push({ code: "RERANK_THRESHOLD_RANGE", message: "rerankThreshold 越界 [0,1]" });
+      issues.push({ code: "RERANK_THRESHOLD_RANGE", message: "rerankThreshold 越界 [0,1]", severity: "error" });
     for (const node of nodes) {
       const p = version.nodeParams[node];
       if (p.temperature < 0 || p.temperature > 2)
-        issues.push({ code: "TEMPERATURE_RANGE", node, message: `${node} temperature 越界 [0,2]` });
+        issues.push({ code: "TEMPERATURE_RANGE", node, message: `${node} temperature 越界 [0,2]`, severity: "error" });
       if (p.topP < 0 || p.topP > 1)
-        issues.push({ code: "TOPP_RANGE", node, message: `${node} topP 越界 [0,1]` });
+        issues.push({ code: "TOPP_RANGE", node, message: `${node} topP 越界 [0,1]`, severity: "error" });
     }
     return issues;
   }
@@ -522,7 +556,7 @@ export class ApplicationsService {
       configVersionId: row.configVersionId,
       configFingerprint: row.configFingerprint,
       status: row.status,
-      issues: row.issues,
+      issues: normalizeIssueSeverity(row.issues),
       sampleSummary: row.sampleSummary,
       startedAt: row.startedAt?.toISOString() ?? null,
       finishedAt: row.finishedAt?.toISOString() ?? null,
@@ -536,6 +570,86 @@ export class ApplicationsService {
    * ——applications 暴露端口、不知道 eval-runs。未来版本删除端点出现时同一注册表复用。
    */
   private readonly deletionGuards: ApplicationDeletionGuard[] = [];
+
+  /** B1/F5：评测门禁 issue 提供方（由 eval-runs 侧注册）。未注册 = 无门禁结论。 */
+  private evalGateProvider: EvalGateProvider | null = null;
+
+  registerEvalGateProvider(provider: EvalGateProvider): void {
+    // 覆盖而非追加（与 deletionGuards 的 push 刻意不同）：门禁结论只有一个才有意义，
+    // 多个 provider 互相覆盖是配置错误，不该静默发生。
+    if (this.evalGateProvider) {
+      this.logger.warn("eval gate provider 被重复注册，后注册者覆盖前者");
+    }
+    this.evalGateProvider = provider;
+  }
+
+  /**
+   * 门禁 issue 收集。**fail-open 的落点就在这里**：
+   *  · 未注册 provider（只起 applications 的部署）→ 空数组，不炸；
+   *  · provider 抛异常（ClickHouse/PG 抖动）→ 降级成一条 UNAVAILABLE **warning**，绝不阻断。
+   *
+   * 返回值恒为 warning 级 ⇒ hasBlockingIssue 判否 ⇒ ReleaseCheck 仍 passed ⇒
+   * publishProduction 照常放行。这是「软提示」不变量的机器保证。
+   */
+  async collectEvalGateIssues(
+    applicationId: string,
+    configVersionId: string,
+  ): Promise<ReleaseCheckIssue[]> {
+    if (!this.evalGateProvider) {
+      // 未注册有两种可能：只起 applications 的部署（预期内），或 eval-runs 侧注册器
+      // 还没跑完 onModuleInit（启动窗口，毫秒级）。两种都 fail-open 返回空，
+      // 但必须留一条日志——否则「没有门禁结论」与「门禁说没问题」在 UI 上无从区分，
+      // 正是 UNAVAILABLE 文案要避免的那种误读。
+      this.logger.warn(
+        `eval gate provider 未注册，本次不产出门禁结论 app=${applicationId} version=${configVersionId}`,
+      );
+      return [];
+    }
+    try {
+      // 超时兜底：门禁跑在 ReleaseCheck 的异步 processor 里，取数要读两侧 run 的全量
+      // 结果集。评测集一大就可能拖很久，而这个 job 唯一的兜底是 15 分钟的僵尸窗口。
+      // 超时按「读不到」处理 —— 与其让用户对着「预演中」干等，不如明说「未做回退判断」。
+      const issues = await withTimeout(
+        this.evalGateProvider(applicationId, configVersionId),
+        EVAL_GATE_TIMEOUT_MS,
+      );
+      // 纵深防御：provider 万一产出了 error 级 issue，也不得让它获得阻断力——
+      // 门禁按设计只做软提示，阻断权属于 staticGate/预演。
+      // 降级要留痕：静默改写会把「provider 开始产 error」这种真 bug 一并吞掉。
+      for (const issue of issues) {
+        if (issue.severity && issue.severity !== "warning") {
+          this.logger.warn(
+            `eval gate provider 产出了非 warning 级 issue（已强制降级）：${issue.code}/${issue.severity}`,
+          );
+        }
+      }
+      return issues.map((issue) => ({ ...issue, severity: "warning" as const }));
+    } catch (err) {
+      this.logger.warn(`eval gate provider failed app=${applicationId}: ${String(err)}`);
+      return [
+        {
+          code: EVAL_GATE_ISSUE_CODES.UNAVAILABLE,
+          message: "评测数据暂不可用，未做回退判断",
+          severity: "warning",
+        },
+      ];
+    }
+  }
+
+  /** B1/F5：屏4「去上线」按钮态的数据来源。只读，不建 ReleaseCheck、不产生副作用。 */
+  async getEvalGateStatus(id: string, configVersionId: string): Promise<EvalGateStatus> {
+    const row = await this.mustFind(id);
+    return {
+      enabled: row.evalGateEnabled,
+      issues: await this.collectEvalGateIssues(id, configVersionId),
+    };
+  }
+
+  /** B1/F5：门禁基线侧要知道「当前 production 是哪个配置版本」。 */
+  async getProductionConfigVersionId(id: string): Promise<string | null> {
+    const row = await this.repo.findApplicationById(id);
+    return row?.productionConfigVersionId ?? null;
+  }
 
   registerDeletionGuard(guard: ApplicationDeletionGuard): void {
     this.deletionGuards.push(guard);
@@ -672,6 +786,7 @@ export class ApplicationsService {
       name: row.name,
       description: row.description,
       enabled: row.enabled,
+      evalGateEnabled: row.evalGateEnabled,
       productionVersion: row.productionVersion,
       productionConfigVersionId: row.productionConfigVersionId,
       latestVersion: row.latestVersion,

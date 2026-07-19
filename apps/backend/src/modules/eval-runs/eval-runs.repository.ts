@@ -115,6 +115,15 @@ const OVERALL_SCORE = sql<number | null>`(
 const ACTIVE_STATUSES = ["queued", "running"] as const;
 
 /**
+ * B1/F5 门禁认可的「有结论的 run」终态。
+ *
+ * 刻意**不含** `budget_stop`（compare() 的 TERMINAL 含它）：预算中断的 run 只跑了一部分用例，
+ * 拿它当门禁基线会用一个残缺样本给出「没有回退」的结论——宁可报 NO_RUN 让人去看，
+ * 也不给一个凭空显得干净的假结论。spec §1.4 逐字：`status IN ('done','partial')`。
+ */
+const GATE_FINISHED_STATUSES = ["done", "partial"] as const;
+
+/**
  * 「活跃槽位」唯一索引冲突（018 §12 缺口 13）。形状照
  * `ingestion/processing-runs.repository.ts:11-15` 的 `isActiveRunConflict`。
  *
@@ -143,6 +152,53 @@ export class EvalRunsRepository {
 
   async findAggregateById(id: string): Promise<EvalRunAggregate | undefined> {
     return (await this.selectAggregates(id))[0];
+  }
+
+  /**
+   * B1/F5：候选侧（B）——该应用该配置版本的最新终态 run。
+   * 先按 finishedAt 降序：新鲜度判定用的就是 finishedAt，排序键与语义必须一致，
+   * 否则「后创建但先结束」的 run 会顶掉真正最新的结论。createdAt 作同值兜底。
+   */
+  async findLatestFinishedRun(
+    applicationId: string,
+    configVersionId: string,
+  ): Promise<EvalRunRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(evalRuns)
+      .where(
+        and(
+          eq(evalRuns.applicationId, applicationId),
+          eq(evalRuns.configVersionId, configVersionId),
+          inArray(evalRuns.status, [...GATE_FINISHED_STATUSES]),
+        ),
+      )
+      .orderBy(desc(evalRuns.finishedAt), desc(evalRuns.createdAt))
+      .limit(1);
+    return rows[0];
+  }
+
+  /**
+   * B1/F5：基线侧（A）——同一评测集内、当前 production 配置版本的最新终态 run。
+   * 限定 setId 是可比性的前提（isSameCaseSet 还会再校验用例版本集合）。
+   */
+  async findLatestFinishedRunInSet(
+    setId: string,
+    configVersionId: string,
+  ): Promise<EvalRunRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(evalRuns)
+      .where(
+        and(
+          eq(evalRuns.setId, setId),
+          eq(evalRuns.configVersionId, configVersionId),
+          inArray(evalRuns.status, [...GATE_FINISHED_STATUSES]),
+        ),
+      )
+      .orderBy(desc(evalRuns.finishedAt), desc(evalRuns.createdAt))
+      .limit(1);
+    return rows[0];
   }
 
   async findRunById(id: string): Promise<EvalRunRow | undefined> {

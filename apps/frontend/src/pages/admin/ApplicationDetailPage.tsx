@@ -6,7 +6,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -186,6 +186,19 @@ function FieldRow({ label, children }: { label: ReactNode; children: ReactNode }
 export default function ApplicationDetailPage() {
   const { appId = "" } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  /**
+   * B1/F5：屏4 跳过来时携带的评测结论（原型 `:621`「发布卡片显示评测摘要」）。
+   * `delta` 可能是空串——overallDelta 为 null（某侧无已评用例）时屏4 刻意传空，
+   * **NULL 不退化为 0**（0 会被读成「持平」，那是一句没有证据的断言）。
+   */
+  const compareSummary = searchParams.get("fromCompare")
+    ? {
+        regressed: Number(searchParams.get("regressed") ?? 0),
+        delta: searchParams.get("delta") || "—",
+      }
+    : null;
 
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -902,6 +915,23 @@ export default function ApplicationDetailPage() {
             }}
           >
             <div style={{ fontSize: 13, fontWeight: 600, color: "rgba(0,0,0,.8)" }}>上线</div>
+            {/*
+              原型 §17.4（`:621`）：「跳应用发布页，**发布卡片显示评测摘要**」。
+              屏4 的「去上线」按钮无论门禁开关如何都会携带结论参数过来，这里把它显示出来
+              ——否则「携带结论」这一半等于没做，用户跳过来只看到一个普通发布卡片。
+            */}
+            {compareSummary && (
+              <Alert
+                type={compareSummary.regressed > 0 ? "warning" : "info"}
+                showIcon
+                message="来自版本对比的评测结论"
+                description={
+                  <div style={{ fontSize: 12, lineHeight: 1.8 }}>
+                    综合 Δ {compareSummary.delta} · 回退用例 {compareSummary.regressed} 条
+                  </div>
+                }
+              />
+            )}
             <div style={{ fontSize: 12, color: "rgba(0,0,0,.5)", lineHeight: 1.7 }}>
               {detail.productionVersion != null ? (
                 <>
@@ -1281,6 +1311,53 @@ function ReleaseCheckResult({ check }: { check: ReleaseCheck }) {
             ? "还有问题没解决，暂不能上线"
             : `检查状态：${check.status}`}
       </div>
+      {/*
+        B1/F5：**无 node 的 issue 的渲染出口**。
+        下面的节点卡片按 `i.node === node` 过滤，而评测门禁 issue 天然没有 node 字段
+        ——不在这里单独渲染，它们一条都显示不出来，门禁做了等于没做。
+
+        分区判据用**排除法**（`severity !== "warning"` 才算阻断）：
+        `toReleaseCheck` 是手写映射，库中历史行不过 Zod，severity 可能是 undefined；
+        若写成白名单 `=== "error"`，历史的阻断 issue 会被误渲染成「不阻断的提示」。
+      */}
+      {(() => {
+        const globalIssues = check.issues.filter((i) => !i.node);
+        if (globalIssues.length === 0) return null;
+        const blocking = globalIssues.filter((i) => i.severity !== "warning");
+        const advisory = globalIssues.filter((i) => i.severity === "warning");
+        return (
+          <>
+            {blocking.length > 0 && (
+              <Alert
+                type="error"
+                showIcon
+                message="发布检查未通过"
+                description={
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {blocking.map((i) => (
+                      <li key={i.code}>{i.message}</li>
+                    ))}
+                  </ul>
+                }
+              />
+            )}
+            {advisory.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                message="评测提示（不阻断上线）"
+                description={
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {advisory.map((i) => (
+                      <li key={i.code}>{i.message}</li>
+                    ))}
+                  </ul>
+                }
+              />
+            )}
+          </>
+        );
+      })()}
       {PROMPT_NODES.map((node) => {
         const s = summary?.[node];
         const nodeIssues = check.issues.filter((i) => i.node === node);

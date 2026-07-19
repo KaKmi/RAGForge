@@ -8,6 +8,7 @@ import type {
   CreateEvalCaseRequest,
   CreateEvalSetRequest,
   EvalCase,
+  EvalCaseRef,
   EvalCaseStatus,
   EvalSet,
   ImportEvalCasesRequest,
@@ -63,6 +64,11 @@ function toEvalCase({ case: row, version }: EvalCaseWithVersion): EvalCase {
 @Injectable()
 export class EvalSetsService {
   constructor(private readonly repo: EvalSetsRepository) {}
+
+  /** B1/F2：这条 trace 已进过哪些评测集（Trace 详情按钮两态）。未入集返回 []，不是 null。 */
+  async findCaseRefsBySourceTrace(sourceTraceId: string): Promise<EvalCaseRef[]> {
+    return this.repo.findCaseRefsBySourceTrace(sourceTraceId);
+  }
 
   async list(): Promise<EvalSet[]> {
     return (await this.repo.listAggregates()).map(toEvalSet);
@@ -200,6 +206,32 @@ export class EvalSetsService {
 
   async removeCase(setId: string, caseId: string): Promise<void> {
     if (!(await this.repo.softDeleteCase(setId, caseId))) throw new NotFoundException("用例不存在");
+  }
+
+  /**
+   * B1/F4：文档变更 → 把引用它的用例标「gold 可能过期」。
+   *
+   * 由 `GoldStaleNotifier` 经 documents 侧的注册表回调进来（documents 不认识 eval 域）。
+   * 返回受影响行数，仅供调用方记日志——通知失败不影响文档主流程。
+   */
+  async markGoldStaleByDocId(docId: string): Promise<number> {
+    return await this.repo.markGoldStaleByDocId(docId);
+  }
+
+  /**
+   * B1/F4：人工「确认仍有效」（原型 §18.B）。只清标志位，**不产生新版本**——
+   * gold 内容一个字都没改，凭空升一个版本会污染版本史，也会让历史 run 的引用变得难读。
+   */
+  async confirmGold(setId: string, caseId: string): Promise<EvalCase> {
+    const cleared = await this.repo.clearGoldStale(setId, caseId);
+    if (!cleared) throw new NotFoundException("用例不存在");
+    // 再查一次不是多余：clearGoldStale 只 returning 身份行（eval_cases），
+    // 而 EvalCase 响应还需要**当前版本行**的内容（question/goldPoints/goldDocRefs/tags）。
+    // 第二个 404 分支实际只在「清完标志的同一瞬间被软删」这一交错下命中——
+    // 那时标志位已清但行正在消失，返回 404 是对的。
+    const found = await this.repo.findCase(setId, caseId);
+    if (!found) throw new NotFoundException("用例不存在");
+    return toEvalCase(found);
   }
 
   /**

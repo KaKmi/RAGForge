@@ -66,6 +66,7 @@ function service(overrides: Record<string, unknown> = {}) {
       name: "售后",
       description: "",
       enabled: true,
+      evalGateEnabled: false,
       productionConfigVersionId: null,
       productionVersion: null,
       latestVersion: 1,
@@ -134,7 +135,10 @@ function service(overrides: Record<string, unknown> = {}) {
     })),
     listVersions: jest.fn(async () => []),
   };
-  const releaseQueue = { publish: jest.fn(async () => undefined), subscribe: jest.fn(async () => undefined) };
+  const releaseQueue = {
+    publish: jest.fn(async () => undefined),
+    subscribe: jest.fn(async () => undefined),
+  };
   return {
     app: new ApplicationsService(
       repo as never,
@@ -235,17 +239,25 @@ describe("ApplicationsService", () => {
   });
   it("rejects reserved words production/v at the service boundary", async () => {
     const { app, repo } = service();
-    await expect(app.moveTag("a1", "production", "v1", "u")).rejects.toBeInstanceOf(BadRequestException);
+    await expect(app.moveTag("a1", "production", "v1", "u")).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
     await expect(app.moveTag("a1", "v", "v1", "u")).rejects.toBeInstanceOf(BadRequestException);
     expect(repo.upsertTag).not.toHaveBeenCalled();
   });
   it("rejects a 21st NEW tag but allows moving an existing tag past the cap", async () => {
-    const capped = service({ countTags: jest.fn(async () => 20), tagExists: jest.fn(async () => false) });
+    const capped = service({
+      countTags: jest.fn(async () => 20),
+      tagExists: jest.fn(async () => false),
+    });
     await expect(capped.app.moveTag("a1", "qa21", "v1", "u")).rejects.toBeInstanceOf(
       UnprocessableEntityException,
     );
     expect(capped.repo.upsertTag).not.toHaveBeenCalled();
-    const moving = service({ countTags: jest.fn(async () => 20), tagExists: jest.fn(async () => true) });
+    const moving = service({
+      countTags: jest.fn(async () => 20),
+      tagExists: jest.fn(async () => true),
+    });
     await expect(moving.app.moveTag("a1", "qa1", "v2", "u")).resolves.toBeDefined();
     expect(moving.repo.upsertTag).toHaveBeenCalled();
   });
@@ -257,7 +269,11 @@ describe("ApplicationsService", () => {
   });
   it("maps a concurrent composite-FK violation (23503) to 404", async () => {
     const fkErr = Object.assign(new Error("fk"), { code: "23503" });
-    const { app } = service({ upsertTag: jest.fn(async () => { throw fkErr; }) });
+    const { app } = service({
+      upsertTag: jest.fn(async () => {
+        throw fkErr;
+      }),
+    });
     await expect(app.moveTag("a1", "qa1", "v1", "u")).rejects.toBeInstanceOf(NotFoundException);
   });
   it("removes a tag case-insensitively and 404s when absent", async () => {
@@ -271,7 +287,9 @@ describe("ApplicationsService", () => {
   // review P2-1：直接调用方（大写保留字）必须被 service 归一后拦下，不得落 production 等价标签行
   it("normalizes a direct-caller uppercase reserved word and rejects it", async () => {
     const { app, repo } = service();
-    await expect(app.moveTag("a1", "Production", "v1", "u")).rejects.toBeInstanceOf(BadRequestException);
+    await expect(app.moveTag("a1", "Production", "v1", "u")).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
     expect(repo.upsertTag).not.toHaveBeenCalled();
   });
 
@@ -334,19 +352,27 @@ describe("ApplicationsService", () => {
     s.repo.findReleaseCheckById = jest.fn(async () =>
       futureCheck(fp, { expiresAt: new Date(Date.now() - 1000) }),
     );
-    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(ConflictException);
+    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(
+      ConflictException,
+    );
   });
   it("publish：fingerprint 失配（依赖已变）→ 409", async () => {
     const s = service();
     s.repo.findReleaseCheckById = jest.fn(async () => futureCheck("stale-fingerprint"));
-    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(ConflictException);
+    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(
+      ConflictException,
+    );
     expect(s.repo.casProduction).not.toHaveBeenCalled();
   });
   it("publish：check 归属异版本 → 404", async () => {
     const s = service();
     const fp = await s.app.computeVersionFingerprint(version as never);
-    s.repo.findReleaseCheckById = jest.fn(async () => futureCheck(fp, { configVersionId: "other" }));
-    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(NotFoundException);
+    s.repo.findReleaseCheckById = jest.fn(async () =>
+      futureCheck(fp, { configVersionId: "other" }),
+    );
+    await expect(s.app.publishProduction("a1", publishReq, "u")).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
   it("publish：CAS 并发冲突 → 409；归属守卫失败 → 400", async () => {
     const conflict = service({ casProduction: jest.fn(async () => "cas_conflict") });
@@ -379,6 +405,7 @@ describe("ApplicationsService", () => {
     name: "售后",
     description: "",
     enabled: true,
+    evalGateEnabled: false,
     productionConfigVersionId: "v1",
     productionVersion: 1,
     latestVersion: 1,
@@ -400,10 +427,14 @@ describe("ApplicationsService", () => {
       findApplicationById: jest.fn(async () => undefined),
       findBySlug: jest.fn(async () => ({ id: "a1", deletedAt: now })),
     });
-    await expect(softDeleted.app.resolvePublic("after-sale")).rejects.toBeInstanceOf(NotFoundException);
+    await expect(softDeleted.app.resolvePublic("after-sale")).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
   it("resolvePublic：停用 → 403；production 缺失 → 404", async () => {
-    const disabled = service({ findApplicationById: jest.fn(async () => appRow({ enabled: false })) });
+    const disabled = service({
+      findApplicationById: jest.fn(async () => appRow({ enabled: false })),
+    });
     await expect(disabled.app.resolvePublic("a1")).rejects.toBeInstanceOf(ForbiddenException);
     const unpublished = service({
       findApplicationById: jest.fn(async () => appRow({ productionConfigVersionId: null })),
@@ -460,7 +491,9 @@ describe("ApplicationsService", () => {
     };
     const ok = service({ findReleaseCheckById: jest.fn(async () => row) });
     await expect(ok.app.getReleaseCheck("a1", "rc1")).resolves.toMatchObject({ status: "passed" });
-    const wrong = service({ findReleaseCheckById: jest.fn(async () => ({ ...row, applicationId: "other" })) });
+    const wrong = service({
+      findReleaseCheckById: jest.fn(async () => ({ ...row, applicationId: "other" })),
+    });
     await expect(wrong.app.getReleaseCheck("a1", "rc1")).rejects.toBeInstanceOf(NotFoundException);
   });
 });

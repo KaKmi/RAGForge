@@ -8,6 +8,7 @@ import {
   EVAL_RUN_QUEUE,
   EVALUATION_QUEUE,
   INGESTION_QUEUE,
+  MANUAL_SCORE_QUEUE,
   QUEUE_CONSUMER_ROLES,
   RELEASE_CHECK_QUEUE,
 } from "./queue.constants";
@@ -56,13 +57,26 @@ function gatedQueue(
         gatedQueue(boss, config, "evaluation"),
     },
     {
+      // B1/F3：人工「立即评测」队列。api 角色（同 releaseCheck），不与 evaluation 共用 token。
+      provide: MANUAL_SCORE_QUEUE,
+      inject: [PG_BOSS_INSTANCE, AppConfigService],
+      useFactory: (boss: PgBoss, config: AppConfigService) =>
+        gatedQueue(boss, config, "manualScore"),
+    },
+    {
       // E-W2a：离线 run 队列（018 决策 A）。同 release-check/evaluation，各自一个 adapter 实例。
       provide: EVAL_RUN_QUEUE,
       inject: [PG_BOSS_INSTANCE, AppConfigService],
       useFactory: (boss: PgBoss, config: AppConfigService) => gatedQueue(boss, config, "evalRun"),
     },
   ],
-  exports: [INGESTION_QUEUE, RELEASE_CHECK_QUEUE, EVALUATION_QUEUE, EVAL_RUN_QUEUE],
+  exports: [
+    INGESTION_QUEUE,
+    RELEASE_CHECK_QUEUE,
+    EVALUATION_QUEUE,
+    MANUAL_SCORE_QUEUE,
+    EVAL_RUN_QUEUE,
+  ],
 })
 export class QueueModule implements OnModuleInit, OnModuleDestroy {
   constructor(@Inject(PG_BOSS_INSTANCE) private readonly boss: PgBoss) {}

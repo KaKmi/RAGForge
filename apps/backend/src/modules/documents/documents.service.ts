@@ -11,6 +11,7 @@ import type {
 import { BLOB_STORE } from "../../platform/storage/blob-store.constants";
 import type { BlobStore } from "../../platform/storage/blob-store.port";
 import { AppConfigService } from "../../platform/config/config.service";
+import { DocumentChangeNotifier } from "../../platform/events/document-change.notifier";
 import { DocumentsRepository } from "./documents.repository";
 import { KnowledgeBasesRepository } from "../knowledge-bases/knowledge-bases.repository";
 import { ChunksRepository } from "../chunks/chunks.repository";
@@ -89,7 +90,27 @@ export class DocumentsService {
     private readonly config: AppConfigService,
     private readonly runsRepo: ProcessingRunsRepository,
     @Inject(PROFILE_REGISTRY) private readonly registry: ProfileRegistry,
+    private readonly changes: DocumentChangeNotifier,
   ) {}
+
+  /**
+   * B1/F4：文档变更广播。注册表住在**平台层** `DocumentChangeNotifier` 而不是本服务上——
+   * 整库重建（`KbRebuildService`）绕过本服务直接调 ingestion，是量最大的一次过期事件；
+   * 注册表挂在这里就会漏掉它。详见 `platform/events/document-change.notifier.ts`。
+   *
+   * 保留这两个方法是为了让调用方仍读得懂「文档域会通知谁」，实现只是转发。
+   *
+   * 【时机】本服务只在 `remove` 广播——删除是**同步的终态**，文档当场就没了。
+   * 「重解析/重建」这类异步路径的广播挂在 `IngestionService` 的 ready 终态上
+   * （spec §4.2「二者完成后需通知 eval 域」），不在入队时发。
+   */
+  registerGoldStaleNotifier(fn: (docId: string) => Promise<void>): void {
+    this.changes.register(fn);
+  }
+
+  private async notifyGoldStale(docId: string): Promise<void> {
+    await this.changes.notifyChanged(docId);
+  }
 
   // M4.1 入库分流：开启 Profile 特性走新 Run 路径（建冻结快照 Run + 入队），否则 legacy chunkTemplate 入队。
   private async startIngestion(documentId: string, targetVersion: number): Promise<void> {
@@ -192,6 +213,10 @@ export class DocumentsService {
     } else {
       await this.ingestion.enqueue(id, targetVersion);
     }
+    // B1/F4：这里**不广播**。重解析只是入队，此刻切片内容一个字都没变；
+    // 广播挂在 `IngestionService` 的 ready 终态上（spec §4.2「完成后」）。
+    // 曾在此处广播，留下的窗口是：用户在解析期间点「确认仍有效」清掉标志 →
+    // 解析随后完成、内容真换了 → 不会再有第二次广播 → 该用例静默失去过期提示。
     return this.withCount(await this.mustFind(id));
   }
 
@@ -250,6 +275,8 @@ export class DocumentsService {
       // 孤儿 blob 是可接受的轻量代价（spec.md 决策）：不让对象存储瞬时故障阻塞文档删除
     }
     await this.repo.delete(id);
+    // B1/F4：文档没了，引用它的 gold 一定要人工复核（绝不自动改 gold —— 原型 §7）。
+    await this.notifyGoldStale(id);
   }
 
   private async mustFind(id: string): Promise<DocumentRow> {

@@ -169,3 +169,18 @@ export const ImportEvalCasesResponseSchema = z.object({
   errors: z.array(z.object({ row: z.number().int().positive(), message: z.string() })),
 });
 export type ImportEvalCasesResponse = z.infer<typeof ImportEvalCasesResponseSchema>;
+
+/** B1/F2：Trace 详情「加入评测集」按钮的两态判据——该 trace 已进过哪些集。 */
+export const EvalCaseRefSchema = z.strictObject({
+  setId: z.string().min(1),
+  setName: z.string().min(1),
+  caseId: z.string().min(1),
+});
+export type EvalCaseRef = z.infer<typeof EvalCaseRefSchema>;
+export const EvalCaseRefListResponseSchema = z.array(EvalCaseRefSchema);
+export type EvalCaseRefListResponse = z.infer<typeof EvalCaseRefListResponseSchema>;
+
+export const EvalCaseRefQuerySchema = z.strictObject({
+  sourceTraceId: z.string().regex(/^[a-f0-9]{32}$/i),
+});
+export type EvalCaseRefQuery = z.infer<typeof EvalCaseRefQuerySchema>;

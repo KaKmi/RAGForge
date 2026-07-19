@@ -27,6 +27,8 @@ export const applications = pgTable("applications", {
   name: text("name").notNull().unique(),
   description: text("description").notNull().default(""),
   enabled: boolean("enabled").notNull().default(true),
+  /** B1/F5：上线门禁开关。默认 false（原型 §8「默认关(仅提示)」）。 */
+  evalGateEnabled: boolean("eval_gate_enabled").notNull().default(false),
   // Circular ownership is validated transactionally by the applications service.
   productionConfigVersionId: uuid("production_config_version_id"),
   deletedAt: timestamp("deleted_at"),

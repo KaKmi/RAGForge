@@ -5,12 +5,14 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import type { ChunkTemplate, DocumentType, ProcessingProfileRef } from "@codecrush/contracts";
 import { BLOB_STORE } from "../../platform/storage/blob-store.constants";
 import type { BlobStore } from "../../platform/storage/blob-store.port";
 import { AppConfigService } from "../../platform/config/config.service";
+import { DocumentChangeNotifier } from "../../platform/events/document-change.notifier";
 import { INGESTION_QUEUE } from "../../platform/queue/queue.constants";
 import type { Queue } from "../../platform/queue/queue.port";
 import { DocumentsRepository } from "../documents/documents.repository";
@@ -65,7 +67,34 @@ export class IngestionService {
     @Inject(PROFILE_REGISTRY) private readonly registry: ProfileRegistry,
     private readonly config: AppConfigService,
     private readonly moduleRef?: ModuleRef,
+    // B1/F4：gold 过期广播。@Optional 是为了单测里直接 new 本服务的既有装配仍成立
+    // （不传即不广播，与 moduleRef 同一取舍）；Nest 侧由 IngestionModule 的 EventsModule 提供。
+    @Optional() private readonly changes?: DocumentChangeNotifier,
   ) {}
+
+  /**
+   * B1/F4：文档内容**真的换掉之后**才广播 gold 过期（spec §4.2 逐字「二者完成后需通知 eval 域」）。
+   *
+   * 为什么不在入队时广播（那是第一版的做法）：`triggerParse` / `startRebuild` 只是把任务
+   * 丢进队列，此刻切片内容一个字都没变。用户若在解析窗口内点「确认仍有效」清掉标志，
+   * 解析随后完成、内容真换了，而**不会再有第二次广播**——那条用例从此静默失去过期提示。
+   * 整库重建逐篇重切，这个窗口是分钟级的，不是理论值。
+   *
+   * 只在 `ready` 广播、不在 `failed` 广播：失败时旧切片原封不动（chunkVersion 未前移），
+   * 内容没变就不该报过期——顺带消掉了入队即广播的那类假阳性。
+   *
+   * 广播失败只记日志（`DocumentChangeNotifier` 内部已逐监听方自吞），绝不影响已落地的文档终态。
+   */
+  private async notifyContentReplaced(documentId: string): Promise<void> {
+    if (!this.changes) return;
+    try {
+      await this.changes.notifyChanged(documentId);
+    } catch (err) {
+      this.logger.warn(
+        `文档变更广播失败 doc=${documentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   // 文档到达终态（ready/failed）后回调重建监听器，检查全库重建是否可原子切换。
   // 懒解析：非 Nest 场景（单测直接 new，无 moduleRef）时短路为 no-op，不影响单文档处理逻辑。
@@ -110,6 +139,8 @@ export class IngestionService {
       endedAt: null,
     });
 
+    // B1/F4：只有走到 ready 才算「内容真的换了」，见 notifyContentReplaced。
+    let contentReplaced = false;
     try {
       const kb = await this.kbRepo.findById(doc.kbId);
       const blob = await this.blobStore.get(doc.blobKey);
@@ -155,6 +186,7 @@ export class IngestionService {
         startedAt: nowIso(),
         endedAt: nowIso(),
       });
+      contentReplaced = true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this.docsRepo.update(documentId, { status: "failed", error: message });
@@ -177,6 +209,7 @@ export class IngestionService {
     // 终态回调：成功（ready）与失败（failed）都是终态（007 拍板 failed 亦终态，不卡住重建切换）。
     // 单一调用点放在 try/catch 之后：回调抛错既不会把已 ready 的文档误改成 failed（AC3），
     // 也不会二次触发；notifyDocumentTerminal 内部自吞异常，双保险。
+    if (contentReplaced) await this.notifyContentReplaced(documentId);
     await this.notifyDocumentTerminal(doc.kbId);
   }
 
@@ -285,6 +318,8 @@ export class IngestionService {
       endedAt: null,
     });
 
+    // B1/F4：只有走到 ready 才算「内容真的换了」，见 notifyContentReplaced。
+    let contentReplaced = false;
     try {
       const kb = await this.kbRepo.findById(run.kbId);
       const blob = await this.blobStore.get(doc.blobKey);
@@ -332,6 +367,7 @@ export class IngestionService {
         startedAt: nowIso(),
         endedAt: nowIso(),
       });
+      contentReplaced = true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this.runsRepo.update(runId, { status: "failed", error: message, endedAt: new Date() });
@@ -351,6 +387,7 @@ export class IngestionService {
         });
       }
     }
+    if (contentReplaced) await this.notifyContentReplaced(run.documentId);
     await this.notifyDocumentTerminal(run.kbId);
   }
 }

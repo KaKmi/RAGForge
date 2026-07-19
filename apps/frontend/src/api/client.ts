@@ -26,7 +26,11 @@ import {
   ApplicationTagListResponseSchema,
   type ApplicationTagListResponse,
   type MoveApplicationTagRequest,
+  EvalCaseRefListResponseSchema,
+  EvalGateStatusSchema,
   ReleaseCheckSchema,
+  type EvalCaseRefListResponse,
+  type EvalGateStatus,
   type ReleaseCheck,
   PublishProductionRequestSchema,
   type PublishProductionRequest,
@@ -136,6 +140,8 @@ import {
   type TraceDetailResponse,
   TraceQualityDetailSchema,
   type TraceQualityDetail,
+  ManualScoreResponseSchema,
+  type ManualScoreResponse,
   OnlineEvalSettingsResponseSchema,
   type OnlineEvalSettingsResponse,
   QualityOverviewResponseSchema,
@@ -412,6 +418,18 @@ export const getTrace = (traceId: string): Promise<TraceDetailResponse> =>
 export const getTraceQuality = (traceId: string): Promise<TraceQualityDetail> =>
   getJson(`/api/eval/quality/traces/${encodeURIComponent(traceId)}`, TraceQualityDetailSchema);
 
+/**
+ * B1/F3：手动触发单条评测（原型 §18.D「unscored --用户[立即评测]--> scoring」）。
+ * 返回 `scored` 表示该 trace 已有当前判分版本的分数，前端直接重取详情即可，无需轮询。
+ * 走 applicationActionJson 是为了把后端的 429（限频）/422（未启用）文案透出给 toast。
+ */
+export const scoreTraceNow = (traceId: string): Promise<ManualScoreResponse> =>
+  applicationActionJson(
+    `/api/eval/quality/traces/${encodeURIComponent(traceId)}/score`,
+    { method: "POST" },
+    (d) => ManualScoreResponseSchema.parse(d),
+  );
+
 export const getOnlineEvalSettings = (): Promise<OnlineEvalSettingsResponse> =>
   getJson("/api/eval/quality/settings", OnlineEvalSettingsResponseSchema);
 
@@ -573,6 +591,15 @@ export const getApplicationReleaseCheck = (id: string, checkId: string): Promise
   getJson(
     `/api/applications/${encodeURIComponent(id)}/release-checks/${encodeURIComponent(checkId)}`,
     ReleaseCheckSchema,
+  );
+/** B1/F5：屏4「去上线」按钮态数据源。只读端点，不建 ReleaseCheck。 */
+export const getEvalGate = (
+  applicationId: string,
+  configVersionId: string,
+): Promise<EvalGateStatus> =>
+  getJson(
+    `/api/applications/${encodeURIComponent(applicationId)}/eval-gate?configVersionId=${encodeURIComponent(configVersionId)}`,
+    EvalGateStatusSchema,
   );
 export const publishApplicationProduction = (
   id: string,
@@ -890,6 +917,12 @@ async function deleteVoid(path: string, fallback: string): Promise<void> {
 
 const setPath = (id: string) => `/api/eval/sets/${encodeURIComponent(id)}`;
 
+/** B1/F2：这条 trace 已进过哪些评测集（Trace 详情按钮两态）。 */
+export const getEvalCaseRefs = (sourceTraceId: string): Promise<EvalCaseRefListResponse> =>
+  getJson(
+    `/api/eval/sets/case-refs?sourceTraceId=${encodeURIComponent(sourceTraceId)}`,
+    EvalCaseRefListResponseSchema,
+  );
 export const getEvalSets = (): Promise<EvalSetListResponse> =>
   getJson("/api/eval/sets", EvalSetListResponseSchema);
 export const createEvalSet = (req: CreateEvalSetRequest): Promise<EvalSet> =>
@@ -915,6 +948,17 @@ export const updateEvalCase = (
   );
 export const deleteEvalCase = (setId: string, caseId: string): Promise<void> =>
   deleteVoid(`${setPath(setId)}/cases/${encodeURIComponent(caseId)}`, "删除失败");
+
+/**
+ * B1/F4：人工「确认仍有效」（原型 §18.B）——只清 gold-stale 标志，不产生新版本。
+ * 无请求体，故不走 postJson（它要求 reqSchema）。
+ */
+export const confirmEvalCaseGold = (setId: string, caseId: string): Promise<EvalCase> =>
+  applicationActionJson(
+    `${setPath(setId)}/cases/${encodeURIComponent(caseId)}/confirm-gold`,
+    { method: "POST" },
+    (d) => EvalCaseSchema.parse(d),
+  );
 
 /** CSV 在前端解析（018 决策 D13）→ 这里只 POST 行数组，后端逐行校验并回执。 */
 export const importEvalCases = (

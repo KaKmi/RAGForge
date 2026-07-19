@@ -37,6 +37,21 @@ import type { EvalRunSnapshotEntry } from "./schema";
 const UNRESOLVED_VERSION_LABEL = "—";
 
 /** 只有 startedAt+finishedAt 齐全才算耗时；运行中不猜（契约允许 null，原型只在终态显示耗时）。 */
+/**
+ * 两个 run 是否「可比」：同一评测集 + 用例版本集合完全一致。
+ *
+ * B1/F5：抽成模块级纯函数供门禁复用——门禁不能另写一套可比性判据，
+ * 否则会出现「对比页说不可比、门禁却给了结论」的自相矛盾。
+ * 两个调用点对不可比的**反应**不同（compare() 抛 409；门禁降级为 NO_RUN 放行），
+ * 但**判据**必须是同一个。
+ */
+export function isSameCaseSet(aRow: EvalRunAggregate, bRow: EvalRunAggregate): boolean {
+  if (aRow.setId !== bRow.setId) return false;
+  const aSet = new Set((aRow.caseVersionSnapshot as EvalRunSnapshotEntry[]).map((e) => e.caseVersionId));
+  const bSet = new Set((bRow.caseVersionSnapshot as EvalRunSnapshotEntry[]).map((e) => e.caseVersionId));
+  return aSet.size === bSet.size && [...aSet].every((id) => bSet.has(id));
+}
+
 function durationOf(row: EvalRunAggregate): number | null {
   if (!row.startedAt || !row.finishedAt) return null;
   return Math.max(0, row.finishedAt.getTime() - row.startedAt.getTime());
@@ -300,19 +315,26 @@ export class EvalRunsService {
       throw new ConflictException("运行未结束，无法对比");
     }
 
-    const aSnapshot = aRow.caseVersionSnapshot as EvalRunSnapshotEntry[];
-    const bSnapshot = bRow.caseVersionSnapshot as EvalRunSnapshotEntry[];
-    const aSet = new Set(aSnapshot.map((e) => e.caseVersionId));
-    const bSet = new Set(bSnapshot.map((e) => e.caseVersionId));
-    const sameCaseSet =
-      aRow.setId === bRow.setId &&
-      aSet.size === bSet.size &&
-      [...aSet].every((id) => bSet.has(id));
-    if (!sameCaseSet) {
+    if (!isSameCaseSet(aRow, bRow)) {
       // §19.2：前端据 body.code 渲染红条「结论不可比」。
       throw new ConflictException({ code: "incomparable" });
     }
 
+    const [aInput, bInput] = await this.loadCompareInputs(aRow, bRow);
+    return buildCompareResponse(aInput, bInput);
+  }
+
+  /**
+   * B1/F5：把 compare() 原先内联的「两侧取数」抽出来，供**上线门禁**复用。
+   *
+   * 刻意不在这里做终态/可比性校验——compare() 有自己的 4xx 语义（NotFound/Conflict），
+   * 门禁则必须 fail-open（异常一律降级成 warning issue，绝不拦发布）。两种错误语义
+   * 不能塞进同一个函数，故校验留在各自调用点，**取数只此一份**（口径分叉就是下一个 bug）。
+   */
+  async loadCompareInputs(
+    aRow: EvalRunAggregate,
+    bRow: EvalRunAggregate,
+  ): Promise<[CompareRunInput, CompareRunInput]> {
     const labels = await this.versionLabels([aRow, bRow]);
     const toInput = async (row: EvalRunAggregate): Promise<CompareRunInput> => ({
       summary: {
@@ -323,8 +345,8 @@ export class EvalRunsService {
       },
       results: aggregateResults(await this.repo.listResults(row.id)),
     });
-    const [aInput, bInput] = await Promise.all([toInput(aRow), toInput(bRow)]);
-    return buildCompareResponse(aInput, bInput);
+    // a/b 两侧取数彼此独立，并行发出。
+    return await Promise.all([toInput(aRow), toInput(bRow)]);
   }
 
   /** F2：本 run 快照里 goldDocRefs 非空的用例数（withGold）/ 快照总数（total）。 */

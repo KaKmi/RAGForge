@@ -72,6 +72,8 @@ export const ApplicationSchema = z.strictObject({
   name: z.string().min(1),
   description: z.string(),
   enabled: z.boolean(),
+  /** B1/F5：上线门禁开关。开启后前端「去上线」按钮在门禁不满足时 disabled；后端永远软放行。 */
+  evalGateEnabled: z.boolean(),
   productionVersion: z.number().int().positive().nullable(),
   productionConfigVersionId: z.string().min(1).nullable(),
   latestVersion: z.number().int().positive(),
@@ -117,6 +119,7 @@ export const UpdateApplicationRequestSchema = z.strictObject({
   name: z.string().min(1).optional(),
   description: z.string().optional(),
   enabled: z.boolean().optional(),
+  evalGateEnabled: z.boolean().optional(),
 });
 export type UpdateApplicationRequest = z.infer<typeof UpdateApplicationRequestSchema>;
 
@@ -173,6 +176,12 @@ export const ApplicationTagListResponseSchema = z.array(ApplicationTagSchema);
 export type ApplicationTagListResponse = z.infer<typeof ApplicationTagListResponseSchema>;
 
 // —— M7b ReleaseCheck（异步真实 NodeRuntime 预演结果）——
+/**
+ * B1/F5：`severity` 是「上线门禁做软提示」的落点。
+ * `error` = 阻断（M7b 既有静态/预演 issue 全属此类，行为不变）；
+ * `warning` = 仅提示（评测门禁结论），**不得**让 ReleaseCheck 变 failed、
+ * 不得让 PUT :id/production 拒绝。缺省 `error` ⇒ 库里既有 jsonb 行解析后语义零变化。
+ */
 export const ReleaseCheckIssueSchema = z.strictObject({
   code: z.string(),
   node: PromptNodeSchema.optional(),
@@ -181,8 +190,28 @@ export const ReleaseCheckIssueSchema = z.strictObject({
   traceId: z.string().optional(),
   action: z.literal("OPEN_PROMPT_TRY_RUN").optional(),
   message: z.string(),
+  severity: z.enum(["error", "warning"]).default("error"),
 });
 export type ReleaseCheckIssue = z.infer<typeof ReleaseCheckIssueSchema>;
+
+/** B1/F5：评测门禁的 issue code 全集（均为 warning 级）。 */
+export const EVAL_GATE_ISSUE_CODES = {
+  REGRESSION: "EVAL_GATE_REGRESSION",
+  OVERALL_DROP: "EVAL_GATE_OVERALL_DROP",
+  NO_RUN: "EVAL_GATE_NO_RUN",
+  STALE_RUN: "EVAL_GATE_STALE_RUN",
+  UNAVAILABLE: "EVAL_GATE_UNAVAILABLE",
+} as const;
+
+/**
+ * B1/F5：屏4 按钮态数据源。`enabled` = 应用级开关（只影响前端是否 disable 引导按钮）；
+ * `issues` 恒为 warning 级门禁 issue —— 后端永远不因它拒绝发布。
+ */
+export const EvalGateStatusSchema = z.strictObject({
+  enabled: z.boolean(),
+  issues: z.array(ReleaseCheckIssueSchema),
+});
+export type EvalGateStatus = z.infer<typeof EvalGateStatusSchema>;
 
 export const ReleaseCheckStatusSchema = z.enum([
   "queued",

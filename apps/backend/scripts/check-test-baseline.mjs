@@ -21,10 +21,27 @@
  */
 import { readFileSync } from "node:fs";
 
-/** 实测值（2026-07-18，docker infra 全绿）。新增用例后请上调。 */
+/**
+ * 两个基线现在**都是实测值**（2026-07-19，本机 docker infra：postgres + clickhouse +
+ * otel-collector 全 healthy，两个套件各跑一次全绿、跳过 0）：
+ *
+ *   - `test:db`   —— 11 suites / 82 tests（2026-07-18 首测，2026-07-19 复测一致）。
+ *   - `test:infra` —— 7 suites / 91 tests（2026-07-19 **首次实测**；首跑 88 passed / 3 failed，
+ *     修复夹具后复跑 91 全绿，此处记的是修复后的值）。
+ *
+ * infra 这一行此前是**推算值**（起点 71 + 本波新增，见 git history）。本轮 docker 恢复后
+ * 实测总数与推算值恰好吻合（91 = 91），推算过程因此作废、不再保留——数字已由实测背书。
+ *
+ * ⚠️ 但「总数吻合」恰恰掩盖了问题：首次实测同时暴露了 3 条**从未真正跑过**的断言
+ * （manual-score.e2e.spec.ts）——夹具的根 span 漏了 `codecrush.span.kind: "chain"`，
+ * trace 进不了 `codecrush_traces` 视图，作业直接落 failed，裁判一次没被调到。
+ * 教训写在这里而不是只写在 commit 里：**推算出来的用例数只能证明「数量对得上」，
+ * 证明不了「断言真的执行过」**——门控套件长期跑不起来时，这道下限守卫是失效的，
+ * 别把它当作覆盖率的证据。
+ */
 const BASELINES = {
-  db: { suites: 9, tests: 73, script: "test:db" },
-  infra: { suites: 6, tests: 71, script: "test:infra" },
+  db: { suites: 11, tests: 82, script: "test:db" },
+  infra: { suites: 7, tests: 91, script: "test:infra" },
 };
 
 const [suiteKey, resultFile] = process.argv.slice(2);

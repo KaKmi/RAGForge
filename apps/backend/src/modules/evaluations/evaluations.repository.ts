@@ -1,11 +1,13 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import { DRIZZLE } from "../../platform/persistence/drizzle.constants";
 import type { DB } from "../../platform/persistence/persistence.module";
 import {
   evalCandidateLedger,
+  evalManualScoreJobs,
   evalWatermarks,
   onlineEvalSettings,
+  type EvalManualScoreJobRow,
   type EvalWatermarkRow,
   type OnlineEvalSettingsRow,
 } from "./schema";
@@ -304,4 +306,85 @@ export class EvaluationsRepository {
       })
       .where(eq(evalWatermarks.workerName, workerName));
   }
+
+  // —— B1/F3：人工「立即评测」作业表 ——
+  //
+  // ⚠️ 这三个方法**只碰 eval_manual_score_jobs**。绝不写 eval_candidate_ledger，
+  // 也绝不写 eval_watermarks 任一列（含 daily_count）——人工触发不推进游标，
+  // 记进账本会把「人工点了一下」伪装成一次 worker 扫描，屏1 的 missed/scoresNotPersisted
+  // 当场失真；吃 dailyCap 则会让一次排查把当天的自动抽样饿死。
+
+  /**
+   * 入队前的**原子占位**。返回 `true` 表示本次调用抢到了作业、调用方应当入队；
+   * `false` 表示已有一个 `queued`/`running` 的同名作业在跑，**不要再入队**。
+   *
+   * 为什么是 DB 级而不是进程内 Map：`singletonKey` 在 pg-boss 的 `standard` 策略下
+   * 是**惰性的**（唯一索引只在 short/singleton/stately/exclusive 等策略下建），
+   * 而队列是用 `boss.createQueue(jobName)` 无选项创建的 ⇒ 每次 `send` 都会真的插一条。
+   * 服务层的 60s 限频又是**单副本**的。于是双击被负载均衡打到两个 api 副本时，
+   * 两边都过 `findExisting`（此刻还没有 span）、都 upsert、都入队、都调裁判——
+   * 一次点击付两次裁判钱，而本 story 的验收标准写的是「不入队、不调裁判、不计费」。
+   * `ON CONFLICT ... DO UPDATE ... WHERE` 把「查 + 占」压进一条语句，是唯一
+   * 跨副本成立的守卫：WHERE 不成立时不写行，RETURNING 返回空。
+   *
+   * `scored`/`failed` 的行允许被重置为 `queued` —— 那正是「重试」。
+   */
+  async claimManualJob(
+    targetTraceId: string,
+    judgeVersion: string,
+    requestedBy: string,
+  ): Promise<boolean> {
+    const now = new Date();
+    const claimed = await this.db
+      .insert(evalManualScoreJobs)
+      .values({ targetTraceId, judgeVersion, status: "queued", attempts: 0, requestedBy })
+      .onConflictDoUpdate({
+        target: [evalManualScoreJobs.targetTraceId, evalManualScoreJobs.judgeVersion],
+        set: { status: "queued", attempts: 0, lastError: null, requestedBy, updatedAt: now },
+        setWhere: notInArray(evalManualScoreJobs.status, ["queued", "running"]),
+      })
+      .returning({ targetTraceId: evalManualScoreJobs.targetTraceId });
+    return claimed.length > 0;
+  }
+
+  async findManualJob(
+    targetTraceId: string,
+    judgeVersion: string,
+  ): Promise<EvalManualScoreJobRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(evalManualScoreJobs)
+      .where(
+        and(
+          eq(evalManualScoreJobs.targetTraceId, targetTraceId),
+          eq(evalManualScoreJobs.judgeVersion, judgeVersion),
+        ),
+      )
+      .limit(1);
+    return rows[0];
+  }
+
+  async markManualJob(
+    targetTraceId: string,
+    judgeVersion: string,
+    patch: { status: "running" | "scored" | "failed"; lastError?: string | null; bumpAttempt?: boolean },
+  ): Promise<void> {
+    await this.db
+      .update(evalManualScoreJobs)
+      .set({
+        status: patch.status,
+        // 只有显式给了 lastError 才写它。此前无条件 `?? null` 会让 running 这一跳
+        // 把上一次的失败原因抹掉——于是「失败过、正在重试」的行看上去从没失败过。
+        ...(patch.lastError !== undefined ? { lastError: patch.lastError } : {}),
+        updatedAt: new Date(),
+        ...(patch.bumpAttempt ? { attempts: sql`${evalManualScoreJobs.attempts} + 1` } : {}),
+      })
+      .where(
+        and(
+          eq(evalManualScoreJobs.targetTraceId, targetTraceId),
+          eq(evalManualScoreJobs.judgeVersion, judgeVersion),
+        ),
+      );
+  }
+
 }

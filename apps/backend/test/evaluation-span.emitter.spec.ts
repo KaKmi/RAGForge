@@ -105,4 +105,44 @@ describe("EvaluationSpanEmitter", () => {
     expect(attributes[RAG.EVAL_FAITHFULNESS]).toBe(EVALUATION_UNSCORED_SCORE);
     expect(JSON.parse(String(attributes[CODECRUSH_IO.OUTPUT]))).not.toHaveProperty("faithfulness");
   });
+  /**
+   * B1/F3：`rag.eval.trigger` 此前**只被处理器侧的假 emitter 断言过**——真 emitter
+   * 删掉那两行属性，全仓测试依然全绿（只有常量名被 otel-conventions 的用例钉住）。
+   * 这两条用例钉的是真 emitter：默认 worker（既有 worker 调用点零改动的前提），
+   * 显式 manual（B2 若要从聚合里剔除人工样本，全靠这个属性）。
+   */
+  it("defaults rag.eval.trigger to worker on success spans", async () => {
+    await new EvaluationSpanEmitter().emitSuccess({
+      candidate,
+      input,
+      settings,
+      result: { faithfulness: 90, answerRelevancy: 80, contextPrecision: 70, evidence: {} },
+    });
+    expect(exporter.getFinishedSpans()[0].attributes[RAG.EVAL_TRIGGER]).toBe("worker");
+  });
+
+  it("carries rag.eval.trigger=manual on both success and failure spans", async () => {
+    const manual = { ...settings, trigger: "manual" as const };
+    const emitter = new EvaluationSpanEmitter();
+    await emitter.emitSuccess({
+      candidate,
+      input,
+      settings: manual,
+      result: { faithfulness: 90, answerRelevancy: 80, contextPrecision: 70, evidence: {} },
+    });
+    await emitter.emitFailure({ input, settings: manual, error: new Error("judge down") });
+
+    const [success, failure] = exporter.getFinishedSpans();
+    expect(success.attributes[RAG.EVAL_TRIGGER]).toBe("manual");
+    expect(failure.attributes[RAG.EVAL_TRIGGER]).toBe("manual");
+  });
+
+  it("defaults rag.eval.trigger to worker on failure spans", async () => {
+    await new EvaluationSpanEmitter().emitFailure({
+      input,
+      settings,
+      error: new Error("judge down"),
+    });
+    expect(exporter.getFinishedSpans()[0].attributes[RAG.EVAL_TRIGGER]).toBe("worker");
+  });
 });

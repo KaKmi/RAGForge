@@ -1,4 +1,4 @@
-import { ConflictException, UnprocessableEntityException } from "@nestjs/common";
+import { ConflictException, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { EvalSetsService } from "../src/modules/eval-runs/eval-sets.service";
 import type {
   EvalCaseVersionContent,
@@ -6,7 +6,12 @@ import type {
   NewEvalCaseInput,
   NewEvalSetInput,
 } from "../src/modules/eval-runs/eval-sets.repository";
-import type { EvalCaseRow, EvalCaseVersionRow, EvalSetRow } from "../src/modules/eval-runs/schema";
+import type {
+  EvalCaseRow,
+  EvalCaseVersionRow,
+  EvalSetRow,
+  GoldDocRefRow,
+} from "../src/modules/eval-runs/schema";
 
 // 仓库既有 spec 的 fake-repo 风格：手写内存实现，不引 DB。
 // 参照 apps/backend/test/applications.service.spec.ts:61 的 `function service(overrides = {})` 工厂。
@@ -19,9 +24,23 @@ interface CaseFixture {
   version?: number;
   question?: string;
   goldPoints?: string[];
-  goldDocIds?: string[];
+  /**
+   * ⚠️ 真实列是 `gold_doc_refs`（jsonb，schema.ts:99），此前本 fixture 写的是
+   * `goldDocIds` —— 一个**不存在的列**。之所以从没报错，是 backend test/ 不做类型检查
+   * （tsconfig include 只有 src，jest 用 @swc/jest 剥类型）。F4 要按 docId 匹配，
+   * 必须用真字段，否则匹配逻辑在单测里根本验不了。
+   */
+  goldDocRefs?: GoldDocRefRow[];
+  /**
+   * 历史（非当前）版本行。默认不建——只有需要区分「当前版本引用」与「历史版本引用过」
+   * 的用例才用得上（F4 检测器的核心判据 `v.version = c.current_version`）。
+   * 此前 setup 每个用例只建一行、且恒等于 currentVersion，那条判据在单测里根本无法证伪。
+   */
+  historyVersions?: Array<{ version: number; goldDocRefs?: GoldDocRefRow[] }>;
   tags?: string[];
   goldStale?: boolean;
+  sourceTraceId?: string;
+  deletedAt?: Date;
 }
 
 function makeSet(id: string, name: string): EvalSetRow {
@@ -52,17 +71,29 @@ function setup(opts: { existingNames?: string[]; cases?: CaseFixture[] } = {}) {
       status: fixture.status ?? "draft",
       currentVersion: version,
       goldStale: fixture.goldStale ?? false,
-      sourceTraceId: null,
+      sourceTraceId: fixture.sourceTraceId ?? null,
       createdAt: now,
-      deletedAt: null,
+      deletedAt: fixture.deletedAt ?? null,
     });
+    for (const history of fixture.historyVersions ?? []) {
+      versions.push({
+        id: `${fixture.id}-v${history.version}`,
+        caseId: fixture.id,
+        version: history.version,
+        question: fixture.question ?? "原问题",
+        goldPoints: fixture.goldPoints ?? ["原要点"],
+        goldDocRefs: history.goldDocRefs ?? [],
+        tags: fixture.tags ?? [],
+        createdAt: now,
+      });
+    }
     versions.push({
       id: `${fixture.id}-v${version}`,
       caseId: fixture.id,
       version,
       question: fixture.question ?? "原问题",
       goldPoints: fixture.goldPoints ?? ["原要点"],
-      goldDocIds: fixture.goldDocIds ?? [],
+      goldDocRefs: fixture.goldDocRefs ?? [],
       tags: fixture.tags ?? [],
       createdAt: now,
     });
@@ -78,6 +109,14 @@ function setup(opts: { existingNames?: string[]; cases?: CaseFixture[] } = {}) {
     async findSetById(id: string): Promise<EvalSetRow | undefined> {
       return sets.find((s) => s.id === id && s.deletedAt === null);
     },
+    async findCaseRefsBySourceTrace(sourceTraceId: string) {
+      return cases
+        .filter((c) => c.sourceTraceId === sourceTraceId && c.deletedAt === null)
+        .flatMap((c) => {
+          const set = sets.find((s) => s.id === c.setId && s.deletedAt === null);
+          return set ? [{ setId: set.id, setName: set.name, caseId: c.id }] : [];
+        });
+    },
     async findSetByName(name: string): Promise<EvalSetRow | undefined> {
       return sets.find((s) => s.deletedAt === null && s.name.toLowerCase() === name.toLowerCase());
     },
@@ -88,7 +127,9 @@ function setup(opts: { existingNames?: string[]; cases?: CaseFixture[] } = {}) {
           ...s,
           caseCount: live(s.id).length,
           reviewedCaseCount: live(s.id).filter((c) => c.status === "reviewed").length,
-          withGoldDocs: live(s.id).filter((c) => (currentVersionOf(c)?.goldDocIds ?? []).length > 0)
+          withGoldDocs: live(s.id).filter(
+            (c) => (currentVersionOf(c)?.goldDocRefs ?? []).length > 0,
+          )
             .length,
           lastRunScore: null,
         }));
@@ -181,6 +222,25 @@ function setup(opts: { existingNames?: string[]; cases?: CaseFixture[] } = {}) {
       row.deletedAt = now;
       return true;
     },
+    // —— B1/F4：gold 过期检测与人工确认 ——
+    async markGoldStaleByDocId(docId: string): Promise<number> {
+      let n = 0;
+      for (const c of cases) {
+        if (c.deletedAt !== null) continue;
+        const v = currentVersionOf(c);
+        if (v?.goldDocRefs?.some((r) => r.docId === docId)) {
+          c.goldStale = true;
+          n += 1;
+        }
+      }
+      return n;
+    },
+    async clearGoldStale(setId: string, caseId: string): Promise<EvalCaseRow | null> {
+      const row = cases.find((c) => c.id === caseId && c.setId === setId && c.deletedAt === null);
+      if (!row) return null;
+      row.goldStale = false;
+      return row;
+    },
     async listReviewedCaseVersions(setId: string) {
       // 集软删不级联到用例行 → 必须也校验集存活，否则「删了还能跑」（真仓库靠 join eval_sets）。
       if (!sets.find((s) => s.id === setId && !s.deletedAt)) return [];
@@ -214,7 +274,7 @@ describe("EvalSetsService", () => {
     const { service } = setup();
     const created = await service.createCase(
       "s1",
-      { question: "退款吗", goldPoints: [], goldDocIds: [], tags: [] },
+      { question: "退款吗", goldPoints: [], goldDocRefs: [], tags: [] },
       "admin",
     );
     expect(created.status).toBe("draft");
@@ -254,12 +314,19 @@ describe("EvalSetsService", () => {
     // 原型 §5「高频 Badcase 集」：用例=34 且全待审，gold docs 仍显示 0/34（不是 0/0）。
     const { service } = setup({
       cases: [
-        { id: "c1", setId: "s1", status: "draft", goldDocIds: [] },
+        { id: "c1", setId: "s1", status: "draft", goldDocRefs: [] },
         {
           id: "c2",
           setId: "s1",
           status: "draft",
-          goldDocIds: ["b1a7f0de-0000-4000-8000-000000000001"],
+          goldDocRefs: [
+            {
+              docId: "b1a7f0de-0000-4000-8000-000000000001",
+              chunkId: null,
+              docName: "退款政策",
+              section: null,
+            },
+          ],
         },
       ],
     });
@@ -380,5 +447,210 @@ describe("EvalSetsService", () => {
     expect(res.imported).toBe(0);
     expect(res.errors).toEqual([{ row: 1, message: "第 1 行缺少 gold_answer" }]);
     expect(cases).toHaveLength(0);
+  });
+});
+
+// —— B1/F2：Trace 详情「加入评测集」按钮的两态判据 ——
+
+describe("findCaseRefsBySourceTrace", () => {
+  const TRACE = "a".repeat(32);
+
+  it("已入集的 trace 返回集合信息", async () => {
+    const { service } = setup({
+      cases: [{ id: "c1", setId: "s1", status: "draft", sourceTraceId: TRACE }],
+    });
+    await expect(service.findCaseRefsBySourceTrace(TRACE)).resolves.toEqual([
+      { setId: "s1", setName: "默认集", caseId: "c1" },
+    ]);
+  });
+
+  it("未入集返回空数组（不是 null）", async () => {
+    const { service } = setup({ cases: [] });
+    await expect(service.findCaseRefsBySourceTrace("b".repeat(32))).resolves.toEqual([]);
+  });
+
+  it("软删的用例不算已入集", async () => {
+    const { service } = setup({
+      cases: [
+        { id: "c1", setId: "s1", status: "draft", sourceTraceId: TRACE, deletedAt: new Date() },
+      ],
+    });
+    await expect(service.findCaseRefsBySourceTrace(TRACE)).resolves.toEqual([]);
+  });
+
+  /**
+   * 集软删**不级联**到用例行（同文件 listReviewedCaseVersions 的注释记过这一点），
+   * 所以「集没了但用例行还在」是真实存在的状态——必须靠 join 上的
+   * isNull(evalSets.deletedAt) 挡掉，否则会返回一个指向已删除集的引用。
+   */
+  it("集被软删后，其用例不再算已入集", async () => {
+    const { service, sets } = setup({
+      cases: [{ id: "c1", setId: "s1", status: "draft", sourceTraceId: TRACE }],
+    });
+    sets[0].deletedAt = new Date();
+    await expect(service.findCaseRefsBySourceTrace(TRACE)).resolves.toEqual([]);
+  });
+
+  it("同一条 trace 进了多个集时全部返回", async () => {
+    const { service, sets } = setup({
+      cases: [
+        { id: "c1", setId: "s1", status: "draft", sourceTraceId: TRACE },
+        { id: "c2", setId: "s2", status: "draft", sourceTraceId: TRACE },
+      ],
+    });
+    sets.push({
+      id: "s2",
+      name: "第二个集",
+      description: "",
+      kbIds: [],
+      createdBy: "admin",
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    });
+    await expect(service.findCaseRefsBySourceTrace(TRACE)).resolves.toEqual([
+      { setId: "s1", setName: "默认集", caseId: "c1" },
+      { setId: "s2", setName: "第二个集", caseId: "c2" },
+    ]);
+  });
+});
+
+// —— B1/F4：gold_stale 检测与「确认仍有效」（原型 §18.B「态不变 + gold-stale 标志」）——
+
+describe("gold_stale 检测与确认", () => {
+  const REF: GoldDocRefRow = {
+    docId: "d1",
+    chunkId: null,
+    docName: "退款政策",
+    section: "§2",
+  };
+
+  it("文档变更后，引用该 docId 的用例被标 stale，且 status/currentVersion 不变（原型：态不变）", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          version: 3,
+          goldStale: false,
+          goldDocRefs: [REF],
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(true);
+    expect(cases[0].status).toBe("reviewed");
+    expect(cases[0].currentVersion).toBe(3);
+  });
+
+  it("不引用该文档的用例不受影响", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          goldStale: false,
+          goldDocRefs: [{ docId: "other", chunkId: null, docName: "x", section: null }],
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(false);
+  });
+
+  /** 原型 §7「不自动改 gold，人工确认」——检测器只动标志位，绝不碰 gold 内容。 */
+  it("不自动修改 gold 内容", async () => {
+    const { service, versions } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          goldPoints: ["7 天无理由退款"],
+          goldDocRefs: [REF],
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(versions[0].goldPoints).toEqual(["7 天无理由退款"]);
+    expect(versions[0].goldDocRefs).toEqual([REF]);
+  });
+
+  /**
+   * 【本条是 F4 的核心判据】只看**当前版本**的引用。
+   * 用例 v1 引用过 d1、v2（当前）已经改到别的文档 —— 它早就不依赖 d1 了，
+   * 不该因为一份它已不引用的文档变更而被标过期，否则每次文档变动都会误伤一批
+   * 早已迁走的用例，「gold 可能过期」这个标志很快就没人信了。
+   */
+  it("只有当前版本的引用算数：历史版本引用过该文档不标记", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          version: 2,
+          goldStale: false,
+          goldDocRefs: [{ docId: "d2", chunkId: null, docName: "新文档", section: null }],
+          historyVersions: [{ version: 1, goldDocRefs: [REF] }], // v1 引用过 d1
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(false);
+  });
+
+  /** 反向：当前版本确实引用时必须标——证明上一条不是因为「压根没匹配上」而假绿。 */
+  it("当前版本引用该文档时仍会标记（历史版本不引用）", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          version: 2,
+          goldStale: false,
+          goldDocRefs: [REF],
+          historyVersions: [{ version: 1, goldDocRefs: [] }],
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(true);
+  });
+
+  it("已软删的用例不被标记", async () => {
+    const { service, cases } = setup({
+      cases: [
+        {
+          id: "c1",
+          setId: "s1",
+          status: "reviewed",
+          goldStale: false,
+          goldDocRefs: [REF],
+          deletedAt: now,
+        },
+      ],
+    });
+    await service.markGoldStaleByDocId("d1");
+    expect(cases[0].goldStale).toBe(false);
+  });
+
+  it("「确认仍有效」清标志且不产生新版本", async () => {
+    const { service, cases, versions } = setup({
+      cases: [{ id: "c1", setId: "s1", status: "reviewed", version: 3, goldStale: true }],
+    });
+    const before = versions.length;
+    const updated = await service.confirmGold("s1", "c1");
+    expect(updated.goldStale).toBe(false);
+    expect(cases[0].currentVersion).toBe(3); // 不升版本
+    expect(versions).toHaveLength(before); // 不产生新版本行
+  });
+
+  it("「确认仍有效」用例不存在 → NotFound", async () => {
+    const { service } = setup();
+    await expect(service.confirmGold("s1", "missing")).rejects.toBeInstanceOf(NotFoundException);
   });
 });

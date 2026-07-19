@@ -35,6 +35,7 @@ import {
   createEvalCase,
   createEvalRun,
   createEvalSet,
+  confirmEvalCaseGold,
   deleteEvalCase,
   deleteEvalSet,
   getApplicationDetail,
@@ -71,6 +72,12 @@ const CASE_STATUS_LABEL: Record<EvalCase["status"], string> = {
   draft: "待审核",
   reviewed: "已审核",
 };
+
+/**
+ * B1/F4：状态列筛选里 gold 过期那一项的值。
+ * 刻意不是 `EvalCase["status"]` 的取值——gold-stale 是**叠加**标志位，与 draft/reviewed 正交。
+ */
+const GOLD_STALE_FILTER = "gold_stale";
 
 /** gold 答案按「要点」分号分隔（原型 §5）；与后端 csv-import.ts 的 splitGoldPoints 同口径。 */
 function splitGoldPoints(goldAnswer: string): string[] {
@@ -529,6 +536,20 @@ function CasesTable({
     }
   };
 
+  /**
+   * B1/F4：人工「确认仍有效」（原型 §18.B）。清标志，不改内容、不升版本。
+   * 刷新列表而不是本地改一位：后端才是标志位的权威，且同一次刷新还能带回别人的改动。
+   */
+  const confirmGold = async (row: EvalCase) => {
+    try {
+      await confirmEvalCaseGold(set.id, row.id);
+      message.success("已确认 gold 仍然有效");
+      await onChanged();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "确认失败");
+    }
+  };
+
   const columns: TableColumnsType<EvalCase> = [
     { title: "问题", dataIndex: "question", key: "question" },
     {
@@ -567,25 +588,47 @@ function CasesTable({
     {
       title: "状态",
       key: "status",
-      width: 110,
-      // §17.2「可按状态筛」
+      // 150 而非原先的 110：多一个橙 tag 要放得下（原型 §17.2 状态列并排两个 tag）。
+      width: 150,
+      // §17.2「可按状态筛」。B1/F4：gold 过期是**叠加**标志位（原型 §18.C 表末注：
+      // 「『已进评测集』为叠加标志位（可与任意状态共存），不是排他状态」，gold-stale 同理），
+      // 故它在筛选里是**并列的第三个选项**，而不是 status 的第三个取值。
       filters: [
         { text: "待审核", value: "draft" },
         { text: "已审核", value: "reviewed" },
+        { text: "gold 可能过期", value: GOLD_STALE_FILTER },
       ],
-      onFilter: (value, row) => row.status === value,
+      onFilter: (value, row) =>
+        value === GOLD_STALE_FILTER ? row.goldStale : row.status === value,
       render: (_: unknown, row) => (
-        <Tag color={row.status === "reviewed" ? "green" : "gold"}>
-          {CASE_STATUS_LABEL[row.status]}
-        </Tag>
+        <Space size={4} wrap>
+          <Tag color={row.status === "reviewed" ? "green" : "gold"}>
+            {CASE_STATUS_LABEL[row.status]}
+          </Tag>
+          {/* 原型 §17.2 `:594`：橙 tag，与状态 tag 并存不替换 */}
+          {row.goldStale && <Tag color="orange">gold 可能过期</Tag>}
+        </Space>
       ),
     },
     {
       title: "操作",
       key: "action",
-      width: 120,
+      width: 180,
       render: (_: unknown, row) => (
         <Space onClick={(e) => e.stopPropagation()}>
+          {/* B1/F4：原型 §18.B「人工『确认仍有效』清标志」。只有标了过期的用例才有可确认的东西。 */}
+          {row.goldStale && (
+            <Popconfirm
+              title="确认该用例的 gold 仍然有效？"
+              okText="确定"
+              cancelText="取消"
+              onConfirm={() => confirmGold(row)}
+            >
+              <Button type="link" size="small" style={{ padding: 0 }}>
+                确认仍有效
+              </Button>
+            </Popconfirm>
+          )}
           <Popconfirm
             title="删除后列表不再显示；历史报告仍可查看。确认删除？"
             okText="删除"

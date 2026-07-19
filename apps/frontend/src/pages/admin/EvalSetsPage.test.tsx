@@ -23,6 +23,8 @@ vi.mock("../../api/client", async (importOriginal) => {
     getApplicationDetail: vi.fn(),
     getOnlineEvalSettings: vi.fn(),
     testRetrieval: vi.fn(),
+    // B1/F4：人工「确认仍有效」
+    confirmEvalCaseGold: vi.fn(),
   };
 });
 vi.mock("antd", async (importOriginal) => {
@@ -493,4 +495,111 @@ it("发起评测 Modal 显示「每题重复」默认 1，选 3 后请求体带 
   await waitFor(() =>
     expect(api.createEvalRun).toHaveBeenCalledWith(expect.objectContaining({ repeatCount: 3 })),
   );
+});
+
+// —— B1/F4：gold 过期橙 tag + 筛选 + 「确认仍有效」（原型 §17.2 `:594`、§18.B `:692`）——
+
+async function expandFirstSet() {
+  fireEvent.click(await screen.findByRole("button", { name: /Expand row/i }));
+}
+
+it("goldStale 用例显示橙 tag「gold 可能过期」", async () => {
+  vi.mocked(api.getEvalCases).mockResolvedValue([evalCase({ id: "case-1", goldStale: true })]);
+  renderPage();
+  await expandFirstSet();
+  expect(await screen.findByText("gold 可能过期")).toBeInTheDocument();
+});
+
+/** 原型：gold-stale 是**叠加**标志位，与 待审核/已审核 正交，不是排他状态。 */
+it("橙 tag 与状态 tag 并存，不替换", async () => {
+  vi.mocked(api.getEvalCases).mockResolvedValue([
+    evalCase({ id: "case-1", status: "reviewed", goldStale: true }),
+  ]);
+  renderPage();
+  await expandFirstSet();
+  expect(await screen.findByText("gold 可能过期")).toBeInTheDocument();
+  expect(screen.getByText("已审核")).toBeInTheDocument();
+});
+
+it("非 stale 用例不显示该 tag", async () => {
+  vi.mocked(api.getEvalCases).mockResolvedValue([evalCase({ id: "case-1", goldStale: false })]);
+  renderPage();
+  await expandFirstSet();
+  await screen.findByText("课程可以退款吗"); // 子表已渲染
+  expect(screen.queryByText("gold 可能过期")).not.toBeInTheDocument();
+});
+
+it("可按「gold 可能过期」筛选，只留 stale 用例", async () => {
+  vi.mocked(api.getEvalCases).mockResolvedValue([
+    evalCase({ id: "case-1", question: "过期的题", goldStale: true }),
+    evalCase({ id: "case-2", question: "正常的题", goldStale: false }),
+  ]);
+  renderPage();
+  await expandFirstSet();
+  await screen.findByText("过期的题");
+
+  // antd Table 列筛选：点列头漏斗 → 勾选项 → 确定。
+  // 必须把查询**限定在下拉面板内**——「gold 可能过期」同时是行内的橙 tag，
+  // 全局 findByText 会撞上多个元素。
+  const triggers = document.querySelectorAll(".ant-table-filter-trigger");
+  fireEvent.click(triggers[triggers.length - 1]);
+  const dropdown = await waitFor(() => {
+    const el = document.querySelector(".ant-table-filter-dropdown");
+    if (!el) throw new Error("filter dropdown not open");
+    return el as HTMLElement;
+  });
+  fireEvent.click(within(dropdown).getByText("gold 可能过期"));
+  // 确认按钮按位置取（`.ant-table-filter-dropdown-btns` 内为 [重置, 确定]）：
+  // 测试环境没有挂 ConfigProvider locale，antd 内置按钮文案是英文（OK/Reset），
+  // 按中文文案找必然落空。这两个按钮不是本波实现的，不该由本用例去钉它们的文案。
+  const btns = dropdown.querySelector(".ant-table-filter-dropdown-btns")!;
+  const okBtn = btns.querySelectorAll("button")[1];
+  fireEvent.click(okBtn);
+
+  await waitFor(() => expect(screen.queryByText("正常的题")).not.toBeInTheDocument());
+  expect(screen.getByText("过期的题")).toBeInTheDocument();
+
+  // 关掉下拉，避免这个 portal 面板漏进后续用例的全局查询里。
+  fireEvent.click(triggers[triggers.length - 1]);
+});
+
+/**
+ * 「确认仍有效」按钮**存在且只在 stale 时出现**由下面两条用例钉住（stale 时在场 / 非 stale 时不在场）；
+ * 「点开 Popconfirm → 点确定 → 调 confirm-gold」这一段**在本 harness 里跑不了**：
+ * 在 antd `expandedRowRender` 的嵌套子表里打开任何 popover，jsdom 下会挂死
+ * （rc-trigger 的对齐依赖 `getComputedStyle` 伪元素，jsdom 未实现 ⇒ 测试 30s 超时）。
+ *
+ * **这不是本波引入的**：本文件此前也从未有任何用例点过子表里的 Popconfirm
+ * （`deleteEvalCase` 被 mock 了但一条断言都没有），父表那条「删除评测集走 Popconfirm」
+ * 之所以能跑，正因为它不在展开行里。已用最小复现验证过：只「点开」不「确定」同样挂死。
+ *
+ * 故该段交由 **运行时 QA（/ship:qa，真浏览器）**覆盖，并已记入 concerns.md。
+ * 组件侧不为可测性改 UX —— Popconfirm 是原型 §18.B 与相邻「删除」动作的一致做法。
+ */
+
+/**
+ * stale 用例**必须**渲染出这个按钮——F4 唯一的人工清除入口。
+ *
+ * 之前这里只有「非 stale 不显示」一条（断言不存在），于是把 `EvalSetsPage.tsx` 里
+ * `{row.goldStale && <Popconfirm …>}` 整块删掉，全量前端用例仍然全绿——入口静默消失而无人知晓。
+ * 这条是纯静态渲染断言，不需要点开 popover。
+ *
+ * ⚠️ 用 `findByText` 而**不是** `findByRole("button", …)`：role 查询要对全树算可访问名，
+ * 在 Popconfirm 已渲染的展开行里会踩到同一处 rc-trigger/jsdom 挂死（实测 30s 超时）。
+ * 文案查询绕开它，且照样能钉住「按钮渲染了」——删掉 `{row.goldStale && <Popconfirm …>}` 即红。
+ */
+it("stale 用例显示「确认仍有效」按钮", async () => {
+  vi.mocked(api.getEvalCases).mockResolvedValue([evalCase({ id: "case-1", goldStale: true })]);
+  renderPage();
+  await expandFirstSet();
+  expect(await screen.findByText("确认仍有效")).toBeInTheDocument();
+});
+
+/** 非 stale 用例不该出现这个按钮——没什么可确认的。 */
+it("非 stale 用例不显示「确认仍有效」", async () => {
+  vi.mocked(api.getEvalCases).mockResolvedValue([evalCase({ id: "case-1", goldStale: false })]);
+  renderPage();
+  await expandFirstSet();
+  await screen.findByText("课程可以退款吗");
+  expect(screen.queryByRole("button", { name: "确认仍有效" })).not.toBeInTheDocument();
 });
