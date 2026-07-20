@@ -7,7 +7,13 @@ import EvalRunDetailPage from "./EvalRunDetailPage";
 
 vi.mock("../../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/client")>();
-  return { ...actual, getEvalRunReport: vi.fn(), stopEvalRun: vi.fn(), createGapItem: vi.fn() };
+  return {
+    ...actual,
+    getEvalRunReport: vi.fn(),
+    stopEvalRun: vi.fn(),
+    createGapItem: vi.fn(),
+    setEvalResultIgnored: vi.fn(),
+  };
 });
 vi.mock("antd", async (importOriginal) => {
   const actual = await importOriginal<typeof import("antd")>();
@@ -488,17 +494,53 @@ describe("加载失败：404 与「没读回来」必须可区分", () => {
     expect(item.closest(".ant-dropdown-menu-item")).toHaveClass("ant-dropdown-menu-item-disabled");
   });
 
+  // ─────────── B2b Story 9：行尾「标记忽略」（原型 `:322` 三项里的第三项） ───────────
+
   /**
-   * 承载字段 `eval_run_results.ignored_at` 已随 B2b 迁移 0028 落地，但菜单项要等 Task 9
-   * 接上读写与端点后才渲染——**在那之前这条断言守住「不渲染一个点了没反应的菜单项」**。
-   * Task 9 落地时把它反转成「渲染且可切换」。
+   * 关键断言是**第二个参数是 caseId**（不是 caseVersionId、不是 traceId）：后端要靠它
+   * 经 `eval_case_versions.case_id` 桥回结果行；传错的话 WHERE 匹配 0 行、静默无操作。
    */
-  it("菜单项随 Task 9 接上前不渲染「标记忽略」", async () => {
-    renderReport({ results: [result({ previewTraceId: TRACE })] });
+  it("行尾「…」提供「标记忽略」，点击后按 caseId 置位并刷新报告", async () => {
+    vi.mocked(api.setEvalResultIgnored).mockResolvedValue(undefined);
+    const fetchReport = renderReport({ results: [result({ caseId: "case-42" })] });
     await screen.findAllByTestId("cell-faithfulness");
+    expect(fetchReport).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getAllByRole("button", { name: "…" })[0]);
-    await screen.findByText("加入问题池");
-    expect(screen.queryByText("标记忽略")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText("标记忽略"));
+
+    await waitFor(() =>
+      expect(api.setEvalResultIgnored).toHaveBeenCalledWith("run-1", "case-42", true),
+    );
+    expect(message.success).toHaveBeenCalledWith("已标记忽略");
+    // 重新拉报告：`ignoredAt` 是服务端时间戳，本地猜一个会与刷新后不一致。
+    await waitFor(() => expect(fetchReport).toHaveBeenCalledTimes(2));
+  });
+
+  it("已忽略的行显示「取消忽略」并以 ignored=false 撤销，且行有视觉区分", async () => {
+    vi.mocked(api.setEvalResultIgnored).mockResolvedValue(undefined);
+    renderReport({
+      results: [result({ caseId: "case-42", ignoredAt: "2026-07-20T02:00:00.000Z" })],
+    });
+    await screen.findAllByTestId("cell-faithfulness");
+    // 视觉区分：已忽略的行带「已忽略」tag（与「未跑」的灰区分开）。
+    expect(screen.getByTestId("ignored-tag")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "…" })[0]);
+    fireEvent.click(await screen.findByText("取消忽略"));
+
+    await waitFor(() =>
+      expect(api.setEvalResultIgnored).toHaveBeenCalledWith("run-1", "case-42", false),
+    );
+    expect(message.success).toHaveBeenCalledWith("已取消忽略");
+  });
+
+  it("未跑的用例没有行尾操作（连结果行都没有，谈不上忽略）", async () => {
+    renderReport({
+      results: [],
+      skipped: [{ seq: 1, caseId: "case-9", caseVersion: 1, question: "还没跑到的题" }],
+    });
+    expect(await screen.findByText("还没跑到的题")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: "…" })).toHaveLength(0);
   });
 });

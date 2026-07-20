@@ -619,6 +619,44 @@ export class EvalRunsRepository {
   }
 
   /**
+   * B2b 屏3 行尾「标记忽略」：置/清 `ignored_at`（原型 `:322`）。
+   *
+   * **`eval_run_results` 没有 `case_id` 列**——它只有 `case_version_id`（外键指向
+   * `eval_case_versions.id`），而路由参数是 **case id**。两者是不同的 UUID，
+   * 直接 `eq(caseVersionId, caseId)` 会静默匹配 0 行：不报错、不抛异常，
+   * 每个真实请求都无声无息地什么都不做。故必须经 `eval_case_versions.case_id` 桥接
+   * （UPDATE 不支持 join，用子查询；同 `listResults()` 那条 join 的同一根据）。
+   *
+   * 粒度是**逐 case**：不带 `repeat_index` 谓词，该 case 在本 run 内的全部重复行一起标
+   * （读侧 `eval-run-aggregate.ts` 取该 case 首行的 `ignoredAt`，正依赖这个「整组同标」的前提）。
+   * 不做整簇/整 run 粒度——一条用例的判断连坐簇里其他成员不是忽略，是误伤。
+   *
+   * 叠加标志：分数、`verdict`、`min_score`、记分卡聚合一概不动。`ignored=false` 置回 NULL（可撤销）。
+   */
+  async setResultIgnored(
+    runId: string,
+    caseId: string,
+    ignored: boolean,
+    now: Date,
+  ): Promise<void> {
+    await this.db
+      .update(evalRunResults)
+      .set({ ignoredAt: ignored ? now : null })
+      .where(
+        and(
+          eq(evalRunResults.runId, runId),
+          inArray(
+            evalRunResults.caseVersionId,
+            this.db
+              .select({ id: evalCaseVersions.id })
+              .from(evalCaseVersions)
+              .where(eq(evalCaseVersions.caseId, caseId)),
+          ),
+        ),
+      );
+  }
+
+  /**
    * 重试续跑用：已落结果行的 `(caseVersionId, repeatIndex)` 二元组（F5：唯一索引现含 repeat_index）。
    * worker 据此跳过已录 unit，避免撞唯一索引。
    */

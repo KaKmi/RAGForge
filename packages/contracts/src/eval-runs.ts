@@ -208,6 +208,13 @@ export const EvalRunReportSchema = z.object({
 });
 export type EvalRunReport = z.infer<typeof EvalRunReportSchema>;
 
+/**
+ * B2b 屏3 行尾「标记忽略」的请求体（`PATCH /eval/runs/:runId/results/:caseId/ignore`）。
+ * 布尔而非「只置不清」：原型的这一项是可撤销的，`ignored=false` 把 `ignoredAt` 置回 null。
+ */
+export const SetEvalResultIgnoredRequestSchema = z.object({ ignored: z.boolean() });
+export type SetEvalResultIgnoredRequest = z.infer<typeof SetEvalResultIgnoredRequestSchema>;
+
 /** 1h 幂等：命中已有完成 run 时 409 body（前端弹「查看 / 仍重新运行」）。 */
 export const RecentEvalRunConflictSchema = z.object({
   code: z.literal("recent_run_exists"),

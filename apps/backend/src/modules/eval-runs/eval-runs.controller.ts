@@ -5,12 +5,14 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   Query,
   Req,
 } from "@nestjs/common";
 import {
   CreateEvalRunRequestSchema,
+  SetEvalResultIgnoredRequestSchema,
   type EvalCompareResponse,
   type EvalRunListItem,
   type EvalRunListResponse,
@@ -69,5 +71,22 @@ export class EvalRunsController {
   @Post(":id/stop") @HttpCode(204) stop(@Param("id") id: string): Promise<void> {
     assertRunId(id, "id");
     return this.service.stop(id);
+  }
+
+  /**
+   * B2b 屏3 行尾「标记忽略」（原型 `:322`）。粒度是**逐 case**：`caseId` 是 case 身份
+   * （不是 `case_version_id`），仓储层经 `eval_case_versions.case_id` 桥接，
+   * 覆盖该 case 在本 run 内的全部 `repeat_index` 行。204 无响应体。
+   */
+  @Patch(":runId/results/:caseId/ignore") @HttpCode(204) setResultIgnored(
+    @Param("runId") runId: string,
+    @Param("caseId") caseId: string,
+    @Body() raw: unknown,
+  ): Promise<void> {
+    assertRunId(runId, "runId");
+    assertRunId(caseId, "caseId");
+    const parsed = SetEvalResultIgnoredRequestSchema.safeParse(raw);
+    if (!parsed.success) throw new BadRequestException(parsed.error.issues);
+    return this.service.setResultIgnored(runId, caseId, parsed.data.ignored);
   }
 }

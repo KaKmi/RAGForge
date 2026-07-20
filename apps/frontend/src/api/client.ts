@@ -211,6 +211,7 @@ import {
   EvalRunReportSchema,
   type EvalRunReport,
   RecentEvalRunConflictSchema,
+  SetEvalResultIgnoredRequestSchema,
 } from "@codecrush/contracts";
 
 const TOKEN_KEY = "token";
@@ -1040,6 +1041,25 @@ export async function stopEvalRun(runId: string): Promise<void> {
     method: "POST",
   });
   if (!resp.ok) throw await responseError(resp, `停止失败（${resp.status}）`);
+}
+
+/**
+ * B2b 屏3 行尾「标记忽略」。204 无响应体，故不走 `patchJson`（它要求 JSON 响应体）。
+ * `caseId` 是 **case 身份**（不是 case_version_id）——后端据此覆盖该 case 的全部重复行。
+ */
+export async function setEvalResultIgnored(
+  runId: string,
+  caseId: string,
+  ignored: boolean,
+): Promise<void> {
+  const resp = await apiFetch(
+    `/api/eval/runs/${encodeURIComponent(runId)}/results/${encodeURIComponent(caseId)}/ignore`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(SetEvalResultIgnoredRequestSchema.parse({ ignored })),
+    },
+  );
+  if (!resp.ok) throw await responseError(resp, `操作失败（${resp.status}）`);
 }
 
 /** 题库版本集合不一致时后端抛 409 `{code:"incomparable"}`——前端据此渲染红条「结论不可比」。 */
