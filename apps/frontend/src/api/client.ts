@@ -27,6 +27,10 @@ import {
   type SplitGapRequest,
   UpdateGapRootCauseRequestSchema,
   type UpdateGapRootCauseRequest,
+  GapFillDraftSchema,
+  type GapFillDraft,
+  SubmitFillRequestSchema,
+  type SubmitFillRequest,
   AgentListResponseSchema,
   AgentSchema,
   type Agent,
@@ -1177,3 +1181,22 @@ export const draftGapGold = (req: DraftGoldRequest): Promise<DraftGoldResponse> 
 /** 批量沉淀成 gold 用例（状态恒「待审核」），成功后后端给簇打「已进评测集」标志。 */
 export const promoteGapToEvalSet = (req: PromoteGapRequest): Promise<PromoteGapResponse> =>
   postJson("/api/gaps/promote", req, PromoteGapRequestSchema, PromoteGapResponseSchema);
+
+// ───────────────────────── B2b `[补知识库]` 三步向导 ─────────────────────────
+
+/** 向导打开时回显草稿（第②步的数据源）。草稿字段不进屏5 列表行——2000 字的答案不该跟着每页 50 行走。 */
+export const getGapFillDraft = (id: string): Promise<GapFillDraft> =>
+  getJson(`${gapPath(id)}/fill-draft`, GapFillDraftSchema);
+
+/**
+ * 第①步：进入草拟并**同步**等 LLM 出结果（同 `draft-gold` 的既定形态，不建批次不轮询）。
+ * 失败时后端会把簇退回 `pending`，前端据此允许重试。
+ */
+export const draftGapFill = (id: string): Promise<GapCluster> => gapAction(id, "draft-fill");
+
+/** 取消补库：回 `pending`，草稿**保留**（下次打开向导可直接从第②步继续）。 */
+export const cancelGapFill = (id: string): Promise<GapCluster> => gapAction(id, "cancel-fill");
+
+/** 第③步：人审通过 → 走既有上传管线入库 → 转 `filled`，文档处理完成后自动回验。 */
+export const submitGapFill = (id: string, req: SubmitFillRequest): Promise<GapCluster> =>
+  postJson(`${gapPath(id)}/submit-fill`, req, SubmitFillRequestSchema, GapClusterSchema);

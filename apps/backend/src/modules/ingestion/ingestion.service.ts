@@ -96,6 +96,28 @@ export class IngestionService {
     }
   }
 
+  /**
+   * B2b：广播「这份文档处理结束了」（`ready` / `failed` 都发）。
+   *
+   * 与 `notifyContentReplaced` 分成两条通道，因为它们回答的是不同问题：
+   * 那条说「内容换了」（故只在 ready 发，失败时旧切片没动、报过期是假阳性）；
+   * 这条说「处理完了」，补库回验要据此把等待中的缺口簇放出来——**失败尤其要发**。
+   * 同样自吞异常：订阅方炸了绝不影响已落地的文档终态。
+   */
+  private async notifyDocumentSettled(
+    documentId: string,
+    status: "ready" | "failed",
+  ): Promise<void> {
+    if (!this.changes) return;
+    try {
+      await this.changes.notifyTerminal(documentId, status);
+    } catch (err) {
+      this.logger.warn(
+        `文档终态广播失败 doc=${documentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   // 文档到达终态（ready/failed）后回调重建监听器，检查全库重建是否可原子切换。
   // 懒解析：非 Nest 场景（单测直接 new，无 moduleRef）时短路为 no-op，不影响单文档处理逻辑。
   // 全程自吞异常（含 token 未注册时 moduleRef.get 的抛错）：回调失败只 warn，
@@ -210,6 +232,10 @@ export class IngestionService {
     // 单一调用点放在 try/catch 之后：回调抛错既不会把已 ready 的文档误改成 failed（AC3），
     // 也不会二次触发；notifyDocumentTerminal 内部自吞异常，双保险。
     if (contentReplaced) await this.notifyContentReplaced(documentId);
+    // B2b：终态广播（ready **与** failed 都发）。与上面那条「内容变了」是两件事——
+    // 补库回验等的是「我那份文档处理完了吗」，失败也必须知道，否则等它的缺口簇
+    // 会永远卡在 `filled`（那个态只剩「忽略」可走）。
+    await this.notifyDocumentSettled(documentId, contentReplaced ? "ready" : "failed");
     await this.notifyDocumentTerminal(doc.kbId);
   }
 
@@ -388,6 +414,7 @@ export class IngestionService {
       }
     }
     if (contentReplaced) await this.notifyContentReplaced(run.documentId);
+    await this.notifyDocumentSettled(run.documentId, contentReplaced ? "ready" : "failed");
     await this.notifyDocumentTerminal(run.kbId);
   }
 }

@@ -3,6 +3,7 @@ import { GapVerificationService } from "./gap-verification.service";
 import { GapVerificationNotifier } from "./gap-verification.notifier";
 import type { GapsService } from "./gaps.service";
 import type { GapsRepository } from "./gaps.repository";
+import { DocumentChangeNotifier } from "../../platform/events/document-change.notifier";
 import type { DocumentsRepository } from "../documents/documents.repository";
 import type { ReplayService } from "../eval-runs/replay.service";
 
@@ -59,8 +60,12 @@ function harness(
       transitions.push(`verifyPass:${score}`);
       return {} as never;
     },
-    recordVerifyFail: async (_id: string, score: number | null) => {
+    recordVerifyFail: async (_id: string, score: number) => {
       transitions.push(`verifyFail:${score}`);
+      return {} as never;
+    },
+    recordVerifyInconclusive: async () => {
+      transitions.push("verifyInconclusive");
       return {} as never;
     },
     recordVerifyIngestFailed: async () => {
@@ -121,26 +126,28 @@ describe("GapVerificationService.verifyCluster", () => {
     expect(h.transitions).toEqual(["verifyFail:62"]);
   });
 
-  it("任一指标未评（null）→ 整体判 null，**不**当成 0 分", async () => {
+  it("任一指标未评（null）→ 判「测不出」而**不是**低分——更不当成 0 分", async () => {
     // 用 Math.min 的话 null 会被当 0，一条本可能通过的回验被判成惨败。
+    // 且走 verifyInconclusive 而非 verifyFail：没测出来不该打复发标。
     const h = harness({
       scores: { faithfulness: null, answerRelevancy: 95, contextPrecision: 92 },
     });
     await h.service.verifyCluster(CLUSTER);
-    expect(h.transitions).toEqual(["verifyFail:null"]);
+    expect(h.transitions).toEqual(["verifyInconclusive"]);
   });
 
-  it("没有 replay_scores 帧（裁判未配置/答案为空）→ 判 null，按未通过处理", async () => {
-    // 「已回验✓」是给人看的信任凭据，凭一次没跑成的评分发出去比不发更糟。
+  it("没有 replay_scores 帧（裁判未配置/答案为空）→ verifyInconclusive，**不打复发标**", async () => {
+    // 判官 API key 过期时，若这里走 verifyFail，运营看到的是「这批缺口全复发了」，
+    // 而真相是「我们一个都没测成」——工程故障不该伪装成业务信号。
     const h = harness({ scores: null });
     await h.service.verifyCluster(CLUSTER);
-    expect(h.transitions).toEqual(["verifyFail:null"]);
+    expect(h.transitions).toEqual(["verifyInconclusive"]);
   });
 
-  it("重放抛错 → 判 null，按未通过处理，不把异常冒出去", async () => {
+  it("重放抛错 → verifyInconclusive，不把异常冒出去", async () => {
     const h = harness({ replayError: new Error("orchestration down") });
     await expect(h.service.verifyCluster(CLUSTER)).resolves.toBeUndefined();
-    expect(h.transitions).toEqual(["verifyFail:null"]);
+    expect(h.transitions).toEqual(["verifyInconclusive"]);
   });
 
   it("文档处理失败 → verifyIngestFailed，**不**打复发标、也不跑重放", async () => {
@@ -174,10 +181,10 @@ describe("GapVerificationService.verifyCluster", () => {
     expect(h.transitions).toEqual(["verifyIngestFailed"]);
   });
 
-  it("filled 却没有回验用的应用/版本 → 判 null 回 pending，不静默卡住", async () => {
+  it("filled 却没有回验用的应用/版本 → verifyInconclusive（数据坏了不是缺口复发）", async () => {
     const h = harness({ applicationId: null });
     await h.service.verifyCluster(CLUSTER);
-    expect(h.transitions).toEqual(["verifyFail:null"]);
+    expect(h.transitions).toEqual(["verifyInconclusive"]);
   });
 
   it("重放用簇的代表问题，且每次 sourceTraceId 都不同（绕开 60s 限频）", async () => {
@@ -202,7 +209,7 @@ describe("GapVerificationNotifier", () => {
     const verified: string[] = [];
 
     const notifier = new GapVerificationNotifier(
-      { register: (fn: (docId: string) => Promise<void>) => (registered = fn) } as never,
+      { registerTerminal: (fn: (docId: string) => Promise<void>) => (registered = fn) } as never,
       {
         findClusterByFillTargetDocument: async (docId: string) => {
           lookups.push(docId);
@@ -235,7 +242,7 @@ describe("GapVerificationNotifier", () => {
   it("回验抛错只记日志、不冒泡——绝不让补库的附加动作打回一次正常的文档解析", async () => {
     let registered: ((docId: string) => Promise<void>) | null = null;
     const notifier = new GapVerificationNotifier(
-      { register: (fn: (docId: string) => Promise<void>) => (registered = fn) } as never,
+      { registerTerminal: (fn: (docId: string) => Promise<void>) => (registered = fn) } as never,
       {
         findClusterByFillTargetDocument: async () => ({ id: CLUSTER, status: "filled" }),
       } as unknown as GapsRepository,
@@ -248,5 +255,52 @@ describe("GapVerificationNotifier", () => {
     notifier.onModuleInit();
 
     await expect(registered!(DOC)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * **接线**测试：用**真的** `DocumentChangeNotifier` 把 ingestion 的广播接到回验监听器上。
+ *
+ * 为什么单开这一组：上面所有用例都直接调 `verifyCluster`，因此对「监听器订阅了哪条通道」
+ * 完全无感。初版把回验挂在 `notifyChanged` 上，而那条通道**只在 ready 广播**
+ * （它服务的是 gold 过期检测，失败时内容没变、报过期是假阳性）——于是一份解析失败的
+ * 补库文档永远不会通知任何人，等它的簇永久卡在 `filled`，而 `verifyCluster` 里那条
+ * `failed → verifyIngestFailed` 分支**永不可达**。整套单测全绿，peer review 才抓出来。
+ */
+describe("回验监听器与文档广播的接线", () => {
+  function wire(documentStatus: "ready" | "failed") {
+    const verified: string[] = [];
+    const changes = new DocumentChangeNotifier();
+    const notifier = new GapVerificationNotifier(
+      changes,
+      {
+        findClusterByFillTargetDocument: async () => ({ id: CLUSTER, status: "filled" }),
+      } as unknown as GapsRepository,
+      {
+        verifyCluster: async (id: string) => {
+          verified.push(id);
+        },
+      } as unknown as GapVerificationService,
+    );
+    notifier.onModuleInit();
+    return { changes, verified, documentStatus };
+  }
+
+  it("文档 ready → 回验被触发", async () => {
+    const w = wire("ready");
+    await w.changes.notifyTerminal(DOC, "ready");
+    expect(w.verified).toEqual([CLUSTER]);
+  });
+
+  it("文档 **failed** → 回验同样被触发（否则簇永久卡在 filled）", async () => {
+    const w = wire("failed");
+    await w.changes.notifyTerminal(DOC, "failed");
+    expect(w.verified).toEqual([CLUSTER]);
+  });
+
+  it("**不**订阅「内容变更」通道——那条只在 ready 发，挂上去等于放弃 failed 这一半", async () => {
+    const w = wire("ready");
+    await w.changes.notifyChanged(DOC);
+    expect(w.verified).toEqual([]);
   });
 });

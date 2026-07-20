@@ -28,6 +28,7 @@ import {
   updateGapRootCause,
 } from "../../api/client";
 import BadSampleToEvalSetModal from "./BadSampleToEvalSetModal";
+import GapFillWizard from "./GapFillWizard";
 
 const { Text } = Typography;
 
@@ -325,6 +326,8 @@ export default function GapsPage() {
   const [loading, setLoading] = useState(true);
   /** 非空 = 「从坏样本生成」弹窗打开且锁定为这个簇（原型 `:634`「预选本簇问题」）。 */
   const [promoteClusterId, setPromoteClusterId] = useState<string | null>(null);
+  /** 非空 = [补知识库] 向导打开且锁定为这个簇（原型 §17.5 `:633`）。 */
+  const [fillClusterId, setFillClusterId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -390,6 +393,16 @@ export default function GapsPage() {
         render: (question: string, row) => (
           <Space size={4} wrap>
             <span style={{ fontWeight: 500 }}>{question}</span>
+            {/*
+              「复发」红点角标（原型 §17.5 `:631`）。两个来源：回验没通过、
+              或已终结的簇在 7 天窗口内又攒够新样本。放在代表问题旁边而不是状态列——
+              它是**叠加信号**不是状态（此刻的 status 就是普通的「待处理」）。
+            */}
+            {row.recurred && (
+              <Tooltip title="这个缺口被处理过后又重新出现——补库没解决，或问题换了个说法回来了">
+                <Tag color="red">复发</Tag>
+              </Tooltip>
+            )}
             {row.enteredEvalSetAt && <Tag color="purple">已进评测集</Tag>}
             {/* 021 决策 E：簇里过半是指代追问时，低精确率来自改写没解析、不是知识缺口。 */}
             {row.followUpRatio > 0.5 && (
@@ -459,16 +472,40 @@ export default function GapsPage() {
       {
         title: "平均质量",
         dataIndex: "avgQuality",
-        width: 96,
-        render: (score: number | null) =>
+        width: 110,
+        render: (score: number | null, row) => {
+          /**
+           * 回验完成后这一列显示的是**改善**而不是当下的平均质量（原型 `:360` 那行
+           * 就是 `已改善→89`）：补完库最值得看的是「补之前 41、补之后 89」这个对比，
+           * 而 `avgQuality` 是簇内历史样本的均值，补库并不会让它变好——
+           * 拿它当「补库效果」会让一次成功的补库看起来毫无变化。
+           */
+          if (row.verifiedScore !== null && row.fillPreScore !== null) {
+            return (
+              <Tooltip title={`补库前 ${row.fillPreScore} → 回验后 ${row.verifiedScore}`}>
+                <span style={{ color: qualityColor(row.verifiedScore) }}>
+                  {row.fillPreScore}→{row.verifiedScore}
+                </span>
+              </Tooltip>
+            );
+          }
+          // 回验没通过时也把新分数摆出来（原型 §19.2 `:758`「补库后仍低分(62)」）。
+          if (row.verifiedScore !== null) {
+            return (
+              <Tooltip title="补库后仍低分，建议检查检索配置">
+                <span style={{ color: qualityColor(row.verifiedScore) }}>{row.verifiedScore}</span>
+              </Tooltip>
+            );
+          }
           // NULL 是「没评过」不是 0 分——显示 0 会把未评说成最差（全局约束 6 的 UI 侧同源要求）。
-          score === null ? (
+          return score === null ? (
             <Text type="secondary" style={{ fontSize: 12 }}>
               未评
             </Text>
           ) : (
             <span style={{ color: qualityColor(score) }}>{Math.round(score)}</span>
-          ),
+          );
+        },
       },
       {
         title: "状态",
@@ -485,11 +522,39 @@ export default function GapsPage() {
         render: (_, row) => (
           <Space size={4} wrap>
             {/*
-              [补知识库] 三步向导仍缺席（→ B2b）。[进评测集] 本波补回：它复用 §17.2 的
-              「从坏样本生成」弹窗并**预选本簇**（原型 `:634`），成功后后端打「已进评测集」标志。
-              一度渲染过一个只 navigate 到 `/admin/eval/sets?fromGap=` 的版本并因此被移除——
-              全仓没有任何地方读 `fromGap`，点了既不弹窗也不预选、簇上也不会出现标志。
-              现在它有真实去处了。
+              [补知识库]（原型 `:358` 首行的主按钮）。只在 `pending` 出现——它发起的
+              `startDraft` 也只从 `pending` 进；已在向导流程里的簇改为 [继续补库]。
+
+              根因不是「缺内容」时**二次确认**而不是禁用：原型 `:700` 的守卫栏写的是
+              「否则二次确认『当前分诊为检索问题，仍要补库？』」，不是「否则不许」——
+              分诊是启发式的，人有权推翻它。
+            */}
+            {row.status === "pending" &&
+              (row.rootCause === "missing" ? (
+                <Button size="small" type="primary" onClick={() => setFillClusterId(row.id)}>
+                  补知识库
+                </Button>
+              ) : (
+                <Popconfirm
+                  title="当前分诊不是「缺内容」"
+                  description="补库解决的是「库里没有这段知识」。仍要补吗？"
+                  onConfirm={() => setFillClusterId(row.id)}
+                >
+                  <Button size="small">补知识库</Button>
+                </Popconfirm>
+              ))}
+            {(row.status === "drafting" ||
+              row.status === "reviewing" ||
+              row.status === "filled") && (
+              <Button size="small" type="primary" onClick={() => setFillClusterId(row.id)}>
+                继续补库
+              </Button>
+            )}
+            {/*
+              [进评测集] 复用 §17.2 的「从坏样本生成」弹窗并**预选本簇**（原型 `:634`），
+              成功后后端打「已进评测集」标志。一度渲染过一个只 navigate 到
+              `/admin/eval/sets?fromGap=` 的版本并因此被移除——全仓没有任何地方读 `fromGap`，
+              点了既不弹窗也不预选、簇上也不会出现标志。现在它有真实去处了。
             */}
             <Button size="small" onClick={() => setPromoteClusterId(row.id)}>
               进评测集
@@ -627,6 +692,15 @@ export default function GapsPage() {
           // 注释说的「必须重拉才看得见」也就永远看不见。二选一，选留下。
           void load();
         }}
+      />
+
+      <GapFillWizard
+        open={fillClusterId !== null}
+        clusterId={fillClusterId}
+        onClose={() => setFillClusterId(null)}
+        // 向导里每一次状态推进都重拉：状态列、「复发」角标与「41→89」都在这一页上，
+        // 不重拉的话用户会看到一个和自己刚做的操作对不上的列表。
+        onChanged={() => void load()}
       />
     </div>
   );

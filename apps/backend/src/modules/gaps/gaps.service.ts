@@ -72,6 +72,15 @@ const TRANSITIONS = {
    */
   verifyIngestFailed: { from: ["filled"], to: "pending" },
   /**
+   * 回验**没能得出分数**（裁判未配置/调用失败/流里没有 replay_scores 帧/簇缺回验参数）。
+   *
+   * 与 `verifyFail` 分开的理由与 `verifyIngestFailed` 完全同构，也同样是 peer review 抓出的：
+   * 「补库后仍低分 62」是**业务结论**，「我们没能量出分数」是**工程故障**。
+   * 都回 `pending`，但只有前者打复发标——判官 API key 过期时若也打，
+   * 运营看到的是「这批缺口全都复发了」，而真相是「我们一个都没测成」。
+   */
+  verifyInconclusive: { from: ["filled"], to: "pending" },
+  /**
    * worker 发现已终结的簇 7 天内又新增 ≥5 条相似样本（原型 `:376`/`:708`）。
    * 与用户手动 `reopen` 分开：那条只从 `ignored` 起、且不打复发标；这条还覆盖 `verified`
    * （「补过库、验过了，结果又坏了」正是最该重开的情形）。
@@ -341,12 +350,20 @@ export class GapsService {
     return this.applyTransition(id, "verifyPass", now, () => ({ verifiedScore: score }));
   }
 
-  /** 回验未通过（分数 <80，或判分整体失败）：回 `pending` + 复发标（原型 `:706`）。 */
-  async recordVerifyFail(id: string, score: number | null, now = new Date()): Promise<GapCluster> {
+  /** 回验**测出来**低于阈值：回 `pending` + 复发标（原型 `:706`）。 */
+  async recordVerifyFail(id: string, score: number, now = new Date()): Promise<GapCluster> {
     return this.applyTransition(id, "verifyFail", now, () => ({
       verifiedScore: score,
       recurredAt: now,
     }));
+  }
+
+  /**
+   * 回验**没测出分数**：回 `pending`，记 `verified_score = null`，**不打复发标**。
+   * 工程故障不该伪装成业务信号——见 `verifyInconclusive` 的说明。
+   */
+  async recordVerifyInconclusive(id: string, now = new Date()): Promise<GapCluster> {
+    return this.applyTransition(id, "verifyInconclusive", now, () => ({ verifiedScore: null }));
   }
 
   /**

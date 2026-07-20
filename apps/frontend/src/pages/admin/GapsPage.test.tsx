@@ -26,6 +26,17 @@ const gapsMock = vi.hoisted(() => ({
   createEvalSet: vi.fn(),
   draftGapGold: vi.fn(),
   promoteGapToEvalSet: vi.fn(),
+  // B2b Task 10：[补知识库] 挂的三步向导。
+  // ⚠️ 这个 `vi.mock` 是**整模块替换**（工厂没有 spread 真模块），所以向导用到的每个
+  // 函数都必须在这里列出来——漏一个不是「那个调用返回 undefined」，而是
+  // `getKnowledgeBases is not a function` 直接把渲染打挂，报错还指向 useEffect 内部。
+  getGapFillDraft: vi.fn(),
+  draftGapFill: vi.fn(),
+  cancelGapFill: vi.fn(),
+  submitGapFill: vi.fn(),
+  getKnowledgeBases: vi.fn(),
+  getApplications: vi.fn(),
+  getApplicationDetail: vi.fn(),
 }));
 
 vi.mock("../../api/client", () => gapsMock);
@@ -105,6 +116,10 @@ const locationText = () => screen.getByTestId("location").textContent;
 beforeEach(() => {
   vi.clearAllMocks();
   gapsMock.getGapItems.mockResolvedValue([]);
+  // 向导一打开就并发拉这三份下拉数据；不给默认值，每条测试都要自己 mock 才不炸。
+  gapsMock.getKnowledgeBases.mockResolvedValue([]);
+  gapsMock.getApplications.mockResolvedValue([]);
+  gapsMock.getGapFillDraft.mockResolvedValue(null);
 });
 
 describe("屏5 问题池", () => {
@@ -242,12 +257,26 @@ describe("屏5 问题池", () => {
     await waitFor(() => expect(locationText()).toContain(`fromGap=${cluster().id}`));
   });
 
-  it("不渲染尚未接上的 [补知识库]（B2b）", async () => {
-    // 「点了没反应的按钮比没有它更糟」——它还没有真实去处，就不渲染。
+  /**
+   * 这条**取代**了 B2a 的「不渲染尚未接上的 [补知识库]」——那时按钮还没有真实去处，
+   * 「点了没反应的按钮比没有它更糟」。B2b 把去处（三步向导）补上了，于是同一个位置
+   * 的正确断言从「不该在」翻成「该在，且点了要真开向导」。留着旧断言就是拿 B2a 的
+   * 临时状态当永久契约，会把本波的交付判成回归。
+   */
+  it("[补知识库] 打开三步向导（B2b）", async () => {
     mockGaps([cluster()]);
     renderPage();
     await screen.findByText("能开专用发票吗/对公转账");
-    expect(screen.queryByRole("button", { name: "补知识库" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "补知识库" }));
+
+    // 断言**向导真的开了**，不是只验按钮存在。
+    // 按 role 取标题：抽屉标题与刚点的那个按钮同名，`findByText("补知识库")` 会两个都命中。
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    // 三步都在，说明渲染的是向导本体而不是个空抽屉。
+    for (const step of ["草拟", "人审编辑", "入库中"]) {
+      expect(await screen.findByText(step)).toBeInTheDocument();
+    }
   });
 
   it("[进评测集] 打开「从坏样本生成」弹窗并锁定为本簇（原型 :634）", async () => {

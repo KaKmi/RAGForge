@@ -1,4 +1,4 @@
-import { Injectable, Logger, type OnModuleInit } from "@nestjs/common";
+import { ConflictException, Injectable, Logger, type OnModuleInit } from "@nestjs/common";
 import { DocumentChangeNotifier } from "../../platform/events/document-change.notifier";
 import { GapVerificationService } from "./gap-verification.service";
 import { GapsRepository } from "./gaps.repository";
@@ -30,7 +30,17 @@ export class GapVerificationNotifier implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    this.changes.register(async (docId) => {
+    /**
+     * 订阅**终态**通道而不是「内容变更」通道（peer review P1 抓出的致命细节）。
+     *
+     * `notifyChanged` 只在文档 `ready` 时广播——那条通道服务的是 gold 过期检测，
+     * 失败时旧切片没动、报过期是假阳性，所以它**故意**不发 failed。
+     * 若回验挂在那上面，一份解析失败的补库文档就永远不会通知任何人，
+     * 等它的簇会永久停在 `filled`（该态只剩「忽略」可走），
+     * 而 `verifyCluster` 里那条 `failed → verifyIngestFailed` 分支**永不可达**——
+     * 单测看不出来，因为测试直接调 `verifyCluster`，绕过了这段接线。
+     */
+    this.changes.registerTerminal(async (docId) => {
       /**
        * 广播是 fan-out 的：**每一份**文档变更都会走到这里，绝大多数与问题池无关。
        * 先按 `fill_target_document_id` 窄查一次（有 partial index），没命中就立刻返回——
@@ -51,6 +61,17 @@ export class GapVerificationNotifier implements OnModuleInit {
       try {
         await this.verification.verifyCluster(cluster.id);
       } catch (error) {
+        /**
+         * 409 单独降级成 debug：那是**预期内**的正常结果——用户在回验跑的那几十秒里
+         * 对这个簇动了手（忽略/重开），`applyTransition` 的 CAS 如实拦下了本次写入。
+         * 跟真故障一起报 error 会让它把人从睡梦里叫起来看一件本该如此的事。
+         */
+        if (error instanceof ConflictException) {
+          this.logger.debug(
+            `回验期间簇被并发改动，本次放弃（属正常竞态）：cluster=${cluster.id} doc=${docId}`,
+          );
+          return;
+        }
         this.logger.error(
           `自动回验失败：cluster=${cluster.id} doc=${docId}（${
             error instanceof Error ? error.message : String(error)

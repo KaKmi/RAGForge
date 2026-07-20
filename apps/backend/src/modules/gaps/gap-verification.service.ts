@@ -56,14 +56,16 @@ export class GapVerificationService {
       return;
     }
     if (document?.status !== "ready") {
-      // 防御性：监听器只在 ready 时回调，走到这里说明文档还在处理中（或已被删）。
-      // 静默返回，等下一次事件——**不**推进状态，免得把一次时序意外变成一个错误结论。
+      // 还在处理中（或文档已被删）。终态通道只在 ready/failed 发，走到这里多半是
+      // 文档记录当场又变了。静默返回等下一次事件——**不**推进状态，
+      // 免得把一次时序意外变成一个错误结论。
       return;
     }
 
     if (!cluster.fillVerifyApplicationId || !cluster.fillVerifyConfigVersionId) {
       this.logger.error(`filled 簇缺回验用的应用/版本，无法回验：cluster=${clusterId}`);
-      await this.gaps.recordVerifyFail(clusterId, null, now);
+      // 数据坏了 ≠ 缺口复发。不打复发标，否则运营会去查一个根本没被测过的「复发」。
+      await this.gaps.recordVerifyInconclusive(clusterId, now);
       return;
     }
 
@@ -75,10 +77,13 @@ export class GapVerificationService {
     );
 
     if (score === null) {
-      // 判分整体失败（裁判挂了/未配置/重放报错）。**按未通过处理**而不是假装通过：
-      // 「已回验✓」是给人看的信任凭据，凭一次没跑成的评分发出去，比不发更糟。
-      this.logger.warn(`回验判分未得出分数，按未通过处理：cluster=${clusterId}`);
-      await this.gaps.recordVerifyFail(clusterId, null, now);
+      /**
+       * **没测出分数** ≠ 「测出来很低」。绝不假装通过——「已回验✓」是给人看的信任凭据，
+       * 凭一次没跑成的评分发出去比不发更糟；但也不打复发标，否则「判官 API key 过期」
+       * 这一件事会显示成「这批缺口全都复发了」。
+       */
+      this.logger.warn(`回验未能得出分数（判官不可用或重放无结果）：cluster=${clusterId}`);
+      await this.gaps.recordVerifyInconclusive(clusterId, now);
       return;
     }
 
