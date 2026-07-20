@@ -286,10 +286,16 @@ export class GapsService {
     return this.applyTransition(id, "cancelReview", now);
   }
 
-  /** 人审通过并已真的调用过入库管线：记下目标 KB / 文档 / 回验用的应用与版本。 */
+  /**
+   * 人审通过并已真的调用过入库管线：记下目标 KB / 文档 / 回验用的应用与版本，
+   * 并把**人审后的最终 Q/A** 覆盖回草稿列——留档的要是真正入库的那份内容，
+   * 而不是 LLM 的原稿（否则事后追「这份文档怎么来的」会翻出一份对不上的东西）。
+   */
   async submitFill(
     id: string,
     target: {
+      question: string;
+      answer: string;
       targetKbId: string;
       applicationId: string;
       configVersionId: string;
@@ -298,6 +304,8 @@ export class GapsService {
     now = new Date(),
   ): Promise<GapCluster> {
     return this.applyTransition(id, "submitFill", now, {
+      fillDraftQuestion: truncateByCodePoint(target.question, 200),
+      fillDraftAnswer: target.answer,
       fillTargetKbId: target.targetKbId,
       fillVerifyApplicationId: target.applicationId,
       fillVerifyConfigVersionId: target.configVersionId,

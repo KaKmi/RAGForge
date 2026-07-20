@@ -901,7 +901,9 @@ describeDb("GapsService（状态机 / 拆分合并 / 频次口径，RUN_DB_TESTS
           new Date(),
         );
 
-        expect(result).toEqual({ clusterId, inserted: true });
+        // 不用 toEqual 全等：`AttachItemResult` 还带 `statusBeforeAttach`（复发判定要用），
+        // 那是别的 story 的关切，本用例只管「并入成功且落到预期的簇」。
+        expect(result).toMatchObject({ clusterId, inserted: true });
         expect(await freqOf(clusterId)).toBe(freqBefore + 1);
         const { rows } = await pool.query<{ centroid: string }>(
           `SELECT centroid::text AS centroid FROM gap_clusters WHERE id = $1`,

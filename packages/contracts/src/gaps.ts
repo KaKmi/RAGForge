@@ -207,3 +207,44 @@ export const PromoteGapResponseSchema = z.object({
   caseIds: z.array(z.string()),
 });
 export type PromoteGapResponse = z.infer<typeof PromoteGapResponseSchema>;
+
+/**
+ * `[补知识库]` 第③步「确认入库」（B2b 决策 I，原型 §9 `:367` / §19.1 `:746-748`）。
+ *
+ * 四个字段都必填，各自守着一条产品红线：
+ *  · `targetKbId` —— 入哪个知识库。后端还会校验它 `status === 'ready'`（重建中不许入库）。
+ *  · `applicationId` / `configVersionId` —— **回验**要用哪个应用的哪个配置版本重放。
+ *    由前端选定后传入，后端**不猜**：一个缺口簇的成员可能横跨多个应用，
+ *    后端去推断既要新开 `gaps → applications` 边，结果还可能是错的。
+ *  · `confirmed` —— 原型 `:747` 逐字要求的「我已核对答案与来源」。**后端必须自己拦**，
+ *    只靠前端禁用按钮的话，红线「无人审不入库」就只是一个前端约定。
+ */
+export const SubmitFillRequestSchema = z.object({
+  /**
+   * **人审之后的最终 Q/A**，由前端连同提交一起回传（长度上限对齐原型 §19.1 `:746-747`）。
+   *
+   * 为什么不让后端直接用库里那份草稿：第②步的全部意义就是人可以改。若提交时不带内容，
+   * 用户在框里改的每一个字都不会离开浏览器，入库的仍是 LLM 原样草稿——
+   * 「人审」就退化成一次点击确认，红线名存实亡。
+   */
+  question: z.string().trim().min(1).max(200),
+  answer: z.string().trim().min(1).max(2000),
+  targetKbId: z.string().uuid(),
+  applicationId: z.string().uuid(),
+  configVersionId: z.string().uuid(),
+  confirmed: z.boolean(),
+});
+export type SubmitFillRequest = z.infer<typeof SubmitFillRequestSchema>;
+
+/** 向导第②步要回显的草稿（不进屏5 列表行——那是一整页都用不上的大字段）。 */
+export const GapFillDraftSchema = z.object({
+  clusterId: z.string().uuid(),
+  status: GapClusterStatusSchema,
+  representativeQuestion: z.string(),
+  draftQuestion: z.string().nullable(),
+  draftAnswer: z.string().nullable(),
+  targetKbId: z.string().uuid().nullable(),
+  /** 已提交入库时非空——前端据此显示「处理中，完成后自动回验」。 */
+  targetDocumentId: z.string().uuid().nullable(),
+});
+export type GapFillDraft = z.infer<typeof GapFillDraftSchema>;

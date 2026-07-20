@@ -132,13 +132,21 @@ const SET_AGG_SELECT = {
  * 「取存活集」这一句查询的**唯一**副本，`findSetById` 与 `findSetByIdTx` 共用。
  * 抄成两份的话，哪天 `deletedAt` 之外再加一个存活条件，只改一处就会让事务内校验比事务外松。
  * 形参只要 `select` 能力，`DB` 与 `Tx` 都满足。
+ *
+ * `lock` 只在事务内传 true（见 `findSetByIdTx`）：`FOR SHARE` 必须处在事务里才有意义，
+ * 自动提交的单句查询一提交就把锁放了，等于没加。
  */
-async function selectSetById(exec: Pick<DB, "select">, id: string): Promise<EvalSetRow | undefined> {
-  const rows = await exec
+async function selectSetById(
+  exec: Pick<DB, "select">,
+  id: string,
+  lock = false,
+): Promise<EvalSetRow | undefined> {
+  const query = exec
     .select()
     .from(evalSets)
     .where(and(eq(evalSets.id, id), isNull(evalSets.deletedAt)))
     .limit(1);
+  const rows = await (lock ? query.for("share") : query);
   return rows[0];
 }
 
@@ -177,14 +185,20 @@ export class EvalSetsRepository {
   }
 
   /**
-   * 与 `findSetById` 同款查询，只是走**调用方的事务**。
+   * 与 `findSetById` 同款查询，只是走**调用方的事务**并对该行加 `FOR SHARE`。
    *
-   * 存在于此是为了让「校验集存活」与「插入用例」落在同一个事务快照里：事务外校验完、
-   * 提交前被另一请求软删掉，插入照样成功（FK 只保证父行存在，不保证它没被软删），
-   * 结果是一个已删的集底下长出新用例。共享 tx 后这个 TOCTOU 窗口不存在。
+   * 要防的是：事务外校验完「集还在」、提交前被另一请求软删掉，插入照样成功
+   * （FK 只保证父行存在，不保证它没被软删），结果是一个已删的集底下长出新用例。
+   *
+   * ⚠️ **光把 SELECT 挪进事务并不能消除这个窗口**（peer review P2 订正了初版注释的说法）：
+   * `db.transaction` 发的是裸 `BEGIN`，隔离级别是默认的 READ COMMITTED，而不加锁的 SELECT
+   * 不会阻止别的事务改这一行——A 读到存活、B 软删并提交、A 再插入并提交，那个状态照样出现。
+   * 真正关上它的是 `FOR SHARE`：它与并发的 `UPDATE ... SET deleted_at` 冲突，
+   * 后者会被阻塞到本事务提交为止。共享锁而非 `FOR UPDATE`——我们只要求「别在我插完前删掉它」，
+   * 不排斥另一个也在往同一个集里插用例的事务。
    */
   async findSetByIdTx(tx: Tx, id: string): Promise<EvalSetRow | undefined> {
-    return await selectSetById(tx, id);
+    return await selectSetById(tx, id, true);
   }
 
   /**

@@ -152,6 +152,8 @@ export class EvalSetsService {
    * 存在性/软删校验必须用同一个 `tx` 做（`findSetByIdTx`），**不能**沿用事务外的 `requireSet`：
    * 否则「校验通过后、事务提交前，另一请求软删了该集」这个 TOCTOU 窗口下插入照样成功
    * （FK 只保证父行存在，不保证它没被软删），留下「软删集合底下仍有新用例」的不一致。
+   * 注意关窗的是 `findSetByIdTx` 里的 `FOR SHARE` 行锁，**不是**「挪进事务」这个动作本身——
+   * READ COMMITTED 下不加锁的 SELECT 拦不住并发软删，详见该方法的注释。
    *
    * 无 `actor` 参数：`eval_cases` 没有 created_by 列，`createCase` 那个 `_actor` 本就是
    * 对齐 controller 调用面用的空壳，这里没有 controller，不造这个假形参。

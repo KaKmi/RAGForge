@@ -436,7 +436,9 @@ export default function EvalRunDetailPage() {
               「标记忽略」落 `eval_run_results.ignored_at`（B2b 迁移 0028），**逐 case** 粒度：
               后端按 caseId 覆盖该 case 在本 run 内的全部重复行。不做成「顺手忽略整个缺口簇」
               ——那会让一条用例的判断连坐簇里其他所有成员，不是忽略，是误伤。
-              它是**叠加标志**：分数与 verdict 全部保留，记分卡不看它，只影响本表的视觉/筛选。
+              它是**叠加标志**：分数与 verdict 全部保留，记分卡不看它，只影响本表的**视觉**
+              （行置灰 + 「已忽略」Tag）。判定列的筛选器**不看** `ignoredAt`——
+              「按忽略与否筛选」原型没要求，本波也没做，别据本注释去找一个不存在的筛选项。
             */}
             <Dropdown
               trigger={["click"]}

@@ -45,7 +45,10 @@ const BASELINES = {
   // ——本波初版正是估成 87（实测 88），被 peer review 抓出，随后又因补两条跨簇/跨来源用例变 90。
   // Task 5 又加 1 条（last_ts 纳秒往返，钉死迁移 0027）⇒ 12/91。
   // Task 6 加 test/gaps.service.db.spec.ts（peer review 后补到 25 条）⇒ 13/116。
-  db: { suites: 13, tests: 118, script: "test:db" },
+  // B2b：gaps.db 补 fill_* 列用例、gaps.service.db 补四态迁移与质心 CAS 共 33 条，
+  // 再加 test/eval-run-ignore.db.spec.ts（5 条，钉死「标记忽略」的 caseId→caseVersionId 桥接
+  // ——那个坑内存 fake 与前端测试都抓不住，只有真库里两个真实 UUID 才分得开）⇒ **实测** 14/157。
+  db: { suites: 14, tests: 157, script: "test:db" },
   // infra：B2a Task 5 加 test/gap-pool-isolation.spec.ts（5 条）后 8 suites / 96 tests；
   // Task 6 再加 test/gaps.e2e.spec.ts（10 条 HTTP 全链路）⇒ 9 suites / 106 tests。
   infra: { suites: 9, tests: 106, script: "test:infra" },
