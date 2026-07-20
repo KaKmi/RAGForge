@@ -78,6 +78,16 @@ export const gapClusters = pgTable(
      * 不是「这个缺口又出现新证据了」，混在一个红点里运营无法分辨该重投文档还是该重查缺口。
      */
     recurredAt: timestamp("recurred_at", { withTimezone: true }),
+    /**
+     * 簇**进入终态**（`ignored` / `verified`）的时刻，复发窗口的起算点（迁移 0029）。
+     *
+     * 原型说的是「已回验**后** 7 天内新增 ≥5 条」——锚点是终态时刻，不是「现在往前 7 天」。
+     * 少了它，一个刚被忽略的热簇会被它**忽略之前**攒下的样本立刻顶回 `pending`，
+     * 「频次+1 但不重开」对真正需要它的簇永远不成立。
+     *
+     * 不能拿 `updated_at`/`last_seen_at` 当锚点：每并入一条样本它们都会前移。
+     */
+    terminalAt: timestamp("terminal_at", { withTimezone: true }),
 
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),

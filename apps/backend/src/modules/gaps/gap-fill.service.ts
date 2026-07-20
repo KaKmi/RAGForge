@@ -120,9 +120,22 @@ export class GapFillService {
     return this.gaps.recordDraftReady(clusterId, draft.question, draft.answer, now);
   }
 
-  /** 人审驳回：回 `pending`，草稿**保留**，下次打开向导可直接从第②步继续（原型 `:704`）。 */
+  /**
+   * 取消补库：回 `pending`，草稿**保留**，下次打开向导可直接从第②步继续（原型 `:704`）。
+   *
+   * **按当前状态分派到两个事件**，因为向导有两个地方可以退出：
+   *  · `reviewing` → `cancelReview`：人审时点「驳回」，最常见的一条；
+   *  · `drafting` → `cancelDraft`：**卡在草拟中的救生通道**。正常路径下 `draftFill` 自己会在
+   *    失败时回滚，但进程被重启/超时打断时那次回滚根本没机会跑，簇就永久停在 `drafting`。
+   *    没有这条分派的话，用户唯一的出路是 `ignore` 再 `reopen`——而 `reopen` 会顺手清掉
+   *    `recurred_at`（见 `CLEARS_RECURRED`），等于为了解卡把一个真实的复发信号擦了
+   *    （peer review P2 抓出）。
+   */
   async cancelFill(clusterId: string, now = new Date()): Promise<GapCluster> {
-    return this.gaps.cancelReview(clusterId, now);
+    const cluster = await this.gaps.mustFindForFill(clusterId);
+    return cluster.status === "drafting"
+      ? this.gaps.cancelDraft(clusterId, now)
+      : this.gaps.cancelReview(clusterId, now);
   }
 
   /**

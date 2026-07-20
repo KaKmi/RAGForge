@@ -114,6 +114,8 @@ export interface AttachItemResult {
    * 簇是靠 `source_trace_id` 反查出来的，并没有读过它的状态）。
    */
   statusBeforeAttach?: GapClusterStatus;
+  /** 簇进入终态的时刻（复发窗口的锚点，迁移 0029）；非终态簇为 null。 */
+  terminalAtBeforeAttach?: Date | null;
 }
 
 /**
@@ -412,7 +414,11 @@ export class GapsRepository implements GapCollectorStore {
               )
             : eq(gapClusters.id, clusterId),
         )
-        .returning({ id: gapClusters.id, status: gapClusters.status });
+        .returning({
+          id: gapClusters.id,
+          status: gapClusters.status,
+          terminalAt: gapClusters.terminalAt,
+        });
       if (updated.length === 0) throw new GapCentroidStaleError(clusterId);
       /**
        * `RETURNING` 拿的是**更新后**的行，但这条 UPDATE 从不写 `status`
@@ -422,6 +428,8 @@ export class GapsRepository implements GapCollectorStore {
         clusterId,
         inserted: true,
         statusBeforeAttach: (createdStatus ?? updated[0].status) as GapClusterStatus,
+        // 与 status 同理：这条 UPDATE 不写 terminal_at，读到的就是并入前的值。
+        terminalAtBeforeAttach: createdStatus ? null : updated[0].terminalAt,
       };
     });
   }
@@ -665,6 +673,27 @@ export class GapsRepository implements GapCollectorStore {
     return row;
   }
 
+  /**
+   * B2b 自动回验：按补库文档反查「哪个簇在等这份文档」（`GapVerificationNotifier` 的入口）。
+   *
+   * 只选 id 与 status：调用方只需要这两个就能决定要不要继续，把 1024 维 centroid 拖出来
+   * 纯属浪费——而这条查询在**每一份**文档处理完成时都会跑（广播是 fan-out 的）。
+   * 走迁移 0028 建的 partial index `gap_clusters_fill_document_idx`。
+   * 软删的簇排除：它的补库结果已经没有归属了。
+   */
+  async findClusterByFillTargetDocument(
+    documentId: string,
+  ): Promise<{ id: string; status: string } | undefined> {
+    const [row] = await this.db
+      .select({ id: gapClusters.id, status: gapClusters.status })
+      .from(gapClusters)
+      .where(
+        and(eq(gapClusters.fillTargetDocumentId, documentId), isNull(gapClusters.deletedAt)),
+      )
+      .limit(1);
+    return row;
+  }
+
   async listItems(clusterId: string): Promise<GapItemRow[]> {
     return (
       this.db
@@ -720,6 +749,8 @@ export class GapsRepository implements GapCollectorStore {
       fillPreScore?: number | null;
       verifiedScore?: number | null;
       recurredAt?: Date | null;
+      /** 复发窗口锚点：进入终态时置 now、离开时置 null（迁移 0029）。 */
+      terminalAt?: Date | null;
     },
     now: Date,
   ): Promise<boolean> {

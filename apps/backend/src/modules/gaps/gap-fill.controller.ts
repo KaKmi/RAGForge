@@ -15,6 +15,12 @@ import {
 import { GapFillService } from "./gap-fill.service";
 
 /**
+ * 与 `GapsController` 同款的路径参数守卫。不校验的话，一个非 UUID 的 id 会一路走到
+ * `uuid` 列的比较上，PG 抛 `22P02` ⇒ 本该 400 的输入变成 500（同该文件的既定做法）。
+ */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
  * `[补知识库]` 向导的三个端点（021 决策 I，原型 §17.5 `:633`）。
  *
  * 路由形状与 `GapsController` 的既有动词一致（`:id/<verb>`），故并入同一个 `gaps` 前缀不冲突；
@@ -37,21 +43,21 @@ export class GapFillController {
    */
   @Get(":id/fill-draft")
   async getDraft(@Param("id") id: string): Promise<GapFillDraft> {
-    return this.service.getDraft(id);
+    return this.service.getDraft(assertUuid(id));
   }
 
   /** 第①步：进入草拟并同步等 LLM 出结果（同 `draft-gold` 的既定形态，不建批次不轮询）。 */
   @Post(":id/draft-fill")
   @HttpCode(200)
   async draftFill(@Param("id") id: string): Promise<GapCluster> {
-    return this.service.draftFill(id);
+    return this.service.draftFill(assertUuid(id));
   }
 
   /** 人审驳回：回 `pending`，草稿保留（原型 `:704`）。 */
   @Post(":id/cancel-fill")
   @HttpCode(200)
   async cancelFill(@Param("id") id: string): Promise<GapCluster> {
-    return this.service.cancelFill(id);
+    return this.service.cancelFill(assertUuid(id));
   }
 
   /** 第③步：人审通过 → 走既有上传管线入库 → 转 `filled`，等文档 ready 后自动回验。 */
@@ -60,6 +66,11 @@ export class GapFillController {
   async submitFill(@Param("id") id: string, @Body() raw: unknown): Promise<GapCluster> {
     const parsed = SubmitFillRequestSchema.safeParse(raw);
     if (!parsed.success) throw new BadRequestException(parsed.error.issues);
-    return this.service.submitFill(id, parsed.data);
+    return this.service.submitFill(assertUuid(id), parsed.data);
   }
+}
+
+function assertUuid(id: string): string {
+  if (!UUID.test(id)) throw new BadRequestException("id must be a UUID");
+  return id;
 }

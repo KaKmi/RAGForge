@@ -44,6 +44,8 @@ interface FakeCluster {
   rootCauseAuto: GapRootCause | null;
   rootCauseManual: GapRootCause | null;
   deleted: boolean;
+  /** 簇进入终态的时刻——复发窗口的锚点（迁移 0029）。 */
+  terminalAt: Date | null;
   /** 非空即屏5 的「复发」红点。由假 `GapsService.reopenRecurred` 置。 */
   recurredAt: Date | null;
 }
@@ -153,12 +155,13 @@ class FakeGapStore implements GapCollectorStore {
       };
       this.clusters.push(cluster);
     }
-    // 真实现由 `RETURNING` 捎回并入**之前**的状态（那条 UPDATE 从不写 status）。
+    // 真实现由 `RETURNING` 捎回并入**之前**的状态与终态时刻（那条 UPDATE 两列都不写）。
     const statusBeforeAttach = cluster.status as GapClusterStatus;
+    const terminalAtBeforeAttach = cluster.terminalAt;
     this.items.push({ ...item, clusterId: cluster.id, createdAt: now });
     cluster.freq += 1;
     if (target.kind === "existing") cluster.centroid = [...target.nextCentroid];
-    return { clusterId: cluster.id, inserted: true, statusBeforeAttach };
+    return { clusterId: cluster.id, inserted: true, statusBeforeAttach, terminalAtBeforeAttach };
   }
 
   /** 调用次数——「`pending` 簇不该白查一次库」那条用例要断言它没被碰过。 */
@@ -209,6 +212,7 @@ class FakeGapStore implements GapCollectorStore {
       rootCauseAuto: null,
       rootCauseManual: null,
       deleted: false,
+      terminalAt: null,
       recurredAt: null,
       ...patch,
     };
@@ -677,6 +681,53 @@ describe("GapCollectorProcessor（B2a 收集器：游标 + 租约 + 增量聚类
 
     expect(store.clusters[0].status).toBe("ignored");
     expect(store.clusters[0].recurredAt).toBeNull();
+  });
+
+  it("**刚被忽略的热簇不会被它忽略之前的历史立刻顶回来**（窗口从终态时刻起算）", async () => {
+    // peer review P2：原型说的是「已回验**后** 7 天内新增 ≥5 条」——锚点是终态时刻。
+    // 只按滚动 7 天数的话，一个本周命中过 N 次的热簇，运营刚点「忽略」，
+    // 下一条相似样本进来计数就已过阈值、立刻重开——「频次+1 但不重开」对**真正会被忽略的簇**
+    // 永远不成立，[忽略] 按钮等于没有。
+    const { processor, store } = makeHarness(
+      [candidate({ traceId: "a".repeat(32) })],
+      [VEC_NEAR_A],
+    );
+    const justIgnored = new Date(NOW.getTime() - 60 * 1000); // 一分钟前刚被忽略
+    const cluster = store.seedCluster({
+      centroid: VEC_A,
+      freq: 0,
+      status: "ignored",
+      terminalAt: justIgnored,
+    });
+    // 忽略**之前**就攒够了阈值的历史样本，且全都落在滚动 7 天窗口内。
+    store.seedItems(cluster.id, RECURRENCE_MIN_ITEMS + 2, IN_WINDOW);
+
+    await processor.processCycle(GAP_COLLECT_WORKER_NAME, NOW);
+
+    // 忽略之后只新增了本轮这 1 条，远不到阈值 ⇒ 只涨频次，不重开。
+    expect(store.clusters[0].status).toBe("ignored");
+    expect(store.clusters[0].recurredAt).toBeNull();
+  });
+
+  it("终态之后才攒够阈值 ⇒ 照常重开（锚点不是「永不重开」的挡箭牌）", async () => {
+    const { processor, store } = makeHarness(
+      [candidate({ traceId: "a".repeat(32) })],
+      [VEC_NEAR_A],
+    );
+    // 很久以前就被忽略了，此后窗口内又攒了 N-1 条，本轮这条压垮阈值。
+    const longAgo = new Date(NOW.getTime() - RECURRENCE_WINDOW_DAYS * 10 * 24 * 60 * 60 * 1000);
+    const cluster = store.seedCluster({
+      centroid: VEC_A,
+      freq: 0,
+      status: "ignored",
+      terminalAt: longAgo,
+    });
+    store.seedItems(cluster.id, RECURRENCE_MIN_ITEMS - 1, IN_WINDOW);
+
+    await processor.processCycle(GAP_COLLECT_WORKER_NAME, NOW);
+
+    expect(store.clusters[0].status).toBe("pending");
+    expect(store.clusters[0].recurredAt).toEqual(NOW);
   });
 
   it("窗口外的老样本不进分子——否则一个陈年老簇随便来一条就会被顶回待处理", async () => {

@@ -124,10 +124,24 @@ export async function checkRecurrence(
   store: GapCollectorStore,
   clusterId: string,
   statusBeforeAttach: string,
+  terminalAt: Date | null,
   now: Date,
 ): Promise<boolean> {
   if (!TERMINAL_STATUSES.includes(statusBeforeAttach)) return false;
-  const windowStart = new Date(now.getTime() - RECURRENCE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const rolling = new Date(now.getTime() - RECURRENCE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  /**
+   * 窗口起点取「7 天前」与「进入终态那一刻」中**较晚**的一个。
+   *
+   * 原型 `:376`/`:708` 说的是「已回验**后** 7 天内新增 ≥5 条」——锚点是终态时刻。
+   * 只按滚动 7 天数的话，会把簇**被忽略之前**攒下的样本也算进来：一个本周命中 6 次的热簇，
+   * 运营刚点「忽略」，下一条样本进来计数就是 7 ≥ 5，立刻又被重开——
+   * 「频次+1 但不重开」这条对**真正需要它的簇**永远不成立，[忽略] 等于没有（peer review P2）。
+   *
+   * `terminalAt` 为 null 只可能是迁移 0029 之前的历史行（回填已覆盖存量终态簇），
+   * 退化成滚动窗口即老行为，不会更糟。
+   */
+  const windowStart =
+    terminalAt && terminalAt > rolling ? terminalAt : rolling;
   const recent = await store.countRecentItems(clusterId, windowStart);
   return recent >= RECURRENCE_MIN_ITEMS;
 }

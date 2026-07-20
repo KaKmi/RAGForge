@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { EventsModule } from "../../platform/events/events.module";
 import { DocumentsModule } from "../documents/documents.module";
 import { EvalRunsModule } from "../eval-runs/eval-runs.module";
 import { EvaluationsModule } from "../evaluations/evaluations.module";
@@ -10,6 +11,8 @@ import { GapFillController } from "./gap-fill.controller";
 import { GapFillService } from "./gap-fill.service";
 import { GapPromoteController } from "./gap-promote.controller";
 import { GapPromoteService } from "./gap-promote.service";
+import { GapVerificationNotifier } from "./gap-verification.notifier";
+import { GapVerificationService } from "./gap-verification.service";
 import { GapsController } from "./gaps.controller";
 import { GapsRepository } from "./gaps.repository";
 import { GapsService } from "./gaps.service";
@@ -43,6 +46,15 @@ import { GapsService } from "./gaps.service";
     EvalRunsModule,
     DocumentsModule,
     KnowledgeBasesModule,
+    /**
+     * B2b 自动回验的触发源（`DocumentChangeNotifier`）。
+     *
+     * ⚠️ `EventsModule` **不是 `@Global()`**——它自己的注释写明「刻意不用 @Global」，
+     * 因为本仓有测试自行拼装局部模块图，@Global 只在「图里某处 import 过」时才生效。
+     * 必须显式列在这里。注意 `eval-runs.module.ts` 的头注释把它误称作「@Global 的」，
+     * **照它的 imports 数组抄，别照它的注释抄**。
+     */
+    EventsModule,
   ],
   controllers: [GapsController, GapPromoteController, GapFillController],
   providers: [
@@ -51,6 +63,8 @@ import { GapsService } from "./gaps.service";
     GapsService,
     GapPromoteService,
     GapFillService,
+    GapVerificationService,
+    GapVerificationNotifier, // B2b：onModuleInit 注册「文档 ready → 自动回验」
     GapCollectorProcessor,
   ],
 })

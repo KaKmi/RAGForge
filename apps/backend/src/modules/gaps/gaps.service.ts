@@ -39,9 +39,13 @@ import type { GapItemRow } from "./schema";
  * 从 `ignored` 再 `ignore` 仍是非法（幂等重复点击应当被明确拒绝，而不是静默 no-op）。
  *
  * 事件分两类：
- *  · **用户触发**（有 HTTP 端点）：ignore / reopen / routeRetrieval / startDraft / cancelDraft / cancelReview
- *  · **系统触发**（由 GapFillService / GapVerificationService 在编排里调用，无独立端点）：
- *    draftReady / submitFill / verifyPass / verifyFail / verifyIngestFailed
+ *  · **用户可达**（经 HTTP 端点，可能隔着一层分派）：
+ *    `ignore` / `reopen` / `routeRetrieval`（`GapsController`，走公开的 `transition()`）；
+ *    `startDraft`（`POST :id/draft-fill`）；
+ *    `cancelDraft` 与 `cancelReview`（**共用** `POST :id/cancel-fill`，由 `GapFillService`
+ *    按当前状态分派——`drafting` 走前者、`reviewing` 走后者）。
+ *  · **纯系统触发**（编排内部调用，没有任何端点能直接触发）：
+ *    `draftReady` / `submitFill` / `verifyPass` / `verifyFail` / `verifyIngestFailed` / `reopenRecurred`。
  * 后者同样走这张表——「回验完成」也是一次要被校验的迁移，不该因为调用方是自己人就跳过守卫。
  */
 const TRANSITIONS = {
@@ -136,6 +140,13 @@ function truncateByCodePoint(value: string, max: number): string {
  */
 const CLEARS_RECURRED = new Set<GapTransition>(["ignore", "routeRetrieval", "startDraft"]);
 
+/**
+ * 「已终结」的两个状态——复发判定只对它们生效（原型 `:376`/`:708`：
+ * 「已入库/已忽略的簇再收到相似问题只涨频次不重开；已回验后 7 天内 ≥5 条才重开」）。
+ * 进入其一时记 `terminal_at` 作为那个 7 天窗口的起点。
+ */
+const TERMINAL_STATUSES = new Set<GapClusterStatus>(["ignored", "verified"]);
+
 function toIso(value: Date | null): string | null {
   return value === null ? null : value.toISOString();
 }
@@ -207,7 +218,13 @@ export class GapsService {
     id: string,
     event: GapTransition,
     now: Date,
-    patch: GapTransitionPatch = {},
+    /**
+     * **惰性**（函数而非现成对象）：载荷的构造可能自己就会抛（截断、格式化…），
+     * 提前求值会让一次**非法迁移**先炸在载荷构造上——本该是 400「不允许从 X 到 Y」，
+     * 结果给了个 500 TypeError（peer review P2 实测到：`pending --submitFill-->` 正是如此）。
+     * 守卫先跑、载荷后算，错误类型才与原因对得上。
+     */
+    buildPatch: () => GapTransitionPatch = () => ({}),
   ): Promise<GapCluster> {
     const cluster = await this.mustFind(id);
     const rule = TRANSITIONS[event];
@@ -216,11 +233,17 @@ export class GapsService {
         `illegal transition: ${cluster.status} --${event}--> ${rule.to}（允许的来源：${rule.from.join(" / ")}）`,
       );
     }
+    const patch = buildPatch();
     const applied = await this.repo.applyTransition(
       id,
       cluster.status,
       {
         status: rule.to,
+        /**
+         * 进入终态时打上「复发窗口的锚点」（迁移 0029）。离开终态时清掉，
+         * 免得下一轮终态沿用上一轮的旧锚点，把窗口错误地往前拉长。
+         */
+        terminalAt: TERMINAL_STATUSES.has(rule.to) ? now : null,
         ...patch,
         // 复发标的清除也在这条 UPDATE 里——否则崩在中间会留下一个已被处置却仍标红的簇。
         ...(CLEARS_RECURRED.has(event) ? { recurredAt: null } : {}),
@@ -256,9 +279,9 @@ export class GapsService {
     // 混为一谈（两者都显示为「未评」），而前者其实是不该继续的 404。
     if (!row) throw new NotFoundException(`缺口不存在：${id}`);
     const preScore = toNumberOrNull(row.avgQuality);
-    return this.applyTransition(id, "startDraft", now, {
+    return this.applyTransition(id, "startDraft", now, () => ({
       fillPreScore: preScore === null ? null : Math.round(preScore),
-    });
+    }));
   }
 
   /** 草拟失败 / 用户取消：回 `pending`，草稿字段保留（原型 `:704`）。 */
@@ -273,12 +296,12 @@ export class GapsService {
     answer: string,
     now = new Date(),
   ): Promise<GapCluster> {
-    return this.applyTransition(id, "draftReady", now, {
+    return this.applyTransition(id, "draftReady", now, () => ({
       // 按**码点**截断，不是 `slice`：UTF-16 码元切法会把一个代理对劈成孤立代理，
       // PG 拒收非法 UTF-8，于是「兜底」反而制造 500（peer review P3）。
       fillDraftQuestion: truncateByCodePoint(question, 200),
       fillDraftAnswer: answer,
-    });
+    }));
   }
 
   /** 人审驳回：回 `pending`，草稿保留供再次编辑。 */
@@ -303,27 +326,27 @@ export class GapsService {
     },
     now = new Date(),
   ): Promise<GapCluster> {
-    return this.applyTransition(id, "submitFill", now, {
+    return this.applyTransition(id, "submitFill", now, () => ({
       fillDraftQuestion: truncateByCodePoint(target.question, 200),
       fillDraftAnswer: target.answer,
       fillTargetKbId: target.targetKbId,
       fillVerifyApplicationId: target.applicationId,
       fillVerifyConfigVersionId: target.configVersionId,
       fillTargetDocumentId: target.documentId,
-    });
+    }));
   }
 
   /** 回验通过（≥ `VERIFY_PASS_THRESHOLD`）：记新分数，屏5 显示「✓ 41→89」。 */
   async recordVerifyPass(id: string, score: number, now = new Date()): Promise<GapCluster> {
-    return this.applyTransition(id, "verifyPass", now, { verifiedScore: score });
+    return this.applyTransition(id, "verifyPass", now, () => ({ verifiedScore: score }));
   }
 
   /** 回验未通过（分数 <80，或判分整体失败）：回 `pending` + 复发标（原型 `:706`）。 */
   async recordVerifyFail(id: string, score: number | null, now = new Date()): Promise<GapCluster> {
-    return this.applyTransition(id, "verifyFail", now, {
+    return this.applyTransition(id, "verifyFail", now, () => ({
       verifiedScore: score,
       recurredAt: now,
-    });
+    }));
   }
 
   /**
@@ -331,7 +354,9 @@ export class GapsService {
    * 复发是业务信号（缺口又出现了），入库失败是工程故障（文档没解析成），UI 文案也不同。
    */
   async recordVerifyIngestFailed(id: string, now = new Date()): Promise<GapCluster> {
-    return this.applyTransition(id, "verifyIngestFailed", now, { fillTargetDocumentId: null });
+    return this.applyTransition(id, "verifyIngestFailed", now, () => ({
+      fillTargetDocumentId: null,
+    }));
   }
 
   /**
@@ -340,7 +365,7 @@ export class GapsService {
    * 若在第一个消费者身上就破例，它就不再是不变量了。
    */
   async reopenRecurred(id: string, now = new Date()): Promise<GapCluster> {
-    return this.applyTransition(id, "reopenRecurred", now, { recurredAt: now });
+    return this.applyTransition(id, "reopenRecurred", now, () => ({ recurredAt: now }));
   }
 
   /**

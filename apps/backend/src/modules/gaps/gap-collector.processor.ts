@@ -261,7 +261,8 @@ export class GapCollectorProcessor implements OnModuleInit {
   ): Promise<boolean> {
     const { candidate } = entry;
     // 归簇与重算根因走共享实现（`gap-ingest.ts`），与手动入池口径逐字一致。
-    const { clusterId, inserted, statusBeforeAttach } = await assignToCluster(
+    const { clusterId, inserted, statusBeforeAttach, terminalAtBeforeAttach } =
+      await assignToCluster(
       this.store,
       entry.clusterKey,
       {
@@ -297,7 +298,13 @@ export class GapCollectorProcessor implements OnModuleInit {
      * 那不是故障：目标状态已经达成了，本条样本也已经落库，**不该掀翻整轮**，记一条 warn 即可。
      */
     if (statusBeforeAttach !== undefined) {
-      const recurred = await checkRecurrence(this.store, clusterId, statusBeforeAttach, now);
+      const recurred = await checkRecurrence(
+        this.store,
+        clusterId,
+        statusBeforeAttach,
+        terminalAtBeforeAttach ?? null,
+        now,
+      );
       if (recurred) {
         try {
           await this.gaps.reopenRecurred(clusterId, now);

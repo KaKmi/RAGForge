@@ -45,8 +45,17 @@ import { ReplayService } from "./replay.service";
     GoldStaleNotifier, // B1/F4：onModuleInit 注册 gold 过期检测器
     ReplayService, // F7：单条重放（SSE + 即时判分）
   ],
-  // 只导出 `EvalSetsService`（`gaps` 的 [进评测集] 需要 `createCase`）。**不导出 run 侧的任何东西**：
-  // 发起/停止评测是本域的编排入口，导出去等于把「谁能发起 run」这条边界交给调用方自觉。
-  exports: [EvalSetsService],
+  /**
+   * 导出**两个**：
+   *  · `EvalSetsService` —— `gaps` 的 [进评测集] 要批量建 gold 用例（021 决策 A 的既定边）；
+   *  · `ReplayService`（B2b）—— `gaps` 的**自动回验**要「同编排重放一次 + 即时判分」，
+   *    而那正是重放已经封装好的能力。让 gaps 自己去拼 `OrchestrationService` +
+   *    `EvaluationJudgeService` 反而要新开 `gaps → chat` 与 `gaps → evaluations(judge)` 两条边，
+   *    且会出现第二份「怎么算这三个分」的实现——两处口径一旦漂移，回验分与重放分对不上。
+   *
+   * **仍不导出 run 侧的任何东西**：发起/停止评测是本域的编排入口，
+   * 导出去等于把「谁能发起 run」这条边界交给调用方自觉。
+   */
+  exports: [EvalSetsService, ReplayService],
 })
 export class EvalRunsModule {}

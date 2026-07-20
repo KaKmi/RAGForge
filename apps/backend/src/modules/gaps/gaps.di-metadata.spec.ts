@@ -1,7 +1,11 @@
 import "reflect-metadata";
 import { GapCollectorProcessor } from "./gap-collector.processor";
+import { GapFillController } from "./gap-fill.controller";
+import { GapFillService } from "./gap-fill.service";
 import { GapPromoteController } from "./gap-promote.controller";
 import { GapPromoteService } from "./gap-promote.service";
+import { GapVerificationNotifier } from "./gap-verification.notifier";
+import { GapVerificationService } from "./gap-verification.service";
 import { GapsController } from "./gaps.controller";
 import { GapsService } from "./gaps.service";
 
@@ -30,6 +34,11 @@ const INJECTED_BY_TOKEN = {
   // GapPromoteService 的第 4 个参数是 `@Inject(DRIZZLE)`（跨域共享事务的顶层持有者）。
   GapPromoteService: [4],
   GapPromoteController: [],
+  // B2b 新增的三个（都不用 token 注入，全部必须是可解析的具体类）。
+  GapFillService: [],
+  GapFillController: [],
+  GapVerificationService: [],
+  GapVerificationNotifier: [],
 } as const;
 
 describe("gaps 域的 DI 元数据（构造参数不得退化成 Object）", () => {
@@ -39,6 +48,10 @@ describe("gaps 域的 DI 元数据（构造参数不得退化成 Object）", () 
     ["GapsController", GapsController],
     ["GapPromoteService", GapPromoteService],
     ["GapPromoteController", GapPromoteController],
+    ["GapFillService", GapFillService],
+    ["GapFillController", GapFillController],
+    ["GapVerificationService", GapVerificationService],
+    ["GapVerificationNotifier", GapVerificationNotifier],
   ] as const)("%s 的每个构造参数都是可解析的具体类", (name, target) => {
     const paramTypes = (Reflect.getMetadata("design:paramtypes", target) ?? []) as Array<{
       name?: string;

@@ -331,6 +331,8 @@ describeDb("GapsService（状态机 / 拆分合并 / 频次口径，RUN_DB_TESTS
         "submitFill",
         (id: string) =>
           service.submitFill(id, {
+            question: "人审后的问题",
+            answer: "人审后的答案",
             targetKbId: "44444444-4444-4444-8444-444444444444",
             applicationId: "55555555-5555-4555-8555-555555555555",
             configVersionId: "66666666-6666-4666-8666-666666666666",
@@ -415,6 +417,8 @@ describeDb("GapsService（状态机 / 拆分合并 / 频次口径，RUN_DB_TESTS
     it("submitFill 记下入库目标与回验参数（监听器按 documentId 反查本簇）", async () => {
       const { clusterId } = await seedCluster({ status: "reviewing", items: [{}] });
       const target = {
+        question: "人审后的问题",
+        answer: "人审后的答案",
         targetKbId: "44444444-4444-4444-8444-444444444444",
         applicationId: "55555555-5555-4555-8555-555555555555",
         configVersionId: "66666666-6666-4666-8666-666666666666",
@@ -460,6 +464,8 @@ describeDb("GapsService（状态机 / 拆分合并 / 频次口径，RUN_DB_TESTS
       const { clusterId } = await seedCluster({ status: "reviewing", items: [{}] });
       try {
         await service.submitFill(clusterId, {
+          question: "人审后的问题",
+          answer: "人审后的答案",
           targetKbId: "44444444-4444-4444-8444-444444444444",
           applicationId: "55555555-5555-4555-8555-555555555555",
           configVersionId: "66666666-6666-4666-8666-666666666666",
