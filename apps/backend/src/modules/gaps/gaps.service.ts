@@ -328,6 +328,10 @@ function toGapCluster(row: GapClusterListRow): GapCluster {
     avgQuality: toNumberOrNull(row.avgQuality),
     followUpRatio: toNumberOrNull(row.followUpRatio) ?? 0,
     enteredEvalSetAt: toIso(row.enteredEvalSetAt),
+    // 契约只暴露布尔——时间戳会诱使前端渲染原型没定义的「N 天前复发」。
+    recurred: row.recurredAt !== null,
+    fillPreScore: row.fillPreScore,
+    verifiedScore: row.verifiedScore,
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastSeenAt: row.lastSeenAt.toISOString(),
   };

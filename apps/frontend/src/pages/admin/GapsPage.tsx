@@ -52,11 +52,16 @@ const ROOT_CAUSE: Record<GapRootCause, { label: string; color: string }> = {
   generation: { label: "生成问题", color: "blue" },
 };
 
-/** B2a 可达三态。原型 §18.C 的其余四态属 B2b，届时在此扩。 */
+/** 全七态。前三态 B2a 起可达，后四态是 B2b [补知识库] 向导与回验的流转（原型 §18.C `:363`）。 */
 const STATUS: Record<GapClusterStatus, { label: string; color: string }> = {
   pending: { label: "待处理", color: "#fa8c16" },
   routed_retrieval: { label: "已转检索工单", color: "rgba(0,0,0,.45)" },
   ignored: { label: "已忽略", color: "rgba(0,0,0,.45)" },
+  // 配色照原型 `:363` 的状态条 tag 色系：草拟中(蓝)→待人审(琥珀)→已入库(绿)→已回验(紫)。
+  drafting: { label: "草拟中", color: "#1677ff" },
+  reviewing: { label: "待人审", color: "#faad14" },
+  filled: { label: "已入库", color: "#52c41a" },
+  verified: { label: "已回验", color: "#722ed1" },
 };
 
 /**

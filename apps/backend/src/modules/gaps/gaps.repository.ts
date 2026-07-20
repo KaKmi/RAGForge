@@ -70,6 +70,11 @@ export interface GapClusterListRow {
   rootCause: string | null;
   rootCauseIsManual: boolean;
   enteredEvalSetAt: Date | null;
+  /** B2b：非空即屏5 显示「复发」红点（契约层转成布尔 `recurred`）。 */
+  recurredAt: Date | null;
+  /** B2b：「41→89」的两端。均为 null 表示这个簇还没走到 filled/verified。 */
+  fillPreScore: number | null;
+  verifiedScore: number | null;
   firstSeenAt: Date;
   lastSeenAt: Date;
   freq30d: number | string;
@@ -508,6 +513,9 @@ export class GapsRepository implements GapCollectorStore {
         >`COALESCE(${gapClusters.rootCauseManual}, ${gapClusters.rootCauseAuto})`,
         rootCauseIsManual: sql<boolean>`${gapClusters.rootCauseManual} IS NOT NULL`,
         enteredEvalSetAt: gapClusters.enteredEvalSetAt,
+        recurredAt: gapClusters.recurredAt,
+        fillPreScore: gapClusters.fillPreScore,
+        verifiedScore: gapClusters.verifiedScore,
         firstSeenAt: gapClusters.firstSeenAt,
         lastSeenAt: gapClusters.lastSeenAt,
         /**

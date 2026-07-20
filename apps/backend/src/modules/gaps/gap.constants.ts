@@ -36,9 +36,34 @@ export const DUPLICATE_SIMILARITY_MIN = 0.95;
 /** 滚动频次窗口天数（原型 `:377`，与 trace TTL 30 天对齐）。 */
 export const FREQ_WINDOW_DAYS = 30;
 
-/** 缺口簇状态（B2a 可达子集；B2b 加四态时须同步 ALTER `gap_clusters_status_check`）。 */
-export const GAP_CLUSTER_STATUSES = ["pending", "routed_retrieval", "ignored"] as const;
+/**
+ * 缺口簇状态（B2b 全七态）。
+ *
+ * ⚠️ **三处独立声明必须同步**（不是互相 re-export，改一处不会带动另外两处）：
+ * 本常量 → `gaps.service.ts` 的 `TRANSITIONS` 表按它做类型约束；
+ * `packages/contracts/src/gaps.ts:GAP_CLUSTER_STATUSES` → 前端与 API 契约；
+ * `schema.ts` 的 `gap_clusters_status_check` → DB 值域（迁移 0028）。
+ * 少同步任何一处的后果：service 判定合法但 DB 拒绝（500），或前端拿到解析不了的枚举值。
+ */
+export const GAP_CLUSTER_STATUSES = [
+  "pending",
+  "routed_retrieval",
+  "ignored",
+  "drafting",
+  "reviewing",
+  "filled",
+  "verified",
+] as const;
 export type GapClusterStatus = (typeof GAP_CLUSTER_STATUSES)[number];
+
+/** 「复发」判定窗口（原型 `:376`/`:708`：「7 天内新增 ≥5 条」）。 */
+export const RECURRENCE_WINDOW_DAYS = 7;
+
+/** 「复发」判定阈值：窗口内新增相似样本达到此数，已终结的簇自动重开为 `pending` + 复发标。 */
+export const RECURRENCE_MIN_ITEMS = 5;
+
+/** 回验通过阈值（原型 `:370`：「新分数 ≥80 → 已回验✓」）。 */
+export const VERIFY_PASS_THRESHOLD = 80;
 
 /** 根因分诊三值（原型 `:371`）。 */
 export const GAP_ROOT_CAUSES = ["missing", "retrieval", "generation"] as const;

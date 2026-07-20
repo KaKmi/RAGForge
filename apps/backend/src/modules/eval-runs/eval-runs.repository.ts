@@ -604,6 +604,8 @@ export class EvalRunsRepository {
         tokensUsed: evalRunResults.tokensUsed,
         durationMs: evalRunResults.durationMs,
         error: evalRunResults.error,
+        /** B2b：屏3「标记忽略」的叠加标志。聚合层取该 case 第一行即可（写侧整组一起标）。 */
+        ignoredAt: evalRunResults.ignoredAt,
         createdAt: evalRunResults.createdAt,
         caseId: evalCaseVersions.caseId,
         caseVersion: evalCaseVersions.version,

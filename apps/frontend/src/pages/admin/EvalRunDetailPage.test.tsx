@@ -58,6 +58,7 @@ const result = (over: Partial<EvalRunResult> = {}): EvalRunResult => ({
   error: null,
   repeatCount: 1,
   repeats: [repeat()],
+  ignoredAt: null,
   ...over,
 });
 

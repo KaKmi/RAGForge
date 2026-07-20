@@ -87,8 +87,17 @@ describeDb("0026 gap pool（RUN_DB_TESTS=1）", () => {
     expect(rows.map((r) => r.table_name)).toEqual(["gap_clusters", "gap_items", "gap_watermarks"]);
   });
 
-  it("status 只放行 B2a 可达的三态；B2b 的 drafting 等必须先 ALTER 才能用", async () => {
-    for (const status of ["pending", "routed_retrieval", "ignored"]) {
+  it("status 放行全七态（B2b 迁移 0028 ALTER 后），未定义值仍被 CHECK 拦下", async () => {
+    // 前三态 B2a 起可达；后四态是 B2b [补知识库] 向导与回验的流转（原型 §18.C）。
+    for (const status of [
+      "pending",
+      "routed_retrieval",
+      "ignored",
+      "drafting",
+      "reviewing",
+      "filled",
+      "verified",
+    ]) {
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO gap_clusters (representative_question, centroid, status)
          VALUES ('q', $1::vector, $2) RETURNING id`,
@@ -98,13 +107,48 @@ describeDb("0026 gap pool（RUN_DB_TESTS=1）", () => {
       await dropClusters(pool, [rows[0].id]);
     }
 
+    // CHECK 仍然是白名单，不是摆设：值域外的第八个值照样进不来。
     await expect(
       pool.query(
         `INSERT INTO gap_clusters (representative_question, centroid, status)
-         VALUES ('q', $1::vector, 'drafting')`,
+         VALUES ('q', $1::vector, 'bogus')`,
         [VEC_E0],
       ),
     ).rejects.toThrow(/gap_clusters_status_check/);
+  });
+
+  it("B2b 的 fill_* 列全部可空（pending 簇不填），分数列受 0-100 CHECK", async () => {
+    const id = await newCluster(pool, "q", VEC_E0);
+    try {
+      // 纯附加列：B2a 建的行一列都没填，读出来全 NULL，不影响既有行为。
+      const { rows } = await pool.query<{
+        fill_draft_question: string | null;
+        fill_pre_score: number | null;
+        verified_score: number | null;
+        recurred_at: Date | null;
+      }>(
+        `SELECT fill_draft_question, fill_pre_score, verified_score, recurred_at
+         FROM gap_clusters WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]).toEqual({
+        fill_draft_question: null,
+        fill_pre_score: null,
+        verified_score: null,
+        recurred_at: null,
+      });
+
+      // 「41→89」的两端都是百分制，越界即拒（同 gap_items_scores_check 的同域约定）。
+      await pool.query(
+        `UPDATE gap_clusters SET fill_pre_score = 41, verified_score = 89 WHERE id = $1`,
+        [id],
+      );
+      await expect(
+        pool.query(`UPDATE gap_clusters SET verified_score = 101 WHERE id = $1`, [id]),
+      ).rejects.toThrow(/gap_clusters_fill_scores_check/);
+    } finally {
+      await dropClusters(pool, [id]);
+    }
   });
 
   it("root_cause 两列各自受 CHECK 约束，且都可为空（worker 尚未分诊 / 人工未改判）", async () => {

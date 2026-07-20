@@ -232,6 +232,17 @@ export const evalRunResults = pgTable(
     tokensUsed: integer("tokens_used").notNull().default(0),
     durationMs: integer("duration_ms").notNull().default(0),
     error: text("error"),
+    /**
+     * B2b 屏3 行尾「标记忽略」（原型 `:322`/`:608`）。**叠加标志，不是状态**——
+     * 忽略的行保留原 `verdict` 与全部分数，只影响默认视图筛选，不改任何既有分数计算
+     * （`min_score`、记分卡聚合一概不看它）。同 `gap_clusters.entered_eval_set_at` 的既定风格：
+     * 时间戳而非布尔，「什么时候忽略的」也是信息。
+     *
+     * 粒度是**逐 case**（该 case 在本 run 内的全部 `repeat_index` 行一起标）——
+     * 不是逐 repeat，更不是整簇/整 run（`EvalRunDetailPage.tsx` 的既有注释论证过：
+     * 一条用例的判断连坐簇里其他成员不是忽略，是误伤）。
+     */
+    ignoredAt: timestamp("ignored_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

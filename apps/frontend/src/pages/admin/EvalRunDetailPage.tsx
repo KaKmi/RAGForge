@@ -186,6 +186,8 @@ export default function EvalRunDetailPage() {
       error: null,
       repeatCount: 1,
       repeats: [],
+      // 没跑过的用例谈不上「忽略」——它连结果行都没有，标记忽略的行尾操作对它也是禁用的。
+      ignoredAt: null,
       skipped: true,
     }));
     const score = (row: Row) => (sortKey === "min" ? row.minScore : row[sortKey]);

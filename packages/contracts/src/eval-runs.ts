@@ -174,6 +174,11 @@ export const EvalRunResultSchema = z.object({
   /** F5：每题重复次数与逐次明细（repeatCount=1 时 repeats 长度 1）。 */
   repeatCount: z.number().int().min(1).max(5),
   repeats: z.array(EvalRunRepeatSchema),
+  /**
+   * B2b 屏3「标记忽略」：非空即已忽略（原型 `:322` 行尾快捷操作）。
+   * **叠加标志**——分数与 verdict 一概保留，只影响列表默认筛选；记分卡/综合分不看它。
+   */
+  ignoredAt: z.string().nullable(),
 });
 export type EvalRunResult = z.infer<typeof EvalRunResultSchema>;
 

@@ -44,6 +44,41 @@ export const gapClusters = pgTable(
     rootCauseManual: varchar("root_cause_manual", { length: 20 }),
     /** 「已进评测集」是**叠加标志不是状态**（原型 `:634` 明令非排他）——故用时间戳而非 status 值。 */
     enteredEvalSetAt: timestamp("entered_eval_set_at", { withTimezone: true }),
+
+    // ── B2b [补知识库] 向导与自动回验（021 决策 K，迁移 0028）──────────────
+    // 全部 nullable：pending/ignored/routed_retrieval 状态下恒 NULL。
+    /** 草拟/人审阶段的 Q（原型 §19.1：1–200 字）。取消人审时**保留**，供再次进入向导（原型 `:704`）。 */
+    fillDraftQuestion: varchar("fill_draft_question", { length: 200 }),
+    /** 草拟/人审阶段的 A（原型 §19.1：1–2000 字），UI 上标「来源未确认」。 */
+    fillDraftAnswer: text("fill_draft_answer"),
+    /** 人审选定的目标 KB。跨域只存 id、不建 FK（同 `gap_items.source_trace_id` 的既定风格）。 */
+    fillTargetKbId: uuid("fill_target_kb_id"),
+    /** 入库后 `DocumentsService.upload()` 返回的文档 id；回验监听器按它反查本簇。 */
+    fillTargetDocumentId: uuid("fill_target_document_id"),
+    /**
+     * 回验用的应用 id 与配置版本 id，**由前端在人审步骤显式选定后传入**。
+     * 后端不去猜（`gaps → applications` 不是允许边，且一个簇的成员可能横跨多个应用，
+     * 众数启发式没有原型依据）。
+     */
+    fillVerifyApplicationId: uuid("fill_verify_application_id"),
+    fillVerifyConfigVersionId: uuid("fill_verify_config_version_id"),
+    /**
+     * 点 [补知识库] 那一刻的 `avgQuality` **快照**（原型 `:360` 的「41→89」里的 41）。
+     * 必须快照而不是展示时现读：`avgQuality` 是对 `gap_items` 的查询期聚合，
+     * 而向导从点击到回验完成可能跨越数分钟到下一个收集器周期（半小时一轮的 cron），
+     * 现读会让「之前」这个数随新坏样本涌入而静默漂移。
+     */
+    fillPreScore: smallint("fill_pre_score"),
+    /** 回验完成时的新分数（「41→89」里的 89）。 */
+    verifiedScore: smallint("verified_score"),
+    /**
+     * 「复发」角标（原型 `:631` 红点、`:376`/`:708`）。非空即显示。
+     * 两个置位点：① 回验分数 <80（`verifyFail`）；② worker 发现 `ignored`/`verified` 簇
+     * 7 天内新增 ≥5 条相似样本。**入库失败（`verifyIngestFailed`）不置位**——那是工程故障，
+     * 不是「这个缺口又出现新证据了」，混在一个红点里运营无法分辨该重投文档还是该重查缺口。
+     */
+    recurredAt: timestamp("recurred_at", { withTimezone: true }),
+
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -51,10 +86,19 @@ export const gapClusters = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (t) => [
-    // B2a 只放行可达三态。B2b 加 drafting/reviewing/filled/verified 时**必须 ALTER 此 CHECK**
-    // ——同 eval_runs.scope 的既定做法（放行一个引擎不遵守的值 = 投机）。
+    // B2a 放行三态、B2b（迁移 0028）ALTER 后放行七态——正是 B2a 注释里预告的那次兑现。
     // 用 varchar+CHECK 而非 PG enum 正为此：ALTER CHECK 不改类型、不锁表重写。
-    check("gap_clusters_status_check", sql`${t.status} IN ('pending','routed_retrieval','ignored')`),
+    // 值域与 `gap.constants.ts:GAP_CLUSTER_STATUSES` 及契约 `packages/contracts/src/gaps.ts`
+    // 的同名常量**三处必须同步**（三份独立声明，不是互相 re-export）。
+    check(
+      "gap_clusters_status_check",
+      sql`${t.status} IN ('pending','routed_retrieval','ignored','drafting','reviewing','filled','verified')`,
+    ),
+    check(
+      "gap_clusters_fill_scores_check",
+      sql`(${t.fillPreScore} IS NULL OR ${t.fillPreScore} BETWEEN 0 AND 100)
+        AND (${t.verifiedScore} IS NULL OR ${t.verifiedScore} BETWEEN 0 AND 100)`,
+    ),
     check(
       "gap_clusters_root_cause_auto_check",
       sql`${t.rootCauseAuto} IS NULL OR ${t.rootCauseAuto} IN ('missing','retrieval','generation')`,

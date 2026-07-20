@@ -5,8 +5,22 @@ import { z } from "zod";
  * 契约包只依赖 zod（AGENTS.md 边界 3）——这里不得出现任何 Node-only 或 DOM 依赖。
  */
 
-/** 缺口簇状态（B2a 可达三态；B2b 加四态时此处与 DB CHECK 同步扩）。 */
-export const GAP_CLUSTER_STATUSES = ["pending", "routed_retrieval", "ignored"] as const;
+/**
+ * 缺口簇状态（B2b 全七态）。前三态 B2a 起可达，后四态是 [补知识库] 向导与自动回验的流转
+ * （原型 §18.C）：`drafting` 草拟中 → `reviewing` 待人审 → `filled` 已入库 → `verified` 已回验。
+ *
+ * ⚠️ 与后端 `gap.constants.ts:GAP_CLUSTER_STATUSES` 及 DB 的 `gap_clusters_status_check`
+ * 是**三份独立声明**，改一处必须同步另外两处。
+ */
+export const GAP_CLUSTER_STATUSES = [
+  "pending",
+  "routed_retrieval",
+  "ignored",
+  "drafting",
+  "reviewing",
+  "filled",
+  "verified",
+] as const;
 export const GapClusterStatusSchema = z.enum(GAP_CLUSTER_STATUSES);
 export type GapClusterStatus = z.infer<typeof GapClusterStatusSchema>;
 
@@ -39,6 +53,14 @@ export const GapClusterSchema = z.object({
   followUpRatio: z.number().min(0).max(1),
   /** 「已进评测集」叠加标志（非排他状态，原型 `:634`）。 */
   enteredEvalSetAt: z.string().nullable(),
+  /**
+   * 「复发」红点角标（原型 `:631`）。契约层只暴露布尔——前端要的就是「是不是复发」这一个信号，
+   * 给时间戳会诱使它渲染「3 天前复发」这类原型没定义、也没有产品含义的相对时间。
+   */
+  recurred: z.boolean(),
+  /** 点 [补知识库] 那一刻的质量快照与回验后的新分数，供屏5 展示「41→89」（原型 `:360`）。 */
+  fillPreScore: z.number().int().min(0).max(100).nullable(),
+  verifiedScore: z.number().int().min(0).max(100).nullable(),
   firstSeenAt: z.string(),
   lastSeenAt: z.string(),
 });

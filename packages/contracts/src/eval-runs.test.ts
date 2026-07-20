@@ -91,6 +91,7 @@ describe("EvalRunResultSchema", () => {
       error: "judge failed",
       repeatCount: 1,
       repeats: [repeat({ error: "judge failed" })],
+      ignoredAt: null,
     });
     expect(parsed.faithfulness).toBeNull();
   });
@@ -125,8 +126,41 @@ describe("EvalRunResultSchema", () => {
       repeats: [
         repeat({ faithfulness: 91, contextPrecision: 78, verdict: "weak", answer: "ans" }),
       ],
+      ignoredAt: null,
     });
     expect(parsed.evidence.answerRelevancy).toBeUndefined();
     expect(parsed.evidence.faithfulness).toEqual(["ok"]);
+  });
+
+  it("ignoredAt 是叠加标志：非空表示已忽略，分数与 verdict 一概保留", () => {
+    const parsed = EvalRunResultSchema.parse({
+      seq: 1,
+      caseId: uuid,
+      caseVersion: 1,
+      question: "q",
+      faithfulness: 41,
+      answerRelevancy: 79,
+      contextPrecision: 38,
+      correctness: null,
+      citation: null,
+      contextRecall: null,
+      ndcg5: null,
+      hitRate5: null,
+      minMetric: "contextPrecision",
+      minScore: 38,
+      verdict: "low",
+      evidence: {},
+      previewTraceId: null,
+      answer: "ans",
+      durationMs: 10,
+      error: null,
+      repeatCount: 1,
+      repeats: [repeat({ faithfulness: 41, contextPrecision: 38, verdict: "low", answer: "ans" })],
+      ignoredAt: "2026-07-20T00:00:00.000Z",
+    });
+    expect(parsed.ignoredAt).toBe("2026-07-20T00:00:00.000Z");
+    // 忽略**不改判定也不抹分数**——它只影响列表默认筛选。
+    expect(parsed.verdict).toBe("low");
+    expect(parsed.minScore).toBe(38);
   });
 });
