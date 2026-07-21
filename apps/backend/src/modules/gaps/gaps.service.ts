@@ -16,7 +16,12 @@ import type {
 import { EvaluationsRepository } from "../evaluations/evaluations.repository";
 import { ModelsService } from "../models/models.service";
 import { VECTOR_DIMENSION } from "../../platform/persistence/pgvector-type";
-import { FREQ_WINDOW_DAYS, type GapClusterStatus, type GapRootCause } from "./gap.constants";
+import {
+  FREQ_WINDOW_DAYS,
+  GAP_TERMINAL_STATUSES,
+  type GapClusterStatus,
+  type GapRootCause,
+} from "./gap.constants";
 import { GapCentroidStaleError } from "./gap-clustering";
 import { assignToCluster, recomputeRootCause } from "./gap-ingest";
 import {
@@ -157,13 +162,6 @@ function truncateByCodePoint(value: string, max: number): string {
  */
 const CLEARS_RECURRED = new Set<GapTransition>(["ignore", "routeRetrieval", "startDraft"]);
 
-/**
- * 「已终结」的两个状态——复发判定只对它们生效（原型 `:376`/`:708`：
- * 「已入库/已忽略的簇再收到相似问题只涨频次不重开；已回验后 7 天内 ≥5 条才重开」）。
- * 进入其一时记 `terminal_at` 作为那个 7 天窗口的起点。
- */
-const TERMINAL_STATUSES = new Set<GapClusterStatus>(["ignored", "verified"]);
-
 function toIso(value: Date | null): string | null {
   return value === null ? null : value.toISOString();
 }
@@ -260,7 +258,7 @@ export class GapsService {
          * 进入终态时打上「复发窗口的锚点」（迁移 0029）。离开终态时清掉，
          * 免得下一轮终态沿用上一轮的旧锚点，把窗口错误地往前拉长。
          */
-        terminalAt: TERMINAL_STATUSES.has(rule.to) ? now : null,
+        terminalAt: GAP_TERMINAL_STATUSES.has(rule.to) ? now : null,
         ...patch,
         // 复发标的清除也在这条 UPDATE 里——否则崩在中间会留下一个已被处置却仍标红的簇。
         ...(CLEARS_RECURRED.has(event) ? { recurredAt: null } : {}),

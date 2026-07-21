@@ -694,7 +694,16 @@ export default function GapsPage() {
         }}
       />
 
+      {/*
+        `key={fillClusterId}` 是**结构性**的那道防线（清理复审「高度」维度指出）。
+        React 在 key 变化时卸载重建，于是「上一个簇的 state 活到下一个簇」在物理上不可能——
+        向导内那三道手写防线（打开时清空 / 丢弃陈旧响应 / 渲染前校验同源）是三轮 peer review
+        逐轮叠上去的，每一轮都在同一层往上加，说明那一层压不住。
+        三道**保留**：加了 key 之后它们成为真正的纵深防御，成本近乎为零，
+        且能挡住未来有人误删这个 key。但结构性修法在这一行，不该再叠第四道。
+      */}
       <GapFillWizard
+        key={fillClusterId}
         open={fillClusterId !== null}
         clusterId={fillClusterId}
         onClose={() => setFillClusterId(null)}

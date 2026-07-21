@@ -52,11 +52,10 @@ function setup(over: { kbReady?: boolean; appLive?: boolean } = {}) {
   api.getKnowledgeBases.mockResolvedValue([
     { id: KB, name: "客服知识库", status: kbReady ? "ready" : "rebuilding" },
   ]);
-  api.getApplications.mockResolvedValue([{ id: APP, name: "客服机器人" }]);
-  api.getApplicationDetail.mockResolvedValue({
-    id: APP,
-    productionConfigVersionId: appLive ? VERSION : null,
-  });
+  // `productionConfigVersionId` 就在列表响应里——向导不再逐个拉详情（见 GapFillWizard 的注释）。
+  api.getApplications.mockResolvedValue([
+    { id: APP, name: "客服机器人", productionConfigVersionId: appLive ? VERSION : null },
+  ]);
 }
 
 function renderWizard() {
@@ -327,19 +326,25 @@ describe("补知识库向导", () => {
     expect(await screen.findByText("草拟模型未配置")).toBeInTheDocument();
   });
 
-  it("详情请求失败的应用标「状态未知」而不是谎称「未上线」", async () => {
-    setup();
-    api.getApplicationDetail.mockRejectedValue(new Error("网络抖动"));
+  /**
+   * 原来这里有一条「详情请求失败的应用标『状态未知』而不是谎称『未上线』」。
+   * 那条**连同它所守护的分支一起被删掉了**——「状态未知」这一态的唯一来源是
+   * 逐个 `getApplicationDetail` 可能失败，而那个请求根本不该发：
+   * `productionConfigVersionId` 就在列表响应里（清理复审两位独立指出）。
+   * 请求没了，这一态在结构上不可能出现，留着测试就是在守一段死代码。
+   *
+   * 「未上线」那一半仍然被上面的「未上线的应用不可选作回验目标」守着。
+   */
+  it("应用列表拉取失败 ⇒ 下拉为空，不伪造任何状态", async () => {
+    api.getApplications.mockRejectedValue(new Error("网络抖动"));
     api.getGapFillDraft.mockResolvedValue(draft());
     renderWizard();
     await screen.findByDisplayValue("能开增值税专用发票吗？");
 
     fireEvent.mouseDown(screen.getByRole("combobox", { name: "回验应用" }));
 
-    // 两者都禁用，但文案不能撒谎——用户明明在跑的应用被说成「尚未上线」会让人去查一个
-    // 根本不存在的问题。
-    expect(await screen.findByText("状态未知")).toBeInTheDocument();
     expect(screen.queryByText("未上线")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("客服机器人")).not.toBeInTheDocument();
   });
 
   it("换簇重开 → 上个簇选的回验应用不能跟着带过来", async () => {

@@ -117,3 +117,17 @@ export const GAP_COLLECT_LAG_BUFFER_MS = 15 * 60 * 1000;
 
 /** 收集节奏。比在线评测（*\/15）慢一档——问题池是趋势看板，不需要准实时。 */
 export const GAP_COLLECT_CRON = "*/30 * * * *";
+
+/**
+ * 「已终结」的两个状态——复发判定只对它们生效（原型 `:376`/`:708`：
+ * 「已入库/已忽略的簇再收到相似问题只涨频次不重开；已回验后 7 天内 ≥5 条才重开」）。
+ * 进入其一时记 `terminal_at` 作为那个 7 天窗口的起点。
+ *
+ * ⚠️ **必须只有这一份**。它同时驱动一件事的两端：`applyTransition` 据它决定何时盖
+ * `terminal_at` 锚点（写侧），`checkRecurrence` 据它决定要不要查库判复发（读侧）。
+ * 清理复审三位独立指出：B2b 初版在 `gaps.service.ts` 与 `gap-ingest.ts` 各写了一份，
+ * 类型还不同（`Set<GapClusterStatus>` vs `readonly string[]`）。真出事的方式是静默的——
+ * 将来加第八个终态只改写侧，锚点照打而复发判定永远返回 false，
+ * 「复发功能对新状态失效」不会让任何测试变红。
+ */
+export const GAP_TERMINAL_STATUSES = new Set<GapClusterStatus>(["ignored", "verified"]);

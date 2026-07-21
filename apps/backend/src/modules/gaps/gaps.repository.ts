@@ -706,11 +706,6 @@ export class GapsRepository implements GapCollectorStore {
     );
   }
 
-  /** 状态迁移。合法性由 service 的迁移表判定，这里只落库。 */
-  async updateStatus(id: string, status: GapClusterStatus, now: Date): Promise<void> {
-    await this.db.update(gapClusters).set({ status, updatedAt: now }).where(eq(gapClusters.id, id));
-  }
-
   /** 人工改判根因。**只写 manual 列**，auto 保留——「worker 现在会怎么判」要始终可回答。 */
   async setRootCauseManual(id: string, cause: GapRootCause, now: Date): Promise<void> {
     await this.db

@@ -1,6 +1,8 @@
 import {
   CENTROID_CAS_ATTEMPTS,
   CLUSTER_SIMILARITY_MIN,
+  GAP_TERMINAL_STATUSES,
+  type GapClusterStatus,
   RECURRENCE_MIN_ITEMS,
   RECURRENCE_WINDOW_DAYS,
 } from "./gap.constants";
@@ -102,8 +104,6 @@ export async function recomputeRootCause(
   await store.setClusterRootCauseAuto(clusterId, triageCluster(causes, followUpRatio), now);
 }
 
-/** 已终结、可被「复发」重开的两个状态（原型 `:376`/`:708`）。 */
-const TERMINAL_STATUSES: readonly string[] = ["ignored", "verified"];
 
 /**
  * 「复发」判定（原型 `:376` 边界表 / `:708` 状态机）：
@@ -123,11 +123,11 @@ const TERMINAL_STATUSES: readonly string[] = ["ignored", "verified"];
 export async function checkRecurrence(
   store: GapCollectorStore,
   clusterId: string,
-  statusBeforeAttach: string,
+  statusBeforeAttach: GapClusterStatus,
   terminalAt: Date | null,
   now: Date,
 ): Promise<boolean> {
-  if (!TERMINAL_STATUSES.includes(statusBeforeAttach)) return false;
+  if (!GAP_TERMINAL_STATUSES.has(statusBeforeAttach)) return false;
   const rolling = new Date(now.getTime() - RECURRENCE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   /**
    * 窗口起点取「7 天前」与「进入终态那一刻」中**较晚**的一个。

@@ -39,16 +39,34 @@ export class DocumentChangeNotifier {
   }
 
   /**
-   * 广播。**任何监听方抛错都只记日志，绝不冒泡**——
-   * 评测集标不上「gold 可能过期」是体验问题；因为它把一次文档解析/删除/整库重建
-   * 打回失败，是事故。逐个 try/catch 而不是整体包一层：一个监听方炸了不该让后面的收不到。
+   * 广播「内容可能变了」。语义见 `registerTerminal` 的对比说明。
    */
   async notifyChanged(docId: string): Promise<void> {
-    for (const fn of this.listeners) {
+    await this.fanOut(this.listeners, "document-change", `doc=${docId}`, docId);
+  }
+
+  /**
+   * 两条通道共用的广播动作。
+   *
+   * **任何监听方抛错都只记日志，绝不冒泡**——评测集标不上「gold 可能过期」是体验问题；
+   * 因为它把一次文档解析/删除/整库重建打回失败，是事故。逐个 try/catch 而不是整体包一层：
+   * 一个监听方炸了不该让后面的收不到。
+   *
+   * 抽出来是因为这条不变量原先有**两份**实现（清理复审两位独立指出），日志格式已经开始漂。
+   * 以后给广播加退避/超时/指标时只有一处要改——而落后的那一处正好会是回验用的那条。
+   * 注意**只合并广播动作，不合并两个注册表**：两条通道的语义差别是 peer review P1 的结论。
+   */
+  private async fanOut<A extends unknown[]>(
+    listeners: ReadonlyArray<(...args: A) => Promise<void>>,
+    channel: string,
+    subject: string,
+    ...args: A
+  ): Promise<void> {
+    for (const fn of listeners) {
       try {
-        await fn(docId);
+        await fn(...args);
       } catch (err) {
-        this.logger.warn(`document-change listener failed doc=${docId}: ${String(err)}`);
+        this.logger.warn(`${channel} listener failed ${subject}: ${String(err)}`);
       }
     }
   }
@@ -74,16 +92,14 @@ export class DocumentChangeNotifier {
     this.terminalListeners.push(fn);
   }
 
-  /** 广播文档终态。与 `notifyChanged` 同样逐个自吞异常——绝不让订阅方打回文档主流程。 */
+  /** 广播文档终态。与 `notifyChanged` 共用 `fanOut`——绝不让订阅方打回文档主流程。 */
   async notifyTerminal(docId: string, status: "ready" | "failed"): Promise<void> {
-    for (const fn of this.terminalListeners) {
-      try {
-        await fn(docId, status);
-      } catch (err) {
-        this.logger.warn(
-          `document-terminal listener failed doc=${docId} status=${status}: ${String(err)}`,
-        );
-      }
-    }
+    await this.fanOut(
+      this.terminalListeners,
+      "document-terminal",
+      `doc=${docId} status=${status}`,
+      docId,
+      status,
+    );
   }
 }

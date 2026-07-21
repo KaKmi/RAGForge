@@ -14,11 +14,15 @@ import {
   Typography,
   message,
 } from "antd";
-import type { Application, GapFillDraft, KnowledgeBase } from "@codecrush/contracts";
+import type {
+  Application,
+  GapClusterStatus,
+  GapFillDraft,
+  KnowledgeBase,
+} from "@codecrush/contracts";
 import {
   cancelGapFill,
   draftGapFill,
-  getApplicationDetail,
   getApplications,
   getGapFillDraft,
   getKnowledgeBases,
@@ -55,6 +59,20 @@ export interface GapFillWizardProps {
   onChanged: () => void;
 }
 
+/**
+ * 原型 §17.5 `:633` 的三态在各簇状态上的落点。
+ *
+ * 「哪些状态属于向导」与「它们各在第几步」是**同一份数据**——原先拆成
+ * `WIZARD_STATES` 数组 + 一串嵌套三元，加了新状态而三元没跟上就会静默错位。
+ * 不在表里的状态（`verified`/`ignored`/`routed_retrieval`）走「向导不适用」兜底 Alert。
+ */
+const STEP_OF: Partial<Record<GapClusterStatus, number>> = {
+  pending: 0,
+  drafting: 0,
+  reviewing: 1,
+  filled: 2,
+};
+
 export default function GapFillWizard({
   open,
   clusterId,
@@ -77,15 +95,6 @@ export default function GapFillWizard({
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [apps, setApps] = useState<Application[]>([]);
   /** 应用 → 其当前 production 配置版本。没上线过的应用不能做回验目标，见下方 Select。 */
-  /**
-   * 应用 → 其 production 版本号。三态刻意区分：
-   *  · `string`    → 已上线，可选作回验目标
-   *  · `null`      → 确实没上线过 ⇒ 标「未上线」并禁用
-   *  · `undefined` → 详情没取到（网络抖动） ⇒ 标「状态未知」并禁用，但文案不撒谎
-   */
-  const [productionVersions, setProductionVersions] = useState<
-    Record<string, string | null | undefined>
-  >({});
 
   /**
    * 拉草稿。`preserveEdits` 决定**要不要用服务端内容覆盖用户正在编辑的文本**。
@@ -174,27 +183,19 @@ export default function GapFillWizard({
     void getKnowledgeBases()
       .then(setKbs)
       .catch(() => setKbs([]));
+    /**
+     * `productionConfigVersionId` **就在列表响应里**（`ApplicationSchema` 上，
+     * 后端 `APP_SELECT` 显式选了它），不需要再逐个拉详情。
+     *
+     * 初版对每个应用都发了一次 `getApplicationDetail`，注释还写着「列表接口不带它」——
+     * 那句是错的，清理复审两位独立指出。代价不只是 1+N 次请求：详情响应是
+     * `ApplicationSchema.extend({ versions })`，每次还额外拖回该应用的**全部配置版本历史**。
+     * 而且它逼出了一整套本不需要的三态（`string`/`null`/`undefined`）与「状态未知」文案分支
+     * ——那个分支存在的唯一理由是「详情请求可能失败」，而这个请求根本不该发。
+     * 仓库里 `EvalSetsPage`/`ChatPage` 早就是直接从列表读这个字段的。
+     */
     void getApplications()
-      .then(async (list) => {
-        setApps(list);
-        // 逐个取 production 指针：列表接口不带它，而「这个应用能不能用来回验」全看它。
-        const entries = await Promise.all(
-          list.map(async (app) => {
-            try {
-              const detail = await getApplicationDetail(app.id);
-              return [app.id, detail.productionConfigVersionId] as const;
-            } catch {
-              /**
-               * 请求失败 ≠ 未上线。混为一谈的话，一次抖动就会让用户看到自己明明在跑的
-               * 应用被标成「尚未上线」且不可选，还没有任何重试入口。用 `undefined`
-               * 与「确实没有 production 指针」的 `null` 区分开，下面据此分别渲染。
-               */
-              return [app.id, undefined] as const;
-            }
-          }),
-        );
-        setProductionVersions(Object.fromEntries(entries));
-      })
+      .then(setApps)
       .catch(() => setApps([]));
   }, [open]);
 
@@ -254,7 +255,7 @@ export default function GapFillWizard({
     if (answer.trim().length > ANSWER_MAX) return setErr(`答案不超过 ${ANSWER_MAX} 字`);
     if (!kbId) return setErr("请选择目标知识库");
     if (!appId) return setErr("请选择用于回验的应用");
-    const configVersionId = productionVersions[appId];
+    const configVersionId = apps.find((a) => a.id === appId)?.productionConfigVersionId;
     if (!configVersionId) return setErr("该应用尚未上线，无法用于回验");
     if (!confirmed) return setErr("请先勾选「我已核对答案与来源」"); // §19.1 逐字
 
@@ -302,9 +303,7 @@ export default function GapFillWizard({
    * `verified`/`ignored`/`routed_retrieval` 走的是「向导不适用」兜底 Alert，
    * 此时不能再高亮第①步——那会和 Alert 说的话自相矛盾（复审 P3）。`-1` = 不高亮任何步。
    */
-  const WIZARD_STATES = ["pending", "drafting", "reviewing", "filled"];
-  const stepIndex =
-    status === "reviewing" ? 1 : status === "filled" ? 2 : status && WIZARD_STATES.includes(status) ? 0 : -1;
+  const stepIndex = (status && STEP_OF[status]) ?? -1;
 
   return (
     <Drawer
@@ -451,19 +450,13 @@ export default function GapFillWizard({
                   value: app.id,
                   // 没上线过的应用没有 production 版本，回验无从跑起——
                   // 在这里禁掉，别等到提交时才报错。
-                  disabled: !productionVersions[app.id],
-                  label: productionVersions[app.id] ? (
+                  disabled: !app.productionConfigVersionId,
+                  label: app.productionConfigVersionId ? (
                     app.name
-                  ) : productionVersions[app.id] === null ? (
+                  ) : (
                     <Tooltip title="该应用尚未上线，无法用于回验">
                       <span>
                         {app.name} <Tag>未上线</Tag>
-                      </span>
-                    </Tooltip>
-                  ) : (
-                    <Tooltip title="没取到该应用的上线状态，重开向导可重试">
-                      <span>
-                        {app.name} <Tag>状态未知</Tag>
                       </span>
                     </Tooltip>
                   ),
