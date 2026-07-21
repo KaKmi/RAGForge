@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TraceSpan } from "@codecrush/contracts";
-import { autoSelectSpan, buildContractChain, buildOtlpJson, buildSpanDetail, buildSpanMeta, buildWaterfall, rootSpanOf, spanKindColor, traceAlerts } from "./traceDetail";
+import { autoSelectSpan, buildContractChain, buildOtlpJson, buildSpanDetail, buildSpanMeta, buildWaterfall, rootSpanOf, rewrittenQueryOf, spanKindColor, traceAlerts } from "./traceDetail";
 
 const mk = (o: Partial<TraceSpan>): TraceSpan => ({
   traceId: "a".repeat(32),
@@ -238,5 +238,50 @@ describe("traceDetail", () => {
       }, spans),
     );
     expect(json.spans[0]).toMatchObject({ spanId: "root", startOffsetMs: 0 });
+  });
+
+  /**
+   * `rag.rewrite.query` 一直埋着，但此前没被任何地方提取——后果不止是面板上少一块：
+   * 「加入问题池」也拿不到它，于是手动入池的样本被误标「指代未消解」，
+   * 聚类键退回原文（021 决策 F 被架空），回验拿带指代的原话去重放 ⇒ 假的「复发」标。
+   */
+  describe("rewrittenQueryOf", () => {
+    it("从 rewrite 节点取出改写后的问题", () => {
+      const spans = [
+        mk({ spanId: "root", name: "rag.pipeline" }),
+        mk({
+          spanId: "rw",
+          name: "node_runtime.execute_structured",
+          attributes: { "rag.node.name": "rewrite", "rag.rewrite.query": "如何回应下属的加薪请求？" },
+        }),
+      ];
+      expect(rewrittenQueryOf(spans)).toBe("如何回应下属的加薪请求？");
+    });
+
+    it("没有 rewrite 结果 ⇒ null（调用方据此退回保守默认，而不是传空串）", () => {
+      expect(rewrittenQueryOf([mk({ spanId: "root" })])).toBeNull();
+    });
+
+    it("空白字符串当作没有——传上去会被契约的 .min(1) 打回，整个入池请求失败", () => {
+      const spans = [mk({ spanId: "rw", attributes: { "rag.rewrite.query": "   " } })];
+      expect(rewrittenQueryOf(spans)).toBeNull();
+    });
+
+    it("顺带 trim：前后空白会被原样当成代表问题的显示身份", () => {
+      const spans = [mk({ spanId: "rw", attributes: { "rag.rewrite.query": "  改写后  " } })];
+      expect(rewrittenQueryOf(spans)).toBe("改写后");
+    });
+  });
+
+  it("buildSpanDetail 提取 rewrittenQuery，且只挂在产出它的那个节点上", () => {
+    const root = mk({ spanId: "root", name: "rag.pipeline" });
+    const rw = mk({
+      spanId: "rw",
+      attributes: { "rag.rewrite.query": "改写后的问题" },
+    });
+
+    expect(buildSpanDetail(rw, root).rewrittenQuery).toBe("改写后的问题");
+    // 别的节点不该跟着显示它——那会让人以为每一步都改写了一次。
+    expect(buildSpanDetail(mk({ spanId: "other" }), root).rewrittenQuery).toBeNull();
   });
 });

@@ -36,6 +36,8 @@ describeInfra("B2a 屏5 问题池（HTTP e2e，真 PG）", () => {
   let harness: Awaited<ReturnType<typeof createEvaluationInfraHarness>>;
   let repo: GapsRepository;
   let embedVector: number[];
+  /** 按文本指定向量（只在需要区分「聚类键用了哪段文本」的用例里填）。 */
+  let embedByText: Record<string, number[]>;
 
   beforeAll(async () => {
     harness = await createEvaluationInfraHarness();
@@ -47,7 +49,14 @@ describeInfra("B2a 屏5 问题池（HTTP e2e，真 PG）", () => {
       getSettings: async () => ({ embeddingModelId: E2E_EMBED_MODEL_ID, judgeVersion: "online-v1" }),
     };
     const models = {
-      embedTexts: async (_id: string, texts: string[]) => texts.map(() => embedVector),
+      /**
+       * 默认对所有文本返回同一个向量（多数用例只关心「归不归簇」，不关心谁和谁近）。
+       *
+       * `embedByText` 是给**需要区分文本**的用例开的口子：验「聚类键到底用了哪段文本」时，
+       * 同向量的桩会让断言恒真——两个键都会归进同一簇，测不出区别。
+       */
+      embedTexts: async (_id: string, texts: string[]) =>
+        texts.map((t) => embedByText[t] ?? embedVector),
     };
     const service = new GapsService(repo, evaluations as never, models as never);
 
@@ -79,6 +88,7 @@ describeInfra("B2a 屏5 问题池（HTTP e2e，真 PG）", () => {
 
   beforeEach(() => {
     embedVector = Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0));
+    embedByText = {};
   });
 
   afterEach(async () => {
@@ -142,6 +152,80 @@ describeInfra("B2a 屏5 问题池（HTTP e2e，真 PG）", () => {
 
     expect(res.body.joinedExisting).toBe(true);
     expect(res.body.freq).toBe(1);
+  });
+
+  /**
+   * ⛔ 手动入池必须采纳入口页透传的改写结果（2026-07-21 真环境实测抓出的连锁 bug）。
+   *
+   * 初版硬编码 `rewrittenQuestion: null` / `rewriteResolved: false`，注释写
+   * 「手动入池不经 rewrite 节点」——那句是错的：`manual_trace` 是人从 Trace 详情挑的
+   * **一条真实线上 trace**，它当然走过 rewrite 节点，结果就在 `rag.rewrite.query` 里。
+   * 丢掉它 ⇒ 误标「指代未消解」⇒ 评测臂强制重复改写 + 聚类键退回原文 + 回验拿原话重放
+   * ⇒ 假的「复发」标。
+   */
+  it("带 rewrittenQuestion ⇒ rewriteResolved 为真，且**用它做聚类键**", async () => {
+    /**
+     * 构造：两条原话给**互相正交**的向量（余弦 0，绝无可能归并），
+     * 改写后是同一句、给第三个向量。于是——
+     *  · 聚类键用原话 ⇒ 两条各自成簇（旧行为）；
+     *  · 聚类键用改写后 ⇒ 两条并进同一簇（决策 F 要的行为）。
+     * 若不这么造，harness 默认对所有文本返回同一个向量，两种实现都会归并，断言恒真。
+     */
+    const rewritten = "如何回应下属的加薪请求";
+    const rawA = "他又来提那事了";
+    const rawB = "这个怎么答复比较好";
+    const unit = (i: number) => Array.from({ length: 1024 }, (_, k) => (k === i ? 1 : 0));
+    embedByText[rawA] = unit(10);
+    embedByText[rawB] = unit(20); // 与 rawA 正交
+    embedByText[rewritten] = unit(30);
+
+    const first = await request(app.getHttpServer())
+      .post("/api/gaps/items")
+      .send({
+        question: rawA,
+        source: "manual_trace",
+        sourceTraceId: hex32(),
+        rewrittenQuestion: rewritten,
+      })
+      .expect(201);
+
+    const second = await request(app.getHttpServer())
+      .post("/api/gaps/items")
+      .send({
+        question: rawB,
+        source: "manual_trace",
+        sourceTraceId: hex32(),
+        rewrittenQuestion: rewritten,
+      })
+      .expect(201);
+
+    // 两句**正交**的原话并进了同一个簇——只有聚类键真的用了改写结果才可能发生。
+    expect(second.body.clusterId).toBe(first.body.clusterId);
+
+    const items = await request(app.getHttpServer())
+      .get(`/api/gaps/${first.body.clusterId}/items`)
+      .expect(200);
+    expect(items.body).toHaveLength(2);
+    // 成员保留各自的**原话**（那是真实用户问的），但都标记为已消解。
+    for (const item of items.body) {
+      expect(item.rewriteResolved).toBe(true);
+      expect(item.rewrittenQuestion).toBe(rewritten);
+    }
+  });
+
+  it("不带 rewrittenQuestion ⇒ 退回保守默认（未消解），行为与从前一致", async () => {
+    // 配对：只测「带了会怎样」的话，一个无条件置 true 的实现也能通过——
+    // 而那会让真正未消解的样本绕过入集守卫，把永久 0 分用例放进评测集。
+    const res = await request(app.getHttpServer())
+      .post("/api/gaps/items")
+      .send({ question: "那个呢", source: "manual_trace", sourceTraceId: hex32() })
+      .expect(201);
+
+    const items = await request(app.getHttpServer())
+      .get(`/api/gaps/${res.body.clusterId}/items`)
+      .expect(200);
+    expect(items.body[0].rewriteResolved).toBe(false);
+    expect(items.body[0].rewrittenQuestion).toBeNull();
   });
 
   it("状态迁移端点走通，非法迁移 400", async () => {

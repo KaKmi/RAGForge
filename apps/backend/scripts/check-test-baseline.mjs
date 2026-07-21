@@ -58,7 +58,7 @@ const BASELINES = {
   // 草拟失败退回 / 非 UUID 400）⇒ **实测** 9 suites / 112 tests。
   // 其中「跳过人审直接 submit ⇒ 400 且 uploads 为空」已用变异测试验过：
   // 把 upload 前的状态守卫改成恒假，该条立刻变红——它钉的正是本波唯一的产品红线。
-  infra: { suites: 9, tests: 114, script: "test:infra" },
+  infra: { suites: 9, tests: 116, script: "test:infra" },
 };
 
 const [suiteKey, resultFile] = process.argv.slice(2);

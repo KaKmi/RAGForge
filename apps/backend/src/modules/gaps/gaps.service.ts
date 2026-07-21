@@ -23,6 +23,7 @@ import {
   type GapRootCause,
 } from "./gap.constants";
 import { GapCentroidStaleError } from "./gap-clustering";
+import { clusterKeyOf } from "./gap-triage";
 import { assignToCluster, recomputeRootCause } from "./gap-ingest";
 import {
   GapItemsMovedConcurrentlyError,
@@ -556,9 +557,21 @@ export class GapsService {
     if (!settings.embeddingModelId) {
       throw new BadRequestException("未配置 embedding 模型，无法归簇——请先在在线评测设置里选一个");
     }
-    // 聚类键用**原文**，与收集器的 `clusterKeyOf` 逐字一致——那边不做归一化，
-    // 这边若归一化，同一个问题自动收进来和人工加进来会得到两个不同的代表问题文本。
-    const [embedding] = await this.models.embedTexts(settings.embeddingModelId, [body.question]);
+    /**
+     * 聚类键走**与收集器同一个** `clusterKeyOf`（优先改写后的问题，决策 F）。
+     *
+     * ⚠️ 这里原先硬用 `body.question`，注释还写着「与收集器的 clusterKeyOf 逐字一致」——
+     * **那句当时就是错的**：收集器一直是 `rewrittenQuestion ?? question`。于是同一个问题
+     * 自动收进来和人工加进来会算出两个不同的键、落进两个不同的簇，而屏5 上看起来
+     * 只是「聚类没聚上」。两边都调同一个纯函数，这类漂移就不会再发生。
+     *
+     * 归一化仍然不做（`clusterKeyOf` 自己也不做）：那会让代表问题的显示文本与原文不符。
+     */
+    const clusterKey = clusterKeyOf({
+      question: body.question,
+      rewrittenQuestion: body.rewrittenQuestion ?? null,
+    });
+    const [embedding] = await this.models.embedTexts(settings.embeddingModelId, [clusterKey]);
     if (!embedding || embedding.length !== VECTOR_DIMENSION) {
       // 维度不符多半是有人把在线评测的 embedding 模型换成了别的维度。
       // 不拦的话：`cosineSimilarity` 对维度不一致返回 0 ⇒ 必建新簇 ⇒ 往 vector(1024) 列插
@@ -581,14 +594,21 @@ export class GapsService {
       );
     }
 
-    const { clusterId, inserted } = await this.assignToClusterOr409(body.question, {
+    const { clusterId, inserted } = await this.assignToClusterOr409(clusterKey, {
         source: body.source,
         sourceTraceId: body.sourceTraceId,
         question: body.question,
-        // 手动入池不经 rewrite 节点，没有可用的改写结果。标 `false` 是**保守**的默认：
-        // 入集守卫会要求人工改写后才能沉淀成 gold，宁可多叫人看一眼。
-        rewrittenQuestion: null,
-        rewriteResolved: false,
+        /**
+         * ⛔ 初版硬编码成 `null` + `false`，注释写「手动入池不经 rewrite 节点」——**那句是错的**，
+         * 而且引发了一串连锁故障（2026-07-21 真环境实测抓出，详见契约里 `rewrittenQuestion` 的注释）：
+         * `manual_trace` 是人从 Trace 详情挑的**一条真实线上 trace**，它当然走过 rewrite 节点，
+         * 改写结果就在 span 属性 `rag.rewrite.query` 里躺着，只是入口页没把它带过来。
+         *
+         * 现在由入口页透传。**没带**时仍退回保守默认（`false`）——那个默认本身没错，
+         * 错的是把它当成唯一分支。
+         */
+        rewrittenQuestion: body.rewrittenQuestion ?? null,
+        rewriteResolved: body.rewrittenQuestion !== undefined,
         embedding,
         /**
          * 由**调用方透传**（021 决策 B：入口在 Trace 详情，那一屏手里就有 startTime）。

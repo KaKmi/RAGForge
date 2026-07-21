@@ -128,6 +128,23 @@ export const CreateGapItemRequestSchema = z.object({
    * 省略则该样本不计入 `freq30d` 的 30 天窗口，只计入累计 `freq`。
    */
   traceStartTime: z.string().datetime().optional(),
+  /**
+   * 该 trace 的 rewrite 节点产出的**可独立检索**的问题（span 属性 `rag.rewrite.query`），
+   * 同样**由入口页透传**——理由与 `traceStartTime` 完全一致：后端不能读 trace。
+   *
+   * ⛔ **带上它不是锦上添花，是修一个连锁 bug**（2026-07-21 真环境实测）：
+   * 初版把 `manual_trace` 的改写结果硬编码成 null，注释写「手动入池不经 rewrite 节点」——
+   * 那句是错的。`manual_trace` 是人从 Trace 详情挑的**一条真实线上 trace**，
+   * 它当然走过 rewrite 节点，改写结果就在 span 里躺着。丢掉它导致四件事一起坏：
+   *  ① 每条手动入池样本都被误标「指代未消解」；
+   *  ② 评测臂据此强制人再改写一遍系统已经改写好的问题；
+   *  ③ 决策 F 的聚类键退回原文 ⇒ 近义问题聚不到一起；
+   *  ④ 回验拿那句带指代的原话去重放 ⇒ 必然低分 ⇒ **假的「复发」标**。
+   *
+   * 省略（或该 trace 确实没有改写结果）时行为与从前一致：`rewrite_resolved = false`，
+   * 入集守卫要求人工改写——那个保守默认本身没错，错的是把它当成**唯一**分支。
+   */
+  rewrittenQuestion: z.string().trim().min(1).max(500).optional(),
 });
 export type CreateGapItemRequest = z.infer<typeof CreateGapItemRequestSchema>;
 

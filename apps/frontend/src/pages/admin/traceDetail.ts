@@ -283,6 +283,30 @@ export interface SpanDetailView {
   durationPct: number; // 占 chain 根总时长的百分比（面板显示「占总时长 X%」）
   contractChain: ContractStep[];
   routing: { intent: string; kbNames: string[] } | null; // #2 意图→KB 路由（仅 intent 节点有 rag.intent）
+  /**
+   * rewrite 节点产出的**可独立检索**的问题（`rag.rewrite.query`）。
+   *
+   * 它一直埋着，但此前没人提取——于是「问题改写」节点在面板上显示
+   * 「该节点无独立输入/输出记录」，而它其实是这条链路里最该看的一个输出：
+   * 下游检索用的就是它，不是用户原话。
+   */
+  rewrittenQuery: string | null;
+}
+
+/**
+ * 从整条 trace 里取 rewrite 节点的产出。
+ *
+ * 除了面板展示，「加入问题池」也要它——`manual_trace` 入池的样本必须带上改写结果，
+ * 否则会被误标「指代未消解」，并让聚类键退回原文（021 决策 F）。
+ * 后端读不了 trace（`gaps → traces` 是禁止的边，021 决策 B 规定走前端组合），
+ * 所以只能由这一屏透传。
+ */
+export function rewrittenQueryOf(spans: TraceSpan[]): string | null {
+  for (const s of spans) {
+    const v = attrStr((s.attributes as Record<string, unknown>)["rag.rewrite.query"]);
+    if (v != null && v.trim() !== "") return v.trim();
+  }
+  return null;
 }
 
 function parseJsonArray<T>(v: unknown): T[] {
@@ -342,6 +366,8 @@ export function buildSpanDetail(span: TraceSpan, root: TraceSpan): SpanDetailVie
     durationPct: Math.round((span.durationMs / Math.max(root.durationMs, 1)) * 100),
     contractChain: buildContractChain(span),
     routing,
+    // 只在**产出它的那个节点**上显示，不要挂到整条链的每个 span 上。
+    rewrittenQuery: attrStr(a["rag.rewrite.query"]),
   };
 }
 

@@ -24,6 +24,7 @@ import {
   type ContractStep,
   KIND_LEGEND,
   rootSpanOf,
+  rewrittenQueryOf,
   traceAlerts,
   traceSpanTotal,
 } from "./traceDetail";
@@ -238,11 +239,26 @@ export default function TraceDetailPage() {
       startTime && new Date(startTime).getTime() <= Date.now() ? startTime : undefined;
     setPooling(true);
     try {
+      /**
+       * ⛔ 改写结果**必须带上**（与 `traceStartTime` 同理：后端读不了 trace）。
+       *
+       * 不带的后果不是「少个字段」，是一串连锁故障（2026-07-21 真环境实测）：
+       * 后端会退回保守默认 `rewriteResolved=false` ⇒ 该样本被误标「指代未消解」⇒
+       * ① 评测臂强制人再改写一遍系统已经改写好的问题；
+       * ② 聚类键退回原文（021 决策 F 被架空）⇒ 近义问题聚不到一起；
+       * ③ 回验拿那句带指代的原话去重放 ⇒ 必然低分 ⇒ **假的「复发」标**。
+       *
+       * 超长则不带（契约上限 500）——宁可退回保守默认，也不要整个请求被 Zod 打回。
+       */
+      const rewritten = rewrittenQueryOf(spans);
+      const usableRewritten =
+        rewritten && rewritten.length <= GAP_QUESTION_MAX ? rewritten : undefined;
       const result = await createGapItem({
         question,
         source: "manual_trace",
         sourceTraceId: data.traceId,
         ...(usableStartTime ? { traceStartTime: usableStartTime } : {}),
+        ...(usableRewritten ? { rewrittenQuestion: usableRewritten } : {}),
       });
       if (result.joinedExisting) {
         // 原型 `:648`：命中既有簇不是错误，是有用的信息——告诉他这问题已经被记了多少次，
@@ -1335,6 +1351,41 @@ export default function TraceDetailPage() {
                   }}
                 >
                   {detail.output || "—"}
+                </div>
+              </>
+            ) : detail.rewrittenQuery ? (
+              /*
+                「问题改写」节点的输出。它一直埋在 `rag.rewrite.query` 里，但此前没被提取，
+                于是这一屏显示「该节点无独立输入/输出记录」——而它恰恰是整条链路里最该看的
+                一个中间产物：**下游检索用的是它，不是用户原话**。看不到它，排查
+                「为什么召回不对」时就少了最关键的一环。
+              */
+              <>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "rgba(0,0,0,.45)",
+                    marginBottom: 6,
+                  }}
+                >
+                  改写后的问题
+                </div>
+                <div
+                  style={{
+                    background: "#f0f7ff",
+                    border: "1px solid #d6e8ff",
+                    borderRadius: 6,
+                    padding: "12px 14px",
+                    fontSize: 13,
+                    lineHeight: 1.9,
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {detail.rewrittenQuery}
+                </div>
+                <div style={{ fontSize: 12, color: "rgba(0,0,0,.35)", marginTop: 8 }}>
+                  下游检索用的是这句，不是用户原话
                 </div>
               </>
             ) : (
