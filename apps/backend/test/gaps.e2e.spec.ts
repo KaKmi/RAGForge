@@ -232,6 +232,8 @@ describeInfra("B2b 补知识库向导（HTTP e2e，真 PG）", () => {
   /** 每次 upload 调用都记一笔——红线断言靠它：**不该入库时，这个数组必须是空的**。 */
   let uploads: Array<{ kbId: string; content: string }>;
   let draftReply: string | null;
+  /** 草拟调用次数——`resume-fill` 的核心断言：拿回草稿**不该**再调一次模型。 */
+  let draftCalls: number;
 
   beforeAll(async () => {
     harness = await createEvaluationInfraHarness();
@@ -251,6 +253,7 @@ describeInfra("B2b 补知识库向导（HTTP e2e，真 PG）", () => {
         texts.map(() => Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0))),
       // 草拟走的是 `models.chat(...)`，返回 `{ content }`；`draftReply=null` 模拟模型不可用。
       chat: async () => {
+        draftCalls += 1;
         if (draftReply === null) throw new Error("草拟模型不可用");
         return { content: draftReply };
       },
@@ -279,6 +282,8 @@ describeInfra("B2b 补知识库向导（HTTP e2e，真 PG）", () => {
       controllers: [GapFillController],
       providers: [
         { provide: GapFillService, useValue: fill },
+        // `resume-fill` 是纯状态迁移，控制器直接走 GapsService（不经 GapFillService）。
+        { provide: GapsService, useValue: gaps },
         { provide: APP_PIPE, useClass: ZodValidationPipe },
         {
           provide: APP_GUARD,
@@ -303,6 +308,7 @@ describeInfra("B2b 补知识库向导（HTTP e2e，真 PG）", () => {
 
   beforeEach(() => {
     uploads = [];
+    draftCalls = 0;
     draftReply = JSON.stringify({
       question: "能开增值税专用发票吗？",
       answer: "可以。请提供开票抬头与税号，（待确认）个工作日内寄出。",
@@ -401,6 +407,40 @@ describeInfra("B2b 补知识库向导（HTTP e2e，真 PG）", () => {
     const draft = await request(app.getHttpServer()).get(`/api/gaps/${id}/fill-draft`).expect(200);
     // 草稿留着才有「继续补库」这个入口；清掉的话用户得从头再草拟一次。
     expect(draft.body.draftQuestion).toBe("能开增值税专用发票吗？");
+  });
+
+  /**
+   * 021 §9b 决策 J 承诺「保留草稿供下次跳过①直接到②」。B2b 初版只做了**保留**、
+   * 没做**出口**——没有 `pending → reviewing` 迁移，UI 到不了那份草稿，
+   * 每次取消都要重花一次 LLM 调用并把它覆盖掉。运行时 QA 抓出「文档承诺 ≠ 实现」。
+   */
+  it("continue：取消后可拿回草稿直接回 reviewing，**不重新调模型**", async () => {
+    const id = await seedCluster();
+    await request(app.getHttpServer()).post(`/api/gaps/${id}/draft-fill`).expect(200);
+    await request(app.getHttpServer()).post(`/api/gaps/${id}/cancel-fill`).expect(200);
+
+    const draftCallsBefore = draftCalls;
+    const resumed = await request(app.getHttpServer())
+      .post(`/api/gaps/${id}/resume-fill`)
+      .expect(200);
+
+    expect(resumed.body.status).toBe("reviewing");
+    // 关键：走的是纯状态迁移。多调一次模型就等于把保留的草稿覆盖了。
+    expect(draftCalls).toBe(draftCallsBefore);
+
+    const draft = await request(app.getHttpServer()).get(`/api/gaps/${id}/fill-draft`).expect(200);
+    expect(draft.body.draftQuestion).toBe("能开增值税专用发票吗？");
+  });
+
+  it("resume：从没草拟过的簇 ⇒ 400，不把空内容推进 reviewing", async () => {
+    // 绝大多数 pending 簇从没草拟过。放进 reviewing 会让用户对着两个空输入框，
+    // 而那个状态在形式上已经允许「确认入库」了。
+    const id = await seedCluster();
+
+    await request(app.getHttpServer()).post(`/api/gaps/${id}/resume-fill`).expect(400);
+
+    const draft = await request(app.getHttpServer()).get(`/api/gaps/${id}/fill-draft`).expect(200);
+    expect(draft.body.status).toBe("pending");
   });
 
   it("草拟失败 ⇒ 簇退回 pending（不能卡在 drafting，那是个没有用户出口的态）", async () => {

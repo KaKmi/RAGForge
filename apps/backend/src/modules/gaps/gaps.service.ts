@@ -64,8 +64,21 @@ const TRANSITIONS = {
   /** 草拟失败 / 用户取消。草稿字段**保留**——原型 `:704`「草稿保留可再编辑」。 */
   cancelDraft: { from: ["drafting"], to: "pending" },
   draftReady: { from: ["drafting"], to: "reviewing" },
-  /** 人审驳回。同样保留草稿，下次进向导可直接从第②步继续。 */
+  /** 人审驳回。同样保留草稿，下次进向导可直接从第②步继续（走 `resumeDraft`）。 */
   cancelReview: { from: ["reviewing"], to: "pending" },
+  /**
+   * 拿回上次保留的草稿，直接回到第②步人审编辑。
+   *
+   * 021 §9b 决策 J 承诺「**保留** `fill_draft_*` 供下次重新打开向导时跳过①直接到②」，
+   * 但 B2b 初版**没有这条迁移**——草稿确实留在库里，UI 却到不了它：向导的步骤由后端
+   * 状态驱动，`pending` 恒等于第①步，唯一的按钮是「重新草拟」，点下去发起一次新的
+   * LLM 调用并把保留的草稿覆盖掉。承诺的价值一次都没兑现过（运行时 QA 抓出）。
+   *
+   * 守卫在 `GapsService.resumeDraft` 里做：草稿字段为空时拒绝——否则会把簇推到
+   * `reviewing` 却没有任何可审的内容，用户对着两个空输入框，且此时「确认入库」的
+   * 前置条件形式上已经满足。
+   */
+  resumeDraft: { from: ["pending"], to: "reviewing" },
   submitFill: { from: ["reviewing"], to: "filled" },
   /**
    * `filled → filled` 自环：上传完成后把文档 id 登记回簇。
@@ -369,6 +382,20 @@ export class GapsService {
     return this.applyTransition(id, "attachFillDocument", now, () => ({
       fillTargetDocumentId: documentId,
     }));
+  }
+
+  /**
+   * 回到上次保留的草稿（决策 J 承诺的「跳过①直接到②」）。
+   *
+   * **必须校验草稿非空**：`pending` 的簇绝大多数从没草拟过，放它们进 `reviewing`
+   * 会让用户对着两个空输入框，而那个状态在形式上已经允许提交入库了。
+   */
+  async resumeDraft(id: string, now = new Date()): Promise<GapCluster> {
+    const cluster = await this.mustFindForFill(id);
+    if (!cluster.fillDraftQuestion || !cluster.fillDraftAnswer) {
+      throw new BadRequestException("这个缺口没有保留的草稿，请先用 AI 草拟");
+    }
+    return this.applyTransition(id, "resumeDraft", now);
   }
 
   /** 回验通过（≥ `VERIFY_PASS_THRESHOLD`）：记新分数，屏5 显示「✓ 41→89」。 */

@@ -16,6 +16,7 @@ const api = vi.hoisted(() => ({
   getGapFillDraft: vi.fn(),
   draftGapFill: vi.fn(),
   cancelGapFill: vi.fn(),
+  resumeGapFill: vi.fn(),
   submitGapFill: vi.fn(),
   getKnowledgeBases: vi.fn(),
   getApplications: vi.fn(),
@@ -87,23 +88,28 @@ function renderWizardRaw(clusterId: string) {
 /**
  * 把第②步填到「只差勾确认」的状态。
  *
- * 「回验应用」的选项要等 `getApplicationDetail` 回来拿到 production 指针才可选——
- * 在那之前 antd 渲染的是 Tooltip 包的 `<span>`、不会把 `title` 设成应用名，
- * 所以 `findByTitle` 的隐式重试**恰好**等的就是这一刻。
+ * **等的是「选中真的落下了」，不是「某个渲染细节出现了」。**
+ * `findByTitle` 只能等到「选项可点」，点完之后选中有没有被 antd 记下来是另一回事——
+ * 用它当唯一的同步点，后续断言（提交按钮可用、submitGapFill 收到 configVersionId）
+ * 就建立在一个还没落地的前提上，全量并跑抢 CPU 时偶发红（实测约 8 次 1 次）。
+ * 选中项文本出现在 `.ant-select-selection-item` 上才是真正的就绪信号。
  *
- * ⚠️ 别把它改写成「显式等待 option 不带 disabled class」——试过，更糟：
- * `findByTitle` 返回的节点未必有 `.ant-select-item` 祖先，`closest()` 得到 `null` 时
- * `expect(null).not.toHaveClass()` 直接抛错，waitFor 便一路重试到 15s 超时。
- * 改完从「8 次全量跑红 1 次」变成「4 次全跑全红」。等待意图确实藏在 antd 的渲染细节里，
- * 但在找到既显式又正确的写法之前，隐式重试是更稳的那个。见 §复审 P2 的偶发红说明。
+ * ⚠️ 别改成「等 option 不带 disabled class」——试过，更糟：`findByTitle` 返回的节点
+ * 未必有 `.ant-select-item` 祖先，`closest()` 为 `null` 时 `expect(null).not.toHaveClass()`
+ * 直接抛错，waitFor 一路重试到 15s 超时，从「8 次红 1 次」变成「4 次全红」。
  */
 async function fillForm() {
   await screen.findByDisplayValue("能开增值税专用发票吗？");
-  fireEvent.mouseDown(screen.getByRole("combobox", { name: "目标知识库" }));
-  fireEvent.click(await screen.findByTitle("客服知识库"));
+  await pick("目标知识库", "客服知识库");
+  await pick("回验应用", "客服机器人");
+}
 
-  fireEvent.mouseDown(screen.getByRole("combobox", { name: "回验应用" }));
-  fireEvent.click(await screen.findByTitle("客服机器人"));
+/** 选一个下拉项，并**确认它真的被选中**后才返回。 */
+async function pick(label: string, option: string) {
+  const select = () => screen.getByRole("combobox", { name: label }).closest(".ant-select")!;
+  fireEvent.mouseDown(screen.getByRole("combobox", { name: label }));
+  fireEvent.click(await screen.findByTitle(option));
+  await waitFor(() => expect(select()).toHaveTextContent(option));
 }
 
 beforeEach(() => {
@@ -122,6 +128,49 @@ describe("补知识库向导", () => {
     fireEvent.click(await screen.findByRole("button", { name: /草拟/ }));
 
     await waitFor(() => expect(api.draftGapFill).toHaveBeenCalledWith(CLUSTER));
+  });
+
+  /**
+   * 021 §9b 决策 J 承诺「取消补库后**保留**草稿，下次重开向导跳过①直接到②」。
+   * B2b 初版草稿确实留在库里，但 UI 到不了它——第①步唯一的按钮是「重新草拟」，
+   * 点下去调模型并把保留的那份**覆盖**掉。承诺的价值一次都没兑现过（运行时 QA 抓出）。
+   */
+  it("有保留草稿 ⇒ 第①步主按钮是「继续编辑上次草稿」，且**不调模型**", async () => {
+    api.getGapFillDraft.mockResolvedValue(
+      draft({ status: "pending", draftQuestion: "上次的问题", draftAnswer: "上次的答案" }),
+    );
+    api.resumeGapFill.mockResolvedValue({});
+    renderWizard();
+
+    fireEvent.click(await screen.findByRole("button", { name: "继续编辑上次草稿" }));
+
+    await waitFor(() => expect(api.resumeGapFill).toHaveBeenCalledWith(CLUSTER));
+    // 关键：走的是纯状态迁移，**没有**发起新的 LLM 草拟。
+    expect(api.draftGapFill).not.toHaveBeenCalled();
+  });
+
+  it("没有草稿 ⇒ 只有「开始草拟」，不渲染继续编辑的入口", async () => {
+    // 配对：只测「有草稿时有按钮」的话，一个无条件渲染它的实现也能通过——
+    // 而那会让绝大多数从没草拟过的簇看到一个点了必 400 的按钮。
+    api.getGapFillDraft.mockResolvedValue(
+      draft({ status: "pending", draftQuestion: null, draftAnswer: null }),
+    );
+    renderWizard();
+
+    expect(await screen.findByRole("button", { name: "开始草拟" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "继续编辑上次草稿" })).not.toBeInTheDocument();
+  });
+
+  it("继续编辑失败要出声——错误不能被随后的 load 抹掉", async () => {
+    api.getGapFillDraft.mockResolvedValue(
+      draft({ status: "pending", draftQuestion: "上次的问题", draftAnswer: "上次的答案" }),
+    );
+    api.resumeGapFill.mockRejectedValue(new Error("这个缺口没有保留的草稿"));
+    renderWizard();
+
+    fireEvent.click(await screen.findByRole("button", { name: "继续编辑上次草稿" }));
+
+    expect(await screen.findByText("这个缺口没有保留的草稿")).toBeInTheDocument();
   });
 
   it("**没勾「我已核对」不许提交**——这道闸门就是本屏存在的理由", async () => {

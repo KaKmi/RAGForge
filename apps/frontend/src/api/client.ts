@@ -1197,6 +1197,14 @@ export const draftGapFill = (id: string): Promise<GapCluster> => gapAction(id, "
 /** 取消补库：回 `pending`，草稿**保留**（下次打开向导可直接从第②步继续）。 */
 export const cancelGapFill = (id: string): Promise<GapCluster> => gapAction(id, "cancel-fill");
 
+/**
+ * 拿回上次保留的草稿，直接回第②步人审编辑（021 §9b 决策 J）。
+ *
+ * **不调模型**——这正是它与「重新草拟」的区别。草稿为空时后端 400，
+ * 所以只在 `fill-draft` 确实回了内容时才渲染这个入口。
+ */
+export const resumeGapFill = (id: string): Promise<GapCluster> => gapAction(id, "resume-fill");
+
 /** 第③步：人审通过 → 走既有上传管线入库 → 转 `filled`，文档处理完成后自动回验。 */
 export const submitGapFill = (id: string, req: SubmitFillRequest): Promise<GapCluster> =>
   postJson(`${gapPath(id)}/submit-fill`, req, SubmitFillRequestSchema, GapClusterSchema);

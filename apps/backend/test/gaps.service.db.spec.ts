@@ -13,7 +13,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
-import { ConflictException } from "@nestjs/common";
+import { BadRequestException, ConflictException } from "@nestjs/common";
 import { GapCentroidStaleError } from "../src/modules/gaps/gap-clustering";
 import { GapsRepository } from "../src/modules/gaps/gaps.repository";
 import { GapsService } from "../src/modules/gaps/gaps.service";
@@ -569,6 +569,57 @@ describeDb("GapsService（状态机 / 拆分合并 / 频次口径，RUN_DB_TESTS
      * 复发窗口的**判定**逻辑在 `gap-collector.processor.spec.ts` 有覆盖，但那是内存 fake、
      * 自带一个 `terminalAt` 字段，与真实 UPDATE 是否写库毫无关系。这两条补的正是那一段。
      */
+    /**
+     * 021 §9b 决策 J 承诺「取消补库后**保留**草稿，下次重开向导跳过①直接到②」。
+     * B2b 初版草稿确实留在库里，但**没有这条迁移**——UI 到不了它，每次取消都要
+     * 重花一次 LLM 调用并把保留的那份覆盖掉。运行时 QA 抓出「文档承诺 ≠ 实现」。
+     */
+    it("resumeDraft：有保留草稿 ⇒ pending 直接回 reviewing，内容逐字不变", async () => {
+      const { clusterId } = await seedCluster({
+        status: "pending",
+        fillDraftQuestion: "上次草拟的问题",
+        fillDraftAnswer: "上次草拟的答案",
+        items: [{}],
+      });
+      try {
+        await service.resumeDraft(clusterId);
+
+        expect(await statusOf(clusterId)).toBe("reviewing");
+        const fields = await fillFieldsOf(clusterId);
+        // 关键：**不调模型、不覆盖**。草稿必须逐字还是那一份。
+        expect(fields.fillDraftQuestion).toBe("上次草拟的问题");
+        expect(fields.fillDraftAnswer).toBe("上次草拟的答案");
+      } finally {
+        await cleanup([clusterId]);
+      }
+    });
+
+    it("resumeDraft：没有草稿 ⇒ 400，绝不把空内容推进 reviewing", async () => {
+      // 绝大多数 pending 簇从没草拟过。放它们进 reviewing 会让用户对着两个空输入框，
+      // 而那个状态在形式上已经允许「确认入库」了。
+      const { clusterId } = await seedCluster({ status: "pending", items: [{}] });
+      try {
+        await expect(service.resumeDraft(clusterId)).rejects.toThrow(BadRequestException);
+        expect(await statusOf(clusterId)).toBe("pending");
+      } finally {
+        await cleanup([clusterId]);
+      }
+    });
+
+    it("resumeDraft：只有问题没有答案也拒绝（半份草稿不是草稿）", async () => {
+      const { clusterId } = await seedCluster({
+        status: "pending",
+        fillDraftQuestion: "只有问题",
+        items: [{}],
+      });
+      try {
+        await expect(service.resumeDraft(clusterId)).rejects.toThrow(BadRequestException);
+        expect(await statusOf(clusterId)).toBe("pending");
+      } finally {
+        await cleanup([clusterId]);
+      }
+    });
+
     it("进入终态 ⇒ 写 terminal_at 锚点", async () => {
       const { clusterId } = await seedCluster({ status: "pending", items: [{}] });
       try {

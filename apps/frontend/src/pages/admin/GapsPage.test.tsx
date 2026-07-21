@@ -264,19 +264,36 @@ describe("屏5 问题池", () => {
    * 临时状态当永久契约，会把本波的交付判成回归。
    */
   it("[补知识库] 打开三步向导（B2b）", async () => {
+    /**
+     * ⚠️ 这条曾经断言的是一个**崩溃的向导**（独立复审用探针实测抓出）。
+     *
+     * `beforeEach` 里 `getGapFillDraft` 被 mock 成 `null`（违反 `GapFillDraftSchema`），
+     * 向导 `load` 里对 `null` 取 `.clusterId` 直接抛 TypeError，屏上实际是两条 alert：
+     * 「Cannot read properties of null」+「该缺口当前状态为『未知』，补库向导不适用」。
+     * 而原来的断言查的是 Steps 的三个标题——它们**无条件渲染**，对 load 成功/失败/崩溃
+     * 一视同仁，什么都证明不了：向导的数据接线整体坏掉，这条测试照样绿。
+     *
+     * 现在返回合法草稿，并断言**只属于成功路径**的东西（第②步的人审表单）。
+     */
     mockGaps([cluster()]);
+    gapsMock.getGapFillDraft.mockResolvedValue({
+      clusterId: cluster().id,
+      status: "reviewing",
+      representativeQuestion: "能开专用发票吗/对公转账",
+      draftQuestion: "能开增值税专用发票吗？",
+      draftAnswer: "可以。请提供开票抬头与税号。",
+      targetKbId: null,
+      targetDocumentId: null,
+    });
     renderPage();
     await screen.findByText("能开专用发票吗/对公转账");
 
     fireEvent.click(screen.getByRole("button", { name: "补知识库" }));
 
-    // 断言**向导真的开了**，不是只验按钮存在。
-    // 按 role 取标题：抽屉标题与刚点的那个按钮同名，`findByText("补知识库")` 会两个都命中。
+    // 按 role 取：抽屉标题与刚点的那个按钮同名，findByText 会两个都命中。
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    // 三步都在，说明渲染的是向导本体而不是个空抽屉。
-    for (const step of ["草拟", "人审编辑", "入库中"]) {
-      expect(await screen.findByText(step)).toBeInTheDocument();
-    }
+    // 人审表单里的真实内容——只有 load 成功、状态解析正确才会出现。
+    expect(await screen.findByDisplayValue("能开增值税专用发票吗？")).toBeInTheDocument();
   });
 
   /**

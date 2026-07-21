@@ -13,6 +13,7 @@ import {
   type GapFillDraft,
 } from "@codecrush/contracts";
 import { GapFillService } from "./gap-fill.service";
+import { GapsService } from "./gaps.service";
 
 /**
  * 与 `GapsController` 同款的路径参数守卫。不校验的话，一个非 UUID 的 id 会一路走到
@@ -32,7 +33,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 @Controller("gaps")
 export class GapFillController {
-  constructor(private readonly service: GapFillService) {}
+  constructor(
+    private readonly service: GapFillService,
+    //  是纯状态迁移（无 LLM、无上传），直接走 GapsService，
+    // 不必在 GapFillService 上再包一层只有转发的方法。
+    private readonly gaps: GapsService,
+  ) {}
 
   /**
    * 向导打开时回显草稿（第②步的数据源）。
@@ -51,6 +57,18 @@ export class GapFillController {
   @HttpCode(200)
   async draftFill(@Param("id") id: string): Promise<GapCluster> {
     return this.service.draftFill(assertUuid(id));
+  }
+
+  /**
+   * 拿回上次保留的草稿，直接回第②步（021 §9b 决策 J 承诺的「跳过①直接到②」）。
+   *
+   * 挂在这个控制器而不是 `gaps.controller`：它是补库向导的一步，
+   * 与 `draft-fill`/`cancel-fill`/`submit-fill` 同族。
+   */
+  @Post(":id/resume-fill")
+  @HttpCode(200)
+  async resumeFill(@Param("id") id: string): Promise<GapCluster> {
+    return this.gaps.resumeDraft(assertUuid(id));
   }
 
   /** 人审驳回：回 `pending`，草稿保留（原型 `:704`）。 */

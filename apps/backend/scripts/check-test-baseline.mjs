@@ -51,14 +51,14 @@ const BASELINES = {
   // B2b 收尾：补 2 条 CAS（原来那条「并发」用例被证明是空测——两个 Promise 实际串行、
   // 撞的是内存守卫抛 400，ConflictException 从没触发）+ 4 条 terminal_at 写入
   // （改成恒 null 时 238 测试全绿，而它是迁移 0029 的全部理由）⇒ **实测** 14/163。
-  db: { suites: 14, tests: 163, script: "test:db" },
+  db: { suites: 14, tests: 166, script: "test:db" },
   // infra：B2a Task 5 加 test/gap-pool-isolation.spec.ts（5 条）后 8 suites / 96 tests；
   // Task 6 再加 test/gaps.e2e.spec.ts（10 条 HTTP 全链路）⇒ 9 suites / 106 tests。
   // B2b e2e 阶段：gaps.e2e 追加「补知识库向导」6 条（三步走通 / 两条红线 / 取消保留草稿 /
   // 草拟失败退回 / 非 UUID 400）⇒ **实测** 9 suites / 112 tests。
   // 其中「跳过人审直接 submit ⇒ 400 且 uploads 为空」已用变异测试验过：
   // 把 upload 前的状态守卫改成恒假，该条立刻变红——它钉的正是本波唯一的产品红线。
-  infra: { suites: 9, tests: 112, script: "test:infra" },
+  infra: { suites: 9, tests: 114, script: "test:infra" },
 };
 
 const [suiteKey, resultFile] = process.argv.slice(2);

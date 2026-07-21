@@ -23,6 +23,7 @@ import type {
 import {
   cancelGapFill,
   draftGapFill,
+  resumeGapFill,
   getApplications,
   getGapFillDraft,
   getKnowledgeBases,
@@ -162,8 +163,10 @@ export default function GapFillWizard({
     /**
      * ⛔ 打开时必须把**上一个簇的内容清干净**（第三轮复审 P1-1，实测可复现）。
      *
-     * 本组件在 `GapsPage` 里是**单实例常驻**（靠 `open`/`clusterId` 切换，不是卸载重建），
-     * 所以 state 必然跨簇存活。原先只清 `confirmed`/`err`/`appId`，内容字段留着——
+     * ⚠️ 前提已变：`GapsPage` 现在给本组件挂了 `key={fillClusterId}`，key 变化即卸载重建，
+     * 所以**在单个实例内 `clusterId` 恒定**，这段清理实际上不可达。保留是刻意的——
+     * 它是 key 被误删时的保险（那时 state 会重新开始跨簇存活）。
+     * 原先只清 `confirmed`/`err`/`appId`，内容字段留着——
      * 于是「关掉簇 A，打开簇 B，而 B 的 fill-draft 请求失败」这条路径上，
      * 屏幕显示的是**簇 A 的问答**、报错 Alert 同时挂着、「确认入库」还可点，
      * 提交出去就是把 A 的内容写进 B 的知识库并触发对 B 的回验。
@@ -202,10 +205,16 @@ export default function GapFillWizard({
   /**
    * ⛔ `draft` 必须与**当前**簇同源，否则视为「没有草稿」。
    *
-   * 第三轮复审的两条 P1 同源：本组件单实例常驻，`draft` 会跨簇存活。open effect 已经
-   * 在打开时清了内容，`load` 也丢弃了陈旧响应——这里是第三道，把「渲染哪一屏」这个
-   * 决策本身也锁死在同源前提上。三道都指向同一件事：**用户核对的内容，必须就是
-   * 即将入库到这个簇的内容**。少任何一道，都存在一条路径让 A 的问答进 B 的知识库。
+   * 第三轮复审的两条 P1 同源：`draft` 曾会跨簇存活。open effect 在打开时清内容，
+   * `load` 丢弃陈旧响应——这里是第三道，把「渲染哪一屏」这个决策本身也锁死在同源前提上。
+   * 三道都指向同一件事：**用户核对的内容，必须就是即将入库到这个簇的内容**。
+   *
+   * ⚠️ 三道**不是互为冗余**（021 §11.8 曾这么写，独立复审实测证伪）：
+   * 只有本道单独充分；第一道只覆盖「打开时残留」，第二道只覆盖「陈旧响应」。
+   * 结构性修法是 `GapsPage` 的 `key={fillClusterId}`（卸载重建），三道降级为纵深防御。
+   *
+   * ⚠️ 本道目前**没有测试单独钉住**：改成 `draft !== null` 时 18 条全绿（复审实测）。
+   * 因为在有 key 的结构下它不可达，构造不出只依赖它的场景。已知覆盖缺口，别当它被保护着。
    */
   const draftFresh = draft?.clusterId === clusterId;
   const status = draftFresh ? draft?.status : undefined;
@@ -230,6 +239,29 @@ export default function GapFillWizard({
       setErr(msg);
     } finally {
       setDrafting(false);
+    }
+  };
+
+  /**
+   * 拿回上次保留的草稿，直接回第②步。**不调模型**——这正是它与「重新草拟」的区别。
+   *
+   * 成功后 `load()` 把状态刷成 `reviewing`，渲染自然切到人审表单，
+   * 内容用的是库里保留的那份（`load` 的 `preserveEdits: false` 分支写进输入框）。
+   */
+  const resumeDraft = async () => {
+    if (!clusterId) return;
+    setErr(null);
+    try {
+      await resumeGapFill(clusterId);
+      await load();
+      onChanged();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "无法继续上次草稿";
+      await load();
+      onChanged();
+      // 与 runDraft/submit 同理：setErr 必须在 load() **之后**，
+      // 否则被 load 成功路径的 setErr(null) 抹掉，用户点完只看到界面弹回原样。
+      setErr(msg);
     }
   };
 
@@ -369,9 +401,27 @@ export default function GapFillWizard({
               <Spin size="small" />
               <Text type="secondary">正在草拟…（约 10 秒）</Text>
             </Space>
+          ) : draft?.draftQuestion ? (
+            /*
+              有保留的草稿时，**「继续编辑」才是主按钮**（021 §9b 决策 J：
+              「保留 fill_draft_* 供下次重新打开向导时跳过①直接到②」）。
+
+              B2b 初版这里只有「重新草拟」——草稿确实留在库里，用户却到不了它，
+              点下去发起一次新的 LLM 调用并把保留的那份覆盖掉。承诺的价值一次都没兑现过
+              （运行时 QA 抓出「文档承诺 ≠ 实现」）。「重新草拟」降为次要按钮，
+              并在 Tooltip 里说清它会覆盖——那是个不可逆动作，不该看起来和继续编辑同级。
+            */
+            <Space>
+              <Button type="primary" onClick={() => void resumeDraft()}>
+                继续编辑上次草稿
+              </Button>
+              <Tooltip title="会调用模型重新生成，覆盖上次保留的草稿">
+                <Button onClick={() => void runDraft()}>重新草拟</Button>
+              </Tooltip>
+            </Space>
           ) : (
             <Button type="primary" onClick={() => void runDraft()}>
-              {draft?.draftQuestion ? "重新草拟" : "开始草拟"}
+              开始草拟
             </Button>
           )}
         </div>
