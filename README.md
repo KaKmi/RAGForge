@@ -17,6 +17,19 @@ RAGForge 是一个用于搭建、发布和持续优化 RAG 问答应用的平台
 
 核心闭环：**配置 → 入库 → 问答 → 观测 → 评测优化 → 安全上线**。
 
+## 界面预览
+
+<table>
+<tr>
+<td width="50%"><img src="docs/design/assets/screenshots/dashboard.png" alt="运行看板"/><br/><sub>运行看板 —— 问答量、兜底率、失败率与端到端延迟一屏可判，异常可下钻到 Trace 样本</sub></td>
+<td width="50%"><img src="docs/design/assets/screenshots/application-release.png" alt="应用发布"/><br/><sub>应用发布 —— 组合模型、知识库、Prompt 与检索参数，上线前自动核对四节点</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/design/assets/screenshots/trace-detail.png" alt="Trace 详情"/><br/><sub>Trace 详情 —— 问题改写→意图识别→混合召回→重排→生成，逐段耗时与引用来源可见</sub></td>
+<td width="50%"><img src="docs/design/assets/screenshots/gaps.png" alt="知识缺口"/><br/><sub>知识缺口 —— 坏样本自动聚类成簇，人工分诊补库后自动回验</sub></td>
+</tr>
+</table>
+
 ## 系统架构
 
 ![RAGForge 系统架构](docs/design/assets/ragforge-architecture.svg)
